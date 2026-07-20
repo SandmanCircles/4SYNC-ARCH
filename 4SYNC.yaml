@@ -38,10 +38,13 @@ bootstrap:
   seed:
     file: SEED.md
     flag: frontmatter status   # TEMPLATE = unfilled · AUTHORED = ready
-  authored_seed:               # the single genesis pipeline: seed → stack
+  authored_seed:               # the single genesis pipeline: seed → stack.
+                               # Steps run IN ORDER — the sequence is binding.
+                               # All dates from the system clock, never memory.
     - author config/KERNEL.yaml + STATUS.yaml + CANON_INDEX.yaml from the seed
       (fill bracketed placeholders; keep the skeleton's structure + directives;
-      remove the TEMPLATE GUARD directive line)
+      remove the TEMPLATE GUARD directive line); route the seed's deep canon
+      (charter prose, rationale, origin history) into config/REFERENCE.yaml
     - fill CLAUDE.md and NAMING_CONVENTIONS.md placeholders
     - set instance.name + instance.root (absolute) in THIS file
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
@@ -49,6 +52,8 @@ bootstrap:
     - archive the seed verbatim → archive/SEED_<date>.md, then set the archived
       file READ-ONLY (attrib +R / chmod a-w — the birth record is preserved,
       never edited) + CANON_INDEX pointer row
+    - add the archived seed to CLAUDE.md's load list, on-demand only —
+      "the genesis birth record, read-only"
     - prepend a genesis journal block to MERGE_PLAN.md
     - then continue with normal boot
   template_seed:               # interview mode — seed still says TEMPLATE

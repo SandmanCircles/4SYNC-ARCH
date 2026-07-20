@@ -17,7 +17,9 @@ will actually look. 4SYNC is that somewhere, plus the discipline that keeps it t
    interview you through the seed conversationally.
 3. **Open a session.** It reads `CLAUDE.md` → `4SYNC.yaml`, detects the untouched
    stack, runs **genesis** — distills your seed into the config stack, archives the
-   seed verbatim as the project's birth record — and orients. Every session after
+   seed verbatim as the project's birth record (locked read-only) — and orients.
+   Note: with an `AUTHORED` seed, genesis runs silently and automatically — opening
+   the session *is* the consent; there is no confirmation step. Every session after
    that boots oriented and deposits state back on close.
 
 No skills to install, no plugins, no per-machine setup. The entire mechanism is two

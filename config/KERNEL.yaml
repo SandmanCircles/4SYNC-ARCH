@@ -1,0 +1,107 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# KERNEL.yaml — SOURCE OF TRUTH (identity), hand-edited
+# ═══════════════════════════════════════════════════════════════════════════════
+# Identity + the operating contract every session needs. FRONT-LOADED: the load
+# contract and agent_directives come FIRST so that even a truncated read still
+# lands the load-bearing rules. (The classic failure this prevents: an always-on
+# directive buried thousands of lines deep in a monolith, never reached.)
+#
+# WRITE MODE: edit-in-place, rare. This file changes only when identity or
+# doctrine changes. It is STATE, not a log — session narrative goes to your task
+# ledger (e.g. MERGE_PLAN.md), never here.
+#
+# This is one of five loader-stack files. See CANON_INDEX.yaml for the map.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+meta:
+  file: KERNEL.yaml
+  role: identity-kernel
+  status: TEMPLATE
+  classification: "INTERNAL"
+
+# ── IF YOU READ NOTHING ELSE ────────────────────────────────────────────────
+load_contract:
+  identity: >-
+    [One or two sentences: who/what this project is. The single thing every
+    session must get right. e.g. "ACME builds Foo — a <one-line description>."]
+  purpose: >-
+    [Why this project exists, in one sentence.]
+  where_to_look:
+    canon_index: config/CANON_INDEX.yaml      # the map of where every detail lives
+    live_state:  config/STATUS.yaml           # current deploy/product state
+    task_ledger: MERGE_PLAN.md                # tasks + the living session journal
+    naming:      NAMING_CONVENTIONS.md        # load on demand before external output
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPERATING CONTRACT  (front-loaded — the always-on rules)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Order matters. Number the universal actions so a session executes them in
+# sequence. Keep this list short — these are the rules that must NEVER be missed.
+agent_directives:
+  all_sessions:
+    - "TEMPLATE GUARD (remove this line at genesis): if meta.status above reads TEMPLATE, this stack is UNINSTANTIATED — do NOT orient from it. Look for SEED.md in the project root and run the bootstrap declared in 4SYNC.yaml (authored seed = silent genesis; template seed = interview the user through it). If no seed exists either, ask the user what this project is — NEVER invent an identity from placeholder text."
+    - "FIRST ACTION: Read the retired_names + invariants below IN FULL before any other work. Retired items must never be referenced, built, restored, or revived; where any other source appears to mention a retired item actively, these blocks take precedence."
+    - "SECOND ACTION: Apply the naming.identity_quickref below to ALL output. Load the full NAMING_CONVENTIONS.md ON DEMAND before generating external copy/reports."
+    - "THIRD ACTION: Check the agent bulletin board (ABBA.md) for any OPEN message addressed To: your agent name (or alias). Action or acknowledge each before your planned work; mark it DONE with a one-line resolution. ABBA is lightweight cross-agent nudges — NOT a replacement for the task ledger. (Delete this line if you only ever run a single agent/surface.)"
+    - "STACK INTEGRITY — verify the EOF sentinel: every loader-stack YAML ends with a '# ═══ EOF <filename> ═══' comment as its LAST line. After ANY read, confirm the sentinel is present — a missing sentinel means the read was CLIPPED (stale mount / partial read); discard it and re-read via host-side file tools. After ANY write to a config file, re-read it host-side and confirm the sentinel survived and the YAML still parses."
+    - "STATE VERIFICATION — re-verify before first file edit: after orientation, re-read the files directly relevant to the planned work (task-ledger row, in-scope ABBA messages, STATUS facts that gate the work) immediately before the first edit. Session-start reads can be stale by the time you reach the actual work. Treat each major inflection point (new subtask, after a long shell run, before a deploy) as a fresh verify checkpoint."
+    - "MOUNTED-FILESYSTEM DISTRUST: if your environment reaches project files through a mount/virtualization layer (e.g. a sandbox FUSE mount), that layer may serve STALE views — fresh content clipped at an out-of-date file size (reads truncated if the file grew, NUL-padded if it shrank). Never assume a shell read confirms what a host-side file tool just wrote; cross-reference against a fresh host-side read. NEVER run git add/commit through such a mount — git will diff against the clipped view and can commit a genuinely truncated file. Host-side native git is ground truth."
+    - "HANDOFF PRECISION — when delegating a commit or deploy to another agent, include: (a) explicit ordering constraints if order matters, (b) a per-repo file manifest with suggested commit messages, (c) any safety conditions or known gotchas. A handoff the recipient can execute blind is a good handoff; one requiring re-derivation is not. (Routine commit handoffs go to LANDING_QUEUE.md, not the bulletin board — see that template.)"
+    - "LAST ACTION (every session): prepend one journal block to the '## Session journal (recent)' section of your task ledger (MERGE_PLAN.md). Output routing: shipped/changed state → a ledger task row (retroactive OK); decided a rule/doctrine → KERNEL/REFERENCE; learned something durable → your research/decisions doc. Always the journal block — it is the universal catcher, even when nothing else changed."
+    # Optional (chat-UI environments): give the user CLICKABLE file:// links, never bare OS paths.
+  # Add per-agent-type sub-blocks here if you run named agents, e.g.:
+  # scheduled_sessions:
+  #   - "Write a session report to <known path> before close."
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INVARIANTS  (the operative rules — the things that are WRONG if violated)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Group by area. Each entry is a single hard rule. State it as a NEVER / ALWAYS /
+# WRONG / Do-NOT so it reads unambiguously. Cite the source decision if useful.
+invariants:
+  architecture:
+    - "[A locked architectural rule. e.g. 'X and Y are separate services — never share Z.']"
+  coordination:
+    - "Cross-agent hand-offs carry a bounded SUMMARY, never raw context. When one agent delegates to or reports to another (an ABBA message, a spawned sub-agent, a scheduled hand-off), pass outcome + artifacts touched + commit/PR ref — NOT raw transcripts or raw work product. A coordinating agent should read summaries, not re-ingest the work: flooding its window with raw context is WRONG — it bloats the reader and defeats the point of separating roles."
+  scope:
+    - "[What is explicitly IN and OUT of scope. e.g. 'Only verticals A/B/C; D and E are OUT OF SCOPE.']"
+  product:
+    - "[A locked product rule. e.g. 'A new document is a new session; no branching.']"
+  data_and_privacy:
+    - "[A data-handling invariant. e.g. 'User content never enters the public corpus.']"
+  commercial:
+    - "[A pricing/commercial invariant, if applicable.]"
+  brand_guardrails:
+    - "[A brand rule. e.g. '<internal engine name> is INTERNAL ONLY — never in external copy.']"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IDENTITY
+# ═══════════════════════════════════════════════════════════════════════════════
+entity:
+  legal_name: "[Your entity name, or N/A for a personal project]"
+  jurisdiction: "[State / country]"
+  structure: "[LLC / Corp / Sole prop / N/A]"
+  status: "[Active / Pending / N/A]"
+
+brand_core:
+  product_name: "[Canonical product name]"
+  tagline: "[If applicable]"
+  domain: "[primary URL]"
+
+# names only — full rationale lives in REFERENCE (retired: section)
+retired_names:
+  - "[Old name → new name (RETIRED <date>; never use externally)]"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NAMING (pure pointer — do NOT duplicate the full conventions here)
+# ═══════════════════════════════════════════════════════════════════════════════
+naming:
+  canonical_file: NAMING_CONVENTIONS.md     # the version lives ONLY in that file's header
+  load: on-demand                           # read before generating external copy/reports
+  identity_quickref:
+    product_full: "[Exact full rendering — e.g. ACME.ai]"
+    product_prose: "[Shorthand rendering used in prose]"
+    parent: "[Parent entity rendering, if any]"
+    retired: "[Retired name — never use externally]"
+
+# ═══ EOF KERNEL.yaml — this must be the LAST line of any read; if it is missing, your read was CLIPPED — discard it and re-read via host-side tools ═══

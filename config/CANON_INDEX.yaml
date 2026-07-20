@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CANON_INDEX.yaml — SOURCE OF TRUTH (the map), hand-edited
+# ═══════════════════════════════════════════════════════════════════════════════
+# The map: topic → where its detail lives → one-line summary. POINTERS, not
+# content. This is what lets any session know WHERE to go for depth without
+# loading it all up front. The whole point of the loader stack is that most
+# sessions load only KERNEL + STATUS + this index, and pull deeper files on demand.
+#
+# WRITE MODE: append/edit ONE pointer row when a new canon doc is created. Never
+#   paste the content itself here — only the pointer.
+#
+# This is one of five loader-stack files.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+meta:
+  file: CANON_INDEX.yaml
+  role: canon-registry
+  status: TEMPLATE
+
+# Each row: { topic, file, summary }
+canon_sources:
+
+  # ── Identity stack (this folder) ─────────────────────────────────────────
+  - topic: identity / directives / invariants (the operating contract)
+    file: config/KERNEL.yaml
+    summary: "always-loaded kernel — front-loaded directives + invariants + identity + naming quickref"
+  - topic: current live state
+    file: config/STATUS.yaml
+    summary: "deploy versions, active focus, blockers — overwrite snapshot"
+  - topic: deep reference canon
+    file: config/REFERENCE.yaml
+    summary: "load-on-demand: the full depth — technology, product, commercial, brand, data/privacy, retired rationale"
+  - topic: frozen journal archive
+    file: config/HISTORY.md
+    summary: "old session history / author notes; never loaded whole"
+
+  # ── Naming / brand canon ─────────────────────────────────────────────────
+  - topic: naming / typography / taxonomy / brand positioning
+    file: NAMING_CONVENTIONS.md
+    summary: "canonical vocabulary; load on demand before external output; version lives only in its header"
+
+  # ── Operational ──────────────────────────────────────────────────────────
+  - topic: task ledger + living session journal
+    file: MERGE_PLAN.md
+    summary: "persistent task state + the universal session-journal catcher"
+  - topic: cross-agent nudges (agent bulletin board)
+    file: ABBA.md                              # only if you run more than one agent/surface
+    summary: "messages addressed by name; check OPEN To: your name at session start"
+  - topic: commit / deploy landing queue
+    file: LANDING_QUEUE.md                     # only if some surfaces can't safely run git
+    summary: "machine-readable manifest of files ready to commit; any git-capable session drains it at wrap"
+
+  # ── Add a row whenever you create a new canon doc ────────────────────────
+  # - topic: [what it covers]
+  #   file: [path]
+  #   summary: "[one line]"
+
+# ═══ EOF CANON_INDEX.yaml — this must be the LAST line of any read; if it is missing, your read was CLIPPED — discard it and re-read via host-side tools ═══

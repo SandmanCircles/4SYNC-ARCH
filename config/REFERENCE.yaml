@@ -1,0 +1,50 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# REFERENCE.yaml — SOURCE OF TRUTH (deep canon), hand-edited
+# ═══════════════════════════════════════════════════════════════════════════════
+# The deep detail behind the KERNEL. This is where the bulk of a mature project's
+# canon lives — the stuff that USED to make the master config huge. It is NOT
+# loaded at session start. CANON_INDEX points sessions here; a session pulls only
+# the subtree it needs, only when a task needs it.
+#
+# WRITE MODE: edit-in-place. This file can grow large — that's fine, because it is
+#   load-on-demand. Keep the always-on rules in KERNEL; everything that is
+#   operative-but-scoped or reference-grade goes here.
+#
+# Organize by subtree so a session can load just one area. Suggested top-level
+# keys below — keep, rename, or drop to fit your project.
+#
+# This is one of five loader-stack files. See CANON_INDEX.yaml for the map.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+meta:
+  file: REFERENCE.yaml
+  role: deep-canon
+  status: TEMPLATE
+
+technology:
+  # Architecture, stack, schema, key technical decisions and their reasoning.
+  # Decisions go in WITH their reasons, so a future session doesn't re-litigate.
+  notes: "[Deep technical canon. e.g. the full gate/pipeline design, schema, infra map.]"
+
+product:
+  # Detailed product behavior, flows, edge cases, limits.
+  notes: "[Deep product canon.]"
+
+commercial:
+  # Pricing detail, metering, licensing, tax, go-to-market — the parts too long
+  # for the KERNEL invariant one-liners.
+  notes: "[Deep commercial canon, if applicable.]"
+
+brand:
+  # Brand detail beyond the KERNEL quickref (positioning long-form, asset specs).
+  notes: "[Deep brand canon.]"
+
+data_and_privacy:
+  notes: "[Retention, data planes, compliance detail.]"
+
+retired:
+  # Full RATIONALE for each retired name/decision (the KERNEL holds names only).
+  # Keeping the 'why' here stops a future session from reviving a rejected idea.
+  notes: "[Why each retired item was retired, with dates.]"
+
+# ═══ EOF REFERENCE.yaml — this must be the LAST line of any read; if it is missing, your read was CLIPPED — discard it and re-read via host-side tools ═══

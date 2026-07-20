@@ -1,0 +1,97 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 4SYNC.yaml — instance manifest. PURE DECLARATION: no state, no narrative.
+# Any session bookends itself from this file, no skills required:
+#   boot  → read this file, then load `boot:` in order
+#   close → on an EXPLICIT ending signal from the user, run `close:` in order
+#           (silence, idle, or a pause is NEVER a close signal)
+# First session in a fresh drop-in: see `bootstrap:` (genesis).
+# Write mode: edit ONLY when this instance's shape changes. Keep under 6KB.
+# ═══════════════════════════════════════════════════════════════════════════
+
+sync_version: "1.0"
+
+instance:
+  name: "[SET AT GENESIS — project name]"
+  # Canonical state root — ABSOLUTE path, set at genesis. Every close target
+  # resolves from here regardless of session cwd (subfolder, worktree, mount).
+  root: "[SET AT GENESIS — absolute path of this folder]"
+
+boot:
+  # Ordered, read whole in a single pass. Verify each loader YAML ends with
+  # its `# ═══ EOF <filename> ═══` sentinel as the last received line; a
+  # missing sentinel = clipped read → discard and re-read host-side.
+  - MERGE_PLAN.md            # operational state: task ledger + session journal
+  - config/KERNEL.yaml       # identity contract — if meta.status: TEMPLATE → bootstrap
+  - config/STATUS.yaml       # live state (overwrite-mode snapshot)
+  - config/CANON_INDEX.yaml  # map of where deeper detail lives
+
+on_demand:
+  - config/REFERENCE.yaml    # deep canon — pull subtrees via CANON_INDEX, never at boot
+  - NAMING_CONVENTIONS.md    # load before producing any external-facing output
+
+never_load_whole:
+  - config/HISTORY.md        # frozen archive
+
+bootstrap:
+  # Genesis — fires ONLY when config/KERNEL.yaml has `meta.status: TEMPLATE`
+  # (a fresh drop-in). Never fires again after the markers flip.
+  seed:
+    file: SEED.md
+    flag: frontmatter status   # TEMPLATE = unfilled · AUTHORED = ready
+  authored_seed:               # the single genesis pipeline: seed → stack
+    - author config/KERNEL.yaml + STATUS.yaml + CANON_INDEX.yaml from the seed
+      (fill bracketed placeholders; keep the skeleton's structure + directives;
+      remove the TEMPLATE GUARD directive line)
+    - fill CLAUDE.md and NAMING_CONVENTIONS.md placeholders
+    - set instance.name + instance.root (absolute) in THIS file
+    - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
+    - verify every authored YAML: [eof_sentinel, yaml_parse]
+    - archive the seed verbatim → archive/SEED_<date>.md + CANON_INDEX pointer row
+    - prepend a genesis journal block to MERGE_PLAN.md
+    - then continue with normal boot
+  template_seed:               # interview mode — seed still says TEMPLATE
+    - walk the user conversationally through SEED.md's own sections
+    - write their answers INTO SEED.md; flip its status → AUTHORED
+    - then run authored_seed (one pipeline; the seed is always the birth record)
+  no_seed:
+    - ask the user what this project is — NEVER invent an identity
+
+close:
+  freshness_check:           # MANDATORY gate before ANY ledger write below
+    fresh_read: true         # re-read each target from ground truth immediately
+                             # before editing it — the session-start copy is a
+                             # STALE BASE; another session may have written since
+    verify: [eof_sentinel, yaml_parse]   # parse check applies to YAML targets
+    on_stale_or_clipped: abort_and_reread_host_side  # never write onto a bad read
+    edit_mode: anchored_only # small anchored edits onto the fresh content;
+                             # never a whole-file rewrite from a snapshot
+  journal:
+    file: MERGE_PLAN.md
+    section: "## Session journal (recent)"
+    mode: prepend_one_block  # if the top block is already this session's, edit it
+    keep: 5
+    overflow_to: MERGE_PLAN_HISTORY.md
+  ledger_sync:
+    file: MERGE_PLAN.md      # flip touched rows only; never delete, never renumber
+  snapshot:
+    file: config/STATUS.yaml
+    mode: overwrite_facts    # never append; last_touched = ONE line
+    verify: [eof_sentinel, yaml_parse]
+  bulletin:
+    file: ABBA.md
+    check_at_boot: true      # OPEN messages `To:` this agent, before planned work
+    archive_done_after_days: 10
+  rotate:
+    script: scripts/rotate.py  # run if present; dry-run on first-ever use
+  commit:
+    trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
+    untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount
+
+integrity:
+  eof_sentinel: "# ═══ EOF <filename> ═══"
+  hooks: hooks/pre_tool_use.py           # SYNC_HOOKS_MODE: warn | enforce | off
+  manifest_rules:            # enforced by the boring-guard hook when it lands
+    max_bytes: 6144
+    declaration_only: true   # no state, no narrative, no timestamps-as-journal
+
+# ═══ EOF 4SYNC.yaml ═══

@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATUS.yaml — SOURCE OF TRUTH (live state), hand-edited
+# ═══════════════════════════════════════════════════════════════════════════════
+# Current live state — a snapshot of what is true NOW.
+#
+# WRITE MODE: OVERWRITE. When a fact changes, REPLACE the value — never append.
+#   This file must answer "what is the state right now?" at a glance. The log of
+#   HOW state got here lives in your task ledger (MERGE_PLAN.md), not here.
+#
+# This is one of five loader-stack files. See CANON_INDEX.yaml for the map.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+meta:
+  file: STATUS.yaml
+  role: live-state-snapshot
+  status: TEMPLATE
+  # ONE LINE ONLY: date + agent + one short sentence. The session NARRATIVE goes to the
+  # task-ledger journal block (which the same session already writes) — never here.
+  # Letting last_touched grow into a paragraph turns STATUS into a second journal and
+  # defeats the STATUS/ledger split.
+  last_touched: "[YYYY-MM-DD (who) — one-line note on what last moved]"
+
+product_state:
+  phase: "[Discovery / Build / Launch / Scale]"
+  # List the live surfaces and their current status:
+  # web: "LIVE — <url>"
+  # api: "<status>"
+
+codebase_state:
+  # One block per repo/service. Keep deploy identifiers here so any session can
+  # verify what's live without spelunking git logs or a cloud console.
+  main:
+    repo: "[org/repo @ path (branch SHA)]"
+    live_version: "[deployed image digest / tag / release]"
+    rollback: "[one-step rollback identifier]"
+
+active_focus: "[The single most important thing in flight right now — one line.]"
+
+in_flight:
+  - "[Task currently being worked — reference its ledger id]"
+
+blockers:
+  - "[Anything blocking progress — or remove this section if none]"
+
+# ═══ EOF STATUS.yaml — this must be the LAST line of any read; if it is missing, your read was CLIPPED — discard it and re-read via host-side tools ═══

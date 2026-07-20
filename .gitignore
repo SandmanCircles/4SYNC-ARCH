@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

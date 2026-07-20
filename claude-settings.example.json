@@ -1,0 +1,22 @@
+{
+  "//": "Example .claude/settings.json wiring for the 4SYNC-CMS guard hooks (hooks/pre_tool_use.py).",
+  "//rollout": "Start with SYNC_HOOKS_MODE=warn (violations logged, never blocked). After ~a week of clean automated runs, flip to 'enforce'. 'off' disables entirely.",
+  "//paths": "Adjust the script path and log path to your checkout. Use forward slashes — they work on Windows Python too.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/path/to/4SYNC-CMS/hooks/pre_tool_use.py\""
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "SYNC_HOOKS_MODE": "warn",
+    "SYNC_HOOKS_LOG": "/path/to/project/.claude/sync_hooks_warn.log"
+  }
+}

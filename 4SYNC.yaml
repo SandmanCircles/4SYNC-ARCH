@@ -46,7 +46,9 @@ bootstrap:
     - set instance.name + instance.root (absolute) in THIS file
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
     - verify every authored YAML: [eof_sentinel, yaml_parse]
-    - archive the seed verbatim → archive/SEED_<date>.md + CANON_INDEX pointer row
+    - archive the seed verbatim → archive/SEED_<date>.md, then set the archived
+      file READ-ONLY (attrib +R / chmod a-w — the birth record is preserved,
+      never edited) + CANON_INDEX pointer row
     - prepend a genesis journal block to MERGE_PLAN.md
     - then continue with normal boot
   template_seed:               # interview mode — seed still says TEMPLATE

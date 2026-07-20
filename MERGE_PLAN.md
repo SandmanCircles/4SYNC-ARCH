@@ -105,4 +105,4 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). MIT license. Adapt freely.*
+*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). Adapt freely.*

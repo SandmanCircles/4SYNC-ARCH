@@ -31,4 +31,4 @@ Always leave the summary-table row in `MERGE_PLAN.md`. Only the long-form descri
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). MIT license.*
+*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS).*

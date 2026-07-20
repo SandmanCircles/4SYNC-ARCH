@@ -26,4 +26,4 @@ PRIOR — YYYY-MM-DD [session label]. [Verbatim entry rolled out of `MERGE_PLAN.
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). MIT license.*
+*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS).*

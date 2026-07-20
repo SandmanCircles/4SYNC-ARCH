@@ -18,7 +18,7 @@ NOTE ON PORTABILITY (why this differs from an internal deployment):
   Keep those in a separate, clearly-labeled module in your own checkout — do NOT
   bake org-specific business logic into this shared file.
 
-Wire via .claude/settings.json -> hooks.PreToolUse (see claude-settings.example.json).
+Wire via .claude/settings.json -> hooks.PreToolUse (see hooks/claude-settings.example.json).
 
 Protocol (Claude Code PreToolUse):
   stdin  : JSON {"tool_name": "...", "tool_input": {...}, ...}

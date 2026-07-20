@@ -59,7 +59,7 @@ paused sessions resume rather than wrap.
 
 - **`hooks/pre_tool_use.py`** — four structural guards (KERNEL write guard, ABBA
   format guard, sandbox-git guard, STATUS snapshot guard). Wire via
-  `claude-settings.example.json`; env: `SYNC_HOOKS_MODE` = `warn` | `enforce` | `off`.
+  `hooks/claude-settings.example.json`; env: `SYNC_HOOKS_MODE` = `warn` | `enforce` | `off`.
 - **`scripts/rotate.py`** — ledger rotation: journal keep-N overflow to history,
   aged bulletin messages to archive. Run at close from a git-capable session.
 

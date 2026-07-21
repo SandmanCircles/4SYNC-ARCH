@@ -1,13 +1,16 @@
-# 4SYNC-CMS
+# The 4SYNC Token Saving Protocol
 
-**The Context Management System.** Persistent, multi-session, multi-agent memory for
+**The Token Saving Protocol.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 
-Content management systems solved "many hands, one website." 4SYNC solves **"many
-sessions, one project."** AI coding sessions are goldfish: every context window starts
+**4SYNC solves "many sessions, one project."** You're building with AI agents, and every
+few sessions the context window fills, the model drifts, and you're re-explaining the
+project from scratch. AI coding sessions are goldfish: every context window starts
 cold and dies silent, and everything a session learned — decisions, task state, naming
 discipline, deploy facts — evaporates unless it's deposited somewhere the next session
-will actually look. 4SYNC is that somewhere, plus the discipline that keeps it trustworthy.
+will actually look. 4SYNC is that somewhere — the discipline that keeps a project's context
+lean and trustworthy across sessions, so more of every window goes to the work. More model,
+same subscription.
 
 ## Quickstart — three steps, no installation
 
@@ -27,7 +30,7 @@ files that travel with the folder: `CLAUDE.md` (teaches any session the protocol
 exists) and `4SYNC.yaml` (declares what this instance's protocol is). Users can layer
 their own trigger-phrase skills on top; the system needs none.
 
-## The shape of the system
+## The shape of the protocol
 
 Three pillars, with distinct authority and write discipline:
 

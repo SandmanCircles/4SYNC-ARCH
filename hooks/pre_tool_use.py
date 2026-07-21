@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-4SYNC Context Management System (4SYNC CMS) — PreToolUse guard hooks.
+4SYNC Token Saving Protocol (4SYNC TSP) — PreToolUse guard hooks.
 
 Generic, product-shippable guard set. One dispatcher, four guards. Each guard
-enforces a *structural* CMS invariant that applies to ANY adopter of the
+enforces a *structural* protocol invariant that applies to ANY adopter of the
 loader-stack pattern — nothing here is specific to any one product or brand.
 
   g1  KERNEL write guard   — protect the identity/doctrine file from casual edits
@@ -12,7 +12,7 @@ loader-stack pattern — nothing here is specific to any one product or brand.
   g4  STATUS write guard    — keep STATUS a parseable, un-clipped, snapshot (not a journal)
 
 NOTE ON PORTABILITY (why this differs from an internal deployment):
-  This is the neutral template shipped with 4SYNC CMS. An internal deployment may
+  This is the neutral template shipped with 4SYNC TSP. An internal deployment may
   add its OWN domain-specific guards (brand-leak guards, protected-prompt guards,
   retired-concept guards, etc.) by appending functions to the GUARDS list below.
   Keep those in a separate, clearly-labeled module in your own checkout — do NOT

@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""
+4SYNC Token Saving Protocol — boot-cost meter (read-only).
+
+Measures the token cost of a 4SYNC instance's boot load and reports how much the
+loader-stack design keeps OUT of every session's context window. The whole point
+of the protocol is that a session boots on a small, ordered stack and DEFERS the
+bulk (deep reference canon, frozen archives) until — and only if — it is needed.
+This meter puts a number on that deferral.
+
+What it does:
+  - Reads 4SYNC.yaml (the instance manifest) to learn the load lists — it does NOT
+    hardcode filenames. The `boot:` list is what every session pays up front; the
+    `on_demand:` + `never_load_whole:` lists are what the design keeps deferred.
+  - Sizes each referenced file on disk and converts bytes → an ESTIMATE of tokens.
+  - Prints a boot-stack total, a deferred total, and a savings line: how many
+    tokens the loader stack keeps out of the window, as an absolute count and as a
+    share of total known canon.
+
+Token counts are ESTIMATES, not tokenizer output — see estimate_tokens(). The
+number is a design-pressure gauge, not a billing figure.
+
+Read-only: this module never opens a file for writing and never mutates the repo.
+It only stat()s and reads. Safe to run against any instance at any time.
+
+Usage:
+  python scripts/meter.py --dir /path/to/project        # text report
+  python scripts/meter.py --dir /path/to/project --json  # machine-readable JSON
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+
+MANIFEST = "4SYNC.yaml"
+
+# The three load lists the manifest declares. Order here is display order.
+LIST_KEYS = ("boot", "on_demand", "never_load_whole")
+
+# Rough English heuristic: ~4 bytes of UTF-8 text per token. This is the standard
+# back-of-envelope figure, NOT a real tokenizer count — a true count depends on
+# the model's BPE vocabulary. Kept deliberately simple and dependency-free.
+BYTES_PER_TOKEN = 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pure functions — no disk, no globals mutated. The test suite hits these directly.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def estimate_tokens(nbytes):
+    """Estimate token count from a byte count using the ~4-bytes-per-token English
+    heuristic. This is an ESTIMATE, not a tokenizer measurement — a real count
+    depends on the model's BPE vocabulary and the actual text. Monotonic in nbytes
+    and returns 0 for 0 (or negative) bytes."""
+    if nbytes <= 0:
+        return 0
+    return nbytes // BYTES_PER_TOKEN
+
+
+def _strip_inline_comment(value):
+    """Drop a trailing ' # ...' comment and surrounding quotes/space from a scalar.
+    Filenames never contain '#', so splitting on it is safe for load-list items."""
+    value = value.split("#", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value.strip()
+
+
+def _parse_load_lists_lines(manifest_text):
+    """Dependency-free fallback parser: walk the manifest line by line, collecting
+    the '- item' rows under each of the top-level LIST_KEYS blocks. Robust to inline
+    comments, blank lines, and comment-only lines. Stops a block at the next
+    top-level key (a line that starts in column 0 and contains a ':')."""
+    lists = {k: [] for k in LIST_KEYS}
+    current = None
+    top_key = re.compile(r"^([A-Za-z_][\w-]*):")
+    list_item = re.compile(r"^\s*-\s+(.+)$")
+    for raw in manifest_text.splitlines():
+        # A new top-level key ends whatever block we were in. 'bootstrap:' does not
+        # collide with 'boot:' because the colon is part of the match.
+        m = top_key.match(raw)
+        if m:
+            current = m.group(1) if m.group(1) in LIST_KEYS else None
+            continue
+        if current is None:
+            continue
+        im = list_item.match(raw)
+        if im:
+            item = _strip_inline_comment(im.group(1))
+            if item:
+                lists[current].append(item)
+        # blank lines / indented comment lines fall through and are ignored
+    return lists
+
+
+def parse_load_lists(manifest_text):
+    """Extract the boot / on_demand / never_load_whole file lists from 4SYNC.yaml
+    text. Best-effort: use PyYAML if importable, else fall back to a line/regex
+    parser over the load-list blocks (mirrors the hook's YAML handling — the module
+    must run with zero third-party deps). Returns a dict with exactly the LIST_KEYS
+    keys, each a list of relative path strings (possibly empty)."""
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(manifest_text)
+        if isinstance(data, dict):
+            out = {}
+            ok = True
+            for k in LIST_KEYS:
+                v = data.get(k)
+                if v is None:
+                    out[k] = []
+                elif isinstance(v, list):
+                    out[k] = [str(x).strip() for x in v if str(x).strip()]
+                else:
+                    ok = False
+                    break
+            if ok:
+                return out
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    return _parse_load_lists_lines(manifest_text)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Disk access — the only impure layer. Read-only; never opens for writing.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def measure_file(root, relpath):
+    """Return the size in bytes of root/relpath, or 0 if the file is missing.
+    Never raises on a missing/unreadable file (skeleton or template repos vary) —
+    a missing file simply measures 0 and is flagged by file_exists() at the report
+    layer so it can carry a note."""
+    try:
+        return os.path.getsize(os.path.join(root, relpath))
+    except OSError:
+        return 0
+
+
+def file_exists(root, relpath):
+    return os.path.isfile(os.path.join(root, relpath))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Report assembly — a pure data builder (for --json) and a text renderer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _row(root, relpath, tag=None):
+    nbytes = measure_file(root, relpath)
+    row = {
+        "path": relpath,
+        "bytes": nbytes,
+        "tokens": estimate_tokens(nbytes),
+        "missing": not file_exists(root, relpath),
+    }
+    if tag is not None:
+        row["tag"] = tag
+    return row
+
+
+def build_report_data(root, lists):
+    """Pure-ish data builder for the meter (the only impurity is stat()/getsize via
+    measure_file). Returns a dict describing the boot stack, the deferred set, their
+    totals, and the savings math. The 'full boot read' is 4SYNC.yaml itself PLUS
+    every file in the boot: list — the manifest is read to START boot, so it counts."""
+    boot_rows = [_row(root, MANIFEST)]
+    boot_rows += [_row(root, p) for p in lists.get("boot", [])]
+
+    deferred_rows = [_row(root, p, tag="on_demand") for p in lists.get("on_demand", [])]
+    deferred_rows += [_row(root, p, tag="never_load_whole") for p in lists.get("never_load_whole", [])]
+
+    boot_bytes = sum(r["bytes"] for r in boot_rows)
+    boot_tokens = sum(r["tokens"] for r in boot_rows)
+    deferred_bytes = sum(r["bytes"] for r in deferred_rows)
+    deferred_tokens = sum(r["tokens"] for r in deferred_rows)
+
+    total_tokens = boot_tokens + deferred_tokens
+    deferred_pct = (deferred_tokens / total_tokens * 100.0) if total_tokens else 0.0
+
+    return {
+        "root": root,
+        "manifest": MANIFEST,
+        "bytes_per_token": BYTES_PER_TOKEN,
+        "boot": boot_rows,
+        "deferred": deferred_rows,
+        "boot_total_bytes": boot_bytes,
+        "boot_total_tokens": boot_tokens,
+        "deferred_total_bytes": deferred_bytes,
+        "deferred_total_tokens": deferred_tokens,
+        "total_bytes": boot_bytes + deferred_bytes,
+        "total_tokens": total_tokens,
+        "deferred_pct": deferred_pct,
+    }
+
+
+def _fmt_int(n):
+    return f"{n:,}"
+
+
+def build_report(root, lists):
+    """Render the human-readable text report from build_report_data()."""
+    data = build_report_data(root, lists)
+
+    # Column widths — right-align the byte and token columns across all rows.
+    all_rows = data["boot"] + data["deferred"]
+    path_w = max([len(r["path"]) for r in all_rows] + [len("BOOT TOTAL")])
+    byte_vals = [_fmt_int(r["bytes"]) for r in all_rows] + [
+        _fmt_int(data["boot_total_bytes"]), _fmt_int(data["deferred_total_bytes"])]
+    tok_vals = [_fmt_int(r["tokens"]) for r in all_rows] + [
+        _fmt_int(data["boot_total_tokens"]), _fmt_int(data["deferred_total_tokens"])]
+    byte_w = max(len(v) for v in byte_vals) if byte_vals else 1
+    byte_w = max(byte_w, len("bytes"))
+    tok_w = max(len(v) for v in tok_vals) if tok_vals else 1
+    tok_w = max(tok_w, len("~tokens"))
+
+    def line(path, nbytes, tokens, tag="", note=""):
+        s = f"  {path:<{path_w}}  {nbytes:>{byte_w}}  {tokens:>{tok_w}}"
+        if tag:
+            s += f"  {tag}"
+        if note:
+            s += f"  {note}"
+        return s
+
+    out = []
+    out.append("4SYNC Token Saving Protocol — boot-cost meter")
+    out.append(f"repo: {root}")
+    out.append(f"(token counts are ESTIMATES ~ bytes // {BYTES_PER_TOKEN}, not tokenizer output)")
+    out.append("")
+    out.append(line("BOOT STACK", "bytes", "~tokens"))
+    out.append("  " + "-" * (path_w + byte_w + tok_w + 4))
+    for r in data["boot"]:
+        note = "(missing — counted as 0)" if r["missing"] else ""
+        out.append(line(r["path"], _fmt_int(r["bytes"]), _fmt_int(r["tokens"]), note=note))
+    out.append(line("BOOT TOTAL",
+                    _fmt_int(data["boot_total_bytes"]),
+                    _fmt_int(data["boot_total_tokens"])))
+    out.append("")
+    out.append(line("DEFERRED", "bytes", "~tokens"))
+    out.append("  " + "-" * (path_w + byte_w + tok_w + 4))
+    if data["deferred"]:
+        for r in data["deferred"]:
+            note = "(missing — counted as 0)" if r["missing"] else ""
+            tag = f"[{r.get('tag', '')}]"
+            out.append(line(r["path"], _fmt_int(r["bytes"]), _fmt_int(r["tokens"]),
+                            tag=tag, note=note))
+    else:
+        out.append("  (nothing deferred — no on_demand / never_load_whole entries)")
+    out.append(line("DEFERRED TOTAL",
+                    _fmt_int(data["deferred_total_bytes"]),
+                    _fmt_int(data["deferred_total_tokens"])))
+    out.append("")
+    out.append(
+        f"SAVINGS: boot loads ~{_fmt_int(data['boot_total_tokens'])} tokens; "
+        f"defers ~{_fmt_int(data['deferred_total_tokens'])} tokens "
+        f"({data['deferred_pct']:.1f}% of ~{_fmt_int(data['total_tokens'])} tokens of "
+        f"total known canon) — kept out of every session's window.")
+    return "\n".join(out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    # Windows consoles default to cp1252; the '—' and box-drawing glyphs in the
+    # report would raise UnicodeEncodeError on print. Reconfigure early.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    ap = argparse.ArgumentParser(
+        description="Read-only boot-cost meter for a 4SYNC instance.")
+    ap.add_argument("--dir", default=".",
+                    help="project root (holds 4SYNC.yaml). Default: current dir.")
+    ap.add_argument("--json", action="store_true",
+                    help="emit machine-readable JSON instead of the text report")
+    args = ap.parse_args()
+
+    root = os.path.abspath(args.dir)
+
+    manifest_path = os.path.join(root, MANIFEST)
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest_text = f.read()
+    except OSError:
+        # No manifest — still emit a well-formed (empty) report rather than crash.
+        manifest_text = ""
+
+    lists = parse_load_lists(manifest_text)
+
+    if args.json:
+        print(json.dumps(build_report_data(root, lists), indent=2))
+    else:
+        print(build_report(root, lists))
+
+
+if __name__ == "__main__":
+    main()
+# ═══ EOF meter.py ═══

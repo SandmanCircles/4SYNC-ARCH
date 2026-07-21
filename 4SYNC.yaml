@@ -90,6 +90,8 @@ close:
     archive_done_after_days: 10
   rotate:
     script: scripts/rotate.py  # run if present; dry-run on first-ever use
+  meter:
+    script: scripts/meter.py   # token-saving boot-cost meter — read-only reporting, never blocks
   commit:
     trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
     untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount

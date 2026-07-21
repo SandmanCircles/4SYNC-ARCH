@@ -50,6 +50,10 @@ canon_sources:
     file: LANDING_QUEUE.md                     # only if some surfaces can't safely run git
     summary: "machine-readable manifest of files ready to commit; any git-capable session drains it at wrap"
 
+  - topic: token-saving meter / boot-cost report
+    file: scripts/meter.py
+    summary: "measures boot-stack token cost vs. deferred canon kept out of the window; read-only"
+
   # ── Add a row whenever you create a new canon doc ────────────────────────
   # - topic: [what it covers]
   #   file: [path]

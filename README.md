@@ -62,11 +62,33 @@ paused sessions resume rather than wrap.
 
 ## Hardening (optional)
 
-- **`hooks/pre_tool_use.py`** — four structural guards (KERNEL write guard, ABBA
-  format guard, sandbox-git guard, STATUS snapshot guard). Wire via
-  `hooks/claude-settings.example.json`; env: `SYNC_HOOKS_MODE` = `warn` | `enforce` | `off`.
+- **`hooks/pre_tool_use.py`** — five structural guards (KERNEL-write, ABBA-format,
+  sandbox-git, STATUS-snapshot, and the **boring-guard** that holds the manifest
+  within its own declared `max_bytes` and keeps it declaration-only) plus a
+  **session-debt recorder** that flags a session which did work but never ran an
+  explicit close — surfaced at the next boot, cleared only by a real close.
 - **`scripts/rotate.py`** — ledger rotation: journal keep-N overflow to history,
   aged bulletin messages to archive. Run at close from a git-capable session.
+
+### Installing the hooks
+
+The hooks ship inert — nothing runs until you wire them into Claude Code. Wiring is
+per-checkout (the paths are machine-specific), so it goes in local settings, not the
+committed repo:
+
+1. **Copy** `hooks/claude-settings.example.json` → `.claude/settings.local.json`.
+2. **Fix the paths** — replace the placeholder interpreter and script paths with your
+   own. Forward slashes work on Windows too; use the *full* Python path if bare
+   `python` is shadowed on your machine (e.g. by the Windows Store stub).
+3. **Reload** — open `/hooks` once, or restart the session. A `.claude/` folder that
+   didn't exist when the session started isn't watched mid-session, so a fresh wiring
+   won't fire until you reload.
+
+Env knobs: `SYNC_HOOKS_MODE` = `warn` | `enforce` | `off` (start in `warn` — logs,
+never blocks; flip to `enforce` after a clean stretch) · `SYNC_DEBT=0` disables the
+session-debt recorder · `SYNC_MANIFEST` sets the manifest filename the boring-guard
+watches (default `4sync.yaml`). Add `.claude/settings.local.json` and the warn-mode
+log to your `.gitignore` — they're local, not shared.
 
 ## Provenance
 

@@ -1,7 +1,10 @@
 {
-  "//": "Example .claude/settings.json wiring for the 4SYNC-CMS guard hooks (hooks/pre_tool_use.py).",
-  "//rollout": "Start with SYNC_HOOKS_MODE=warn (violations logged, never blocked). After ~a week of clean automated runs, flip to 'enforce'. 'off' disables entirely.",
-  "//paths": "Adjust the script path and log path to your checkout. Use forward slashes — they work on Windows Python too.",
+  "//": "Example wiring for the 4SYNC-CMS guard + session-debt hook (hooks/pre_tool_use.py). Copy to .claude/settings.local.json and adjust paths.",
+  "//guards": "pre_tool_use.py runs FIVE structural guards (KERNEL-write, ABBA-format, sandbox-git, STATUS-snapshot, boring-guard) plus a session-debt recorder that flags a session which worked but never ran an explicit close.",
+  "//rollout": "Start with SYNC_HOOKS_MODE=warn (violations logged, never blocked). After ~a week of clean runs, flip to 'enforce'. 'off' disables entirely.",
+  "//paths": "Adjust the interpreter + script + log paths to your checkout. Forward slashes work on Windows too; use the FULL python path if bare 'python' is shadowed (e.g. the Windows Store stub).",
+  "//activate": "After creating this file, reload config: open /hooks once, or restart the session — a freshly-created .claude/ is not watched mid-session.",
+  "//env": "Optional: SYNC_DEBT=0 disables the session-debt recorder; SYNC_MANIFEST sets the manifest filename the boring-guard watches (default 4sync.yaml).",
   "hooks": {
     "PreToolUse": [
       {

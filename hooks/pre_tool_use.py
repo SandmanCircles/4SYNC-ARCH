@@ -2,7 +2,7 @@
 """
 4SYNC ARCH — PreToolUse guard hooks.
 
-Generic, product-shippable guard set. One dispatcher, four guards. Each guard
+Generic, product-shippable guard set. One dispatcher, five guards. Each guard
 enforces a *structural* protocol invariant that applies to ANY adopter of the
 loader-stack pattern — nothing here is specific to any one product or brand.
 

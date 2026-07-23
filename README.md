@@ -96,3 +96,17 @@ Battle-tested before it was packaged: this pattern ran a real multi-agent operat
 (five concurrent automated agent roles plus interactive sessions) for months, and its
 disciplines — sentinels, freshness checks, mount distrust, the STATUS/journal split —
 each exist because a real failure taught the lesson.
+
+## License
+
+Source-available under the [Functional Source License, Version 1.1, ALv2 Future
+License](LICENSE) (`FSL-1.1-ALv2`) — © 4 SHIELD LLC.
+
+Use it, modify it, self-host it, build on it, run it inside your company, and use it
+in professional services you provide to others. The single restriction is **Competing
+Use**: you may not offer 4SYNC ARCH — or a substantially similar substitute — as a
+commercial product or service. Each version converts to Apache 2.0 two years after
+its release.
+
+Not an OSI-approved open-source license, and deliberately so. The `4SYNC`, `ARCH`, and
+`4 SHIELD` marks are not licensed with the software.

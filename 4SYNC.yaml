@@ -5,7 +5,7 @@
 #   close → on an EXPLICIT ending signal from the user, run `close:` in order
 #           (silence, idle, or a pause is NEVER a close signal)
 # First session in a fresh drop-in: see `bootstrap:` (genesis).
-# Write mode: edit ONLY when this instance's shape changes. Keep under 6KB.
+# Write mode: edit ONLY when this instance's shape changes. Keep under 8KB.
 # ═══════════════════════════════════════════════════════════════════════════
 
 sync_version: "1.0"
@@ -31,6 +31,11 @@ on_demand:
 
 never_load_whole:
   - config/HISTORY.md        # frozen archive
+
+session_debt:              # unwrapped-session tracker: hook sets on mutation; only explicit close clears
+  file: .session_debt.tsv  # local/gitignored; row: session_id started last cwd status
+  at_boot: report_rows     # surface "N session(s) holding undeposited state" (incl. your own parks)
+  at_close: clear_own_row  # delete $CLAUDE_CODE_SESSION_ID's row
 
 bootstrap:
   # Genesis — fires ONLY when config/KERNEL.yaml has `meta.status: TEMPLATE`
@@ -88,6 +93,7 @@ close:
     file: ABBA.md
     check_at_boot: true      # OPEN messages `To:` this agent, before planned work
     archive_done_after_days: 10
+  debt: clear_own_row        # see session_debt: — delete this session's row
   rotate:
     script: scripts/rotate.py  # run if present; dry-run on first-ever use
   meter:
@@ -100,7 +106,7 @@ integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
   hooks: hooks/pre_tool_use.py           # SYNC_HOOKS_MODE: warn | enforce | off
   manifest_rules:            # enforced by the boring-guard hook when it lands
-    max_bytes: 6144
+    max_bytes: 8192
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
 
 # ═══ EOF 4SYNC.yaml ═══

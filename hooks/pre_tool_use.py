@@ -170,6 +170,80 @@ def _log(msg):
         pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Session-debt recorder (trigger-B). NOT a guard — a side effect that records
+# that THIS session owes an explicit close. On any file-write it upserts one row
+# (keyed by session_id) into a local, gitignored debt file at the instance root;
+# ONLY an explicit close clears that row (see 4SYNC.yaml session_debt / close.debt).
+# Effect: a silently-parked, never-wrapped session becomes visible at next boot.
+# Fully isolated + best-effort — it can never alter or block the tool call.
+# Toggle off with SYNC_DEBT=0; relocate the file with SYNC_DEBT_FILE=<abs path>.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEBT_FILENAME = ".session_debt.tsv"
+DEBT_HEADER = ("# 4SYNC session-debt — unwrapped sessions; an explicit close clears its own row.\n"
+               "# session_id\tstarted\tlast_activity\tcwd\tstatus")
+
+
+def _instance_root(cwd):
+    """Nearest ancestor of cwd that contains the loader-stack config dir, else cwd.
+    Keeps the debt file at ONE known place (the instance root) regardless of which
+    subfolder the session's cwd is in — without hard-coding any project path."""
+    start = os.path.abspath(cwd or ".")
+    cur = start
+    while True:
+        if os.path.isdir(os.path.join(cur, CONFIG_DIR)):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return start
+        cur = parent
+
+
+def _record_debt(payload):
+    """Upsert THIS session's unwrapped row on a file-write. Best-effort: swallow
+    every error — debt bookkeeping must never affect the tool call it rides on."""
+    if os.environ.get("SYNC_DEBT", "1") == "0":
+        return
+    if payload.get("tool_name", "") not in WRITE_TOOLS:
+        return
+    sid = (payload.get("session_id")
+           or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
+    cwd = payload.get("cwd") or os.getcwd()
+    debtfile = os.environ.get("SYNC_DEBT_FILE") or os.path.join(_instance_root(cwd), DEBT_FILENAME)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    rows = {}
+    try:
+        with open(debtfile, encoding="utf-8") as fh:
+            for ln in fh:
+                if not ln.strip() or ln.startswith("#"):
+                    continue
+                c = ln.rstrip("\n").split("\t")
+                if len(c) >= 5:
+                    rows[c[0]] = c            # preserve every OTHER session's row
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001 — an unreadable debt file must not break the call
+        return
+
+    started = rows[sid][1] if sid in rows else now
+    rows[sid] = [sid, started, now, cwd, "unwrapped"]
+
+    tmp = debtfile + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(DEBT_HEADER + "\n")
+            for c in rows.values():
+                fh.write("\t".join(c[:5]) + "\n")
+        os.replace(tmp, debtfile)            # atomic on the same filesystem
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(tmp)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main():
     mode = os.environ.get("SYNC_HOOKS_MODE", "warn").lower()
     if mode == "off":
@@ -181,6 +255,11 @@ def main():
         sys.exit(0)
 
     tool, path, text, cmd = _extract(payload)
+
+    try:
+        _record_debt(payload)
+    except Exception:  # noqa: BLE001 — recorder is best-effort, never fatal to the call
+        pass
 
     for guard in GUARDS:
         try:

@@ -12,6 +12,10 @@ __pycache__/
 .venv/
 venv/
 
+# Session-debt tracker — local runtime state, per-checkout (never committed)
+.session_debt.tsv
+.session_debt.tsv.tmp
+
 # Logs
 *.log
 

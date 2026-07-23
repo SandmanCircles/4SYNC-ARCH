@@ -105,7 +105,7 @@ close:
 integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
   hooks: hooks/pre_tool_use.py           # SYNC_HOOKS_MODE: warn | enforce | off
-  manifest_rules:            # enforced by the boring-guard hook when it lands
+  manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
     max_bytes: 8192
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
 

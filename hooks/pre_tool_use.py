@@ -10,6 +10,7 @@ loader-stack pattern — nothing here is specific to any one product or brand.
   g2  ABBA format guard    — every OPEN bulletin message must be addressed To: someone
   g3  sandbox git guard    — never commit through a distrusted/mounted filesystem
   g4  STATUS write guard    — keep STATUS a parseable, un-clipped, snapshot (not a journal)
+  g5  boring guard         — keep the manifest pure declaration (its own max_bytes; no date creep)
 
 NOTE ON PORTABILITY (why this differs from an internal deployment):
   This is the neutral template shipped with 4SYNC ARCH. An internal deployment may
@@ -37,6 +38,8 @@ Configuration (env):
   SYNC_CONFIG_DIR  : name of your loader-stack config dir, matched as a path
                     segment (default: "config"). This is what makes g1/g4
                     portable — no hard-coded project paths.
+  SYNC_MANIFEST    : basename of the instance manifest g5 guards
+                    (default: "4sync.yaml").
   SYNC_STATUS_TOUCHED_MAX : max chars for the STATUS `last_touched` line
                     before g4 flags scope-creep (default: 200)
   SYNC_SANDBOX     : set to "1" when running in a sandboxed/mounted environment
@@ -138,11 +141,54 @@ def g4_status_write_guard(tool, path, text, cmd):
     return None
 
 
+def g5_boring_guard(tool, path, text, cmd):
+    """Keep the instance manifest BORING — pure declaration. The manifest declares
+    its OWN policy in `integrity.manifest_rules`; this guard reads that policy from
+    the content being written (so a deliberate policy change in the same write is
+    honored) and enforces it: (a) content stays within `max_bytes`; (b) when
+    `declaration_only` is set, no journal-style calendar date leaks in — the
+    manifest takes dates from the clock at runtime and records history in the task
+    ledger, so a literal YYYY-MM-DD is state/narrative creep. Manifest filename via
+    SYNC_MANIFEST (default '4sync.yaml')."""
+    manifest = os.environ.get("SYNC_MANIFEST", "4sync.yaml").strip().lower()
+    if tool not in WRITE_TOOLS or os.path.basename(path) != manifest:
+        return None
+    content = text or ""
+
+    max_bytes = None
+    decl_only = False
+    try:
+        import yaml  # type: ignore
+        rules = (((yaml.safe_load(content) or {}).get("integrity") or {}).get("manifest_rules") or {})
+        max_bytes = rules.get("max_bytes")
+        decl_only = bool(rules.get("declaration_only"))
+    except Exception:  # noqa: BLE001 — no/broken yaml: fall back to a line scan
+        m = re.search(r'(?m)^\s*max_bytes:\s*(\d+)', content)
+        max_bytes = int(m.group(1)) if m else None
+        decl_only = bool(re.search(r'(?m)^\s*declaration_only:\s*true\b', content))
+
+    if isinstance(max_bytes, int):
+        size = len(content.encode("utf-8"))
+        if size > max_bytes:
+            return (f"boring-guard: the manifest write is {size} bytes, over its own declared "
+                    f"max_bytes ({max_bytes}). The manifest is pure declaration — trim it, or "
+                    "raise max_bytes deliberately in the same edit.")
+
+    if decl_only:
+        m = re.search(r'\b(20\d\d-[01]\d-[0-3]\d)\b', content)
+        if m:
+            return (f"boring-guard: the manifest declares declaration_only, but this write "
+                    f"contains a calendar date ({m.group(1)}) — journal/narrative creep. "
+                    "State belongs in STATUS; history belongs in the task-ledger journal.")
+    return None
+
+
 GUARDS = [
     g1_kernel_write_guard,
     g2_abba_format_guard,
     g3_sandbox_git_guard,
     g4_status_write_guard,
+    g5_boring_guard,
 ]
 
 

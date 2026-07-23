@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-4SYNC Token Saving Protocol — boot-cost meter (read-only).
+4SYNC ARCH — boot-cost meter (read-only).
 
 Measures the token cost of a 4SYNC instance's boot load and reports how much the
 loader-stack design keeps OUT of every session's context window. The whole point
@@ -223,7 +223,7 @@ def build_report(root, lists):
         return s
 
     out = []
-    out.append("4SYNC Token Saving Protocol — boot-cost meter")
+    out.append("4SYNC ARCH — boot-cost meter")
     out.append(f"repo: {root}")
     out.append(f"(token counts are ESTIMATES ~ bytes // {BYTES_PER_TOKEN}, not tokenizer output)")
     out.append("")

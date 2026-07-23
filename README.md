@@ -1,6 +1,6 @@
-# The 4SYNC Token Saving Protocol
+# 4SYNC ARCH
 
-**The Token Saving Protocol.** Persistent, multi-session, multi-agent memory for
+**A Return on Context Harness.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 
 **4SYNC solves "many sessions, one project."** You're building with AI agents, and every

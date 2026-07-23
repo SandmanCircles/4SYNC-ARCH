@@ -165,7 +165,7 @@ class TestBuildReport(unittest.TestCase):
 
     def test_text_report_renders(self):
         report = meter.build_report(self.root, self.lists)
-        self.assertIn("4SYNC Token Saving Protocol", report)
+        self.assertIn("4SYNC ARCH", report)
         self.assertIn("BOOT TOTAL", report)
         self.assertIn("DEFERRED TOTAL", report)
         self.assertIn("SAVINGS", report)

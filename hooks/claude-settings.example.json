@@ -1,5 +1,5 @@
 {
-  "//": "Example wiring for the 4SYNC-CMS guard + session-debt hook (hooks/pre_tool_use.py). Copy to .claude/settings.local.json and adjust paths.",
+  "//": "Example wiring for the 4SYNC ARCH guard + session-debt hook (hooks/pre_tool_use.py). Copy to .claude/settings.local.json and adjust paths.",
   "//guards": "pre_tool_use.py runs FIVE structural guards (KERNEL-write, ABBA-format, sandbox-git, STATUS-snapshot, boring-guard) plus a session-debt recorder that flags a session which worked but never ran an explicit close.",
   "//rollout": "Start with SYNC_HOOKS_MODE=warn (violations logged, never blocked). After ~a week of clean runs, flip to 'enforce'. 'off' disables entirely.",
   "//paths": "Adjust the interpreter + script + log paths to your checkout. Forward slashes work on Windows too; use the FULL python path if bare 'python' is shadowed (e.g. the Windows Store stub).",
@@ -12,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"/path/to/4SYNC-CMS/hooks/pre_tool_use.py\""
+            "command": "python \"/path/to/4SYNC-ARCH/hooks/pre_tool_use.py\""
           }
         ]
       }

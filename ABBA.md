@@ -69,4 +69,4 @@ Resolution:
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). Adapt agent names to your setup.*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Adapt agent names to your setup.*

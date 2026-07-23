@@ -159,4 +159,4 @@ If your project has frameworks, metaphors, or references that appear in R&D file
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS). Adapt freely.*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Adapt freely.*

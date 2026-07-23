@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-4SYNC-CMS — ledger rotation. Run at wrap from a GIT-CAPABLE,
+4SYNC ARCH — ledger rotation. Run at wrap from a GIT-CAPABLE,
 host-side session only (git is the undo; never run through a sandbox mount).
 
 Does two things, both as verbatim block moves:

@@ -59,4 +59,4 @@ If anything in this CLAUDE.md conflicts with any of the above, the other files w
 
 ---
 
-*Part of [4SYNC-CMS](https://github.com/SandmanCircles/4SYNC-CMS).*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH).*

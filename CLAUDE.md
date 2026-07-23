@@ -32,6 +32,16 @@ Quick reference — fill in your project's critical facts so they're available e
 
 ---
 
+## Close — commit choreography
+
+`4SYNC.yaml`'s `close:` block declares the mechanical steps (`freshness_check`, `journal`, `ledger_sync`, `snapshot`, `bulletin`, `rotate`). Committing is environment-aware and isn't mechanical enough to declare in the manifest, so it's spelled out here:
+
+- **Reconcile before write-back, always.** Another session — on the host, or a parallel run — may have written the shared ledgers since you loaded them. Before touching `MERGE_PLAN.md`, `config/STATUS.yaml`, `ABBA.md`, or `LANDING_QUEUE.md`: re-read each target **fresh** immediately before editing it, and apply your changes as **small anchored edits** onto that fresh content (prepend your one journal block, flip only your own rows, overwrite only the facts you changed, mark only your own messages) — **never a whole-file rewrite from your session-start snapshot**, which silently reverts another session's intervening edits. After each write, re-read and confirm the other session's content survived. (This is the prose behind the manifest's `freshness_check`.)
+- **Git-capable, host-side:** stage the session's intended files **explicitly by path** (never `git add -A` — leave unrelated working-tree changes alone) and commit with a clear message. If you touched a sibling repo, **commit there too, in the same close** — don't leave a sibling repo with only a "note to commit later." Push only when the user asks.
+- **Can't git (sandbox / mounted filesystem):** do NOT attempt git — a mount can serve stale, clipped views and commit a genuinely truncated file. Do the file write-backs per the reconcile discipline above, then queue a row in `LANDING_QUEUE.md` (per the manifest's `commit.untrusted_or_no_git` rule) listing every changed file + repo, so a host-side session lands them.
+
+---
+
 ## The three pillars
 
 Distinct authority, distinct write discipline:

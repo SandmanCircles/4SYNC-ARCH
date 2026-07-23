@@ -54,8 +54,7 @@ If anything in this CLAUDE.md conflicts with any of the above, the other files w
 
 > **Why a stack and not one config file?** Splitting identity state by *kind* and *write
 > discipline* keeps the always-on rules (KERNEL) tiny and unmissable, lets live state (STATUS) be
-> overwritten cleanly, and pushes the bulk (REFERENCE) out of every session's load path. If you're
-> migrating from a single large config, see `docs/harvest-playbook.md`.
+> overwritten cleanly, and pushes the bulk (REFERENCE) out of every session's load path.
 
 ---
 

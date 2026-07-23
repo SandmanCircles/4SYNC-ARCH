@@ -77,6 +77,13 @@ close:
     on_stale_or_clipped: abort_and_reread_host_side  # never write onto a bad read
     edit_mode: anchored_only # small anchored edits onto the fresh content;
                              # never a whole-file rewrite from a snapshot
+    post_write: reread_and_diff_untouched  # AFTER each write: re-read + diff the regions the
+                             # edit did NOT target vs the pre-write read; a changed untouched
+                             # region = a concurrent-session clobber → restore it, don't ship it
+  naming_check:              # QA gate — fires only if this session produced external-facing copy
+    trigger: external_facing_output_produced_this_session
+    against: NAMING_CONVENTIONS.md   # spot-check produced copy vs identity_quickref (loads on-demand)
+    mode: spot_check         # a declared review step, not a hard block
   journal:
     file: MERGE_PLAN.md
     section: "## Session journal (recent)"

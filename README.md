@@ -95,4 +95,4 @@ log to your `.gitignore` — they're local, not shared.
 Battle-tested before it was packaged: this pattern ran a real multi-agent operation
 (five concurrent automated agent roles plus interactive sessions) for months, and its
 disciplines — sentinels, freshness checks, mount distrust, the STATUS/journal split —
-each exist because a real failure taught the lesson. Successor to `claude-code-ops`.
+each exist because a real failure taught the lesson.

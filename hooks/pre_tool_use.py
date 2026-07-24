@@ -49,6 +49,7 @@ Per-guard override env vars (intentional edits, set interactively by the owner):
   CLAUDE_KERNEL_EDIT=1  — permit KERNEL writes  (guard 1)
 """
 
+import inspect
 import json
 import os
 import re
@@ -62,10 +63,62 @@ CONFIG_DIR = os.environ.get("SYNC_CONFIG_DIR", "config").strip("/").lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Prospective content. Whole-file checks (parseability, EOF sentinel, size) are
+# only meaningful against the file that WILL exist after the call — and for
+# Edit/MultiEdit the payload carries a *fragment*, not a file. Replay the
+# fragment against the copy on disk to recover the resulting content.
+#
+# Without this, a fragment is judged as if it were a whole file, and BOTH error
+# directions show up: an anchored Edit false-positives (a fragment naturally has
+# no EOF sentinel, and rarely parses as standalone YAML), while a size check
+# false-negatives (it measures the fragment, not the grown file).
+#
+# Best-effort by design: any doubt about what the result will be returns None,
+# and every content check SKIPS on None rather than firing. A guard that cannot
+# see the truth must stay quiet, not guess.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resulting_content(tool, ti):
+    """The full file content this call will produce, or None if undeterminable."""
+    if tool == "Write":
+        c = ti.get("content")
+        return c if isinstance(c, str) else None
+    if tool not in ("Edit", "MultiEdit"):
+        return None                     # e.g. NotebookEdit — cell source, not a file
+
+    edits = ti.get("edits")
+    if not isinstance(edits, list):
+        edits = [ti]                    # single Edit: the input itself is the edit
+
+    raw = ti.get("file_path") or ti.get("path") or ""
+    try:
+        with open(raw, encoding="utf-8") as fh:
+            content = fh.read()
+    except Exception:  # noqa: BLE001 — unreadable/absent: skip, never fire blind
+        return None
+
+    for e in edits:
+        if not isinstance(e, dict):
+            return None
+        old = e.get("old_string")
+        new = e.get("new_string", "")
+        if not isinstance(old, str) or not isinstance(new, str) or not old:
+            return None                 # create-file semantics or malformed edit
+        if old not in content:
+            return None                 # cannot replay faithfully → stay quiet
+        content = content.replace(old, new, -1 if e.get("replace_all") else 1)
+    return content
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Guards. Each returns a reason string when it wants to block, else None.
-# Signature: (tool, path, text, cmd) where
-#   tool = tool name, path = target file (lowercased), text = written content,
-#   cmd  = Bash command string ("" for non-Bash tools).
+# Signature: (tool, path, text, cmd[, full]) where
+#   tool = tool name, path = target file (lowercased), text = written content
+#          (for Edit/MultiEdit this is the replacement FRAGMENT, not the file),
+#   cmd  = Bash command string ("" for non-Bash tools),
+#   full = prospective resulting file content, or None if undeterminable.
+# The 5th parameter is optional: the dispatcher inspects each guard's arity, so
+# an adopter's own 4-arg guard keeps working unchanged.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def g1_kernel_write_guard(tool, path, text, cmd):
@@ -104,13 +157,19 @@ def g3_sandbox_git_guard(tool, path, text, cmd):
     return None
 
 
-def g4_status_write_guard(tool, path, text, cmd):
+def g4_status_write_guard(tool, path, text, cmd, full=None):
     """Keep STATUS a healthy snapshot: it must parse as YAML, must not be clipped
     (EOF sentinel present), and its `last_touched` line must stay short — narrative
-    belongs in the task ledger/journal, not in STATUS."""
+    belongs in the task ledger/journal, not in STATUS.
+
+    All three checks describe the RESULTING file, so they run against `full`. When
+    the result can't be determined the guard stays silent — an anchored Edit is the
+    documented close-protocol write mode and must never be blocked on a blind read."""
     if tool not in WRITE_TOOLS or not re.search(rf"(^|/){re.escape(CONFIG_DIR)}/[^/]*status[^/]*\.ya?ml$", path):
         return None
-    content = text or ""
+    if full is None:
+        return None
+    content = full
 
     # (a) parseability — best-effort; skip cleanly if PyYAML isn't installed.
     try:
@@ -141,11 +200,13 @@ def g4_status_write_guard(tool, path, text, cmd):
     return None
 
 
-def g5_boring_guard(tool, path, text, cmd):
+def g5_boring_guard(tool, path, text, cmd, full=None):
     """Keep the instance manifest BORING — pure declaration. The manifest declares
     its OWN policy in `integrity.manifest_rules`; this guard reads that policy from
-    the content being written (so a deliberate policy change in the same write is
-    honored) and enforces it: (a) content stays within `max_bytes`; (b) when
+    the resulting content (so a deliberate policy change in the same write is
+    honored) and enforces it: (a) content stays within `max_bytes` — measured on
+    the resulting FILE, so an Edit that grows the manifest past its cap is caught,
+    not just a whole-file Write; (b) when
     `declaration_only` is set, no journal-style calendar date leaks in — the
     manifest takes dates from the clock at runtime and records history in the task
     ledger, so a literal YYYY-MM-DD is state/narrative creep. Manifest filename via
@@ -153,7 +214,9 @@ def g5_boring_guard(tool, path, text, cmd):
     manifest = os.environ.get("SYNC_MANIFEST", "4sync.yaml").strip().lower()
     if tool not in WRITE_TOOLS or os.path.basename(path) != manifest:
         return None
-    content = text or ""
+    if full is None:
+        return None
+    content = full
 
     max_bytes = None
     decl_only = False
@@ -197,6 +260,9 @@ GUARDS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract(payload):
+    """Surface fields. NOTE `text` is what the payload literally carries: whole
+    content for Write, but only the replacement FRAGMENT for Edit/MultiEdit. Use
+    _resulting_content() for anything that reasons about the whole file."""
     tool = payload.get("tool_name", "")
     ti = payload.get("tool_input", {}) or {}
     path = (ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or "").replace("\\", "/").lower()
@@ -303,13 +369,21 @@ def main():
     tool, path, text, cmd = _extract(payload)
 
     try:
+        full = _resulting_content(tool, payload.get("tool_input") or {})
+    except Exception:  # noqa: BLE001 — reconstruction is best-effort; None = skip
+        full = None
+
+    try:
         _record_debt(payload)
     except Exception:  # noqa: BLE001 — recorder is best-effort, never fatal to the call
         pass
 
     for guard in GUARDS:
         try:
-            reason = guard(tool, path, text, cmd)
+            # Guards opting into whole-file checks take a 5th `full` parameter;
+            # 4-arg guards (including any an adopter appended) are called as-is.
+            nargs = len(inspect.signature(guard).parameters)
+            reason = guard(tool, path, text, cmd, full) if nargs >= 5 else guard(tool, path, text, cmd)
         except Exception:  # noqa: BLE001 — a buggy guard must never break the tool call
             continue
         if reason:

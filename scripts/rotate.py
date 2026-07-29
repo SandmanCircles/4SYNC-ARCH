@@ -64,7 +64,16 @@ def git_dirty(repo_dir, paths):
 
 def split_journal(ledger_text):
     """Return (before, blocks, after) where blocks are the blank-line-separated
-    journal blocks inside the recent-journal section."""
+    journal blocks inside the recent-journal section.
+
+    Leading HTML-comment blocks are INSTRUCTIONS, not journal entries — the KEEP-N
+    rule lives at the top of that section in the shipped template. Counting them as
+    blocks inflated the count by one, so a section holding exactly `keep` real blocks
+    looked over-cap and the oldest real block was rotated out on every close.
+
+    They cannot simply be filtered: rotate_journal rebuilds the ledger as
+    `before + blocks`, so a dropped comment would be DELETED on write-back. They move
+    into `before` instead, where they survive verbatim and out of the count."""
     # anchor on the real column-0 heading line — a plain .find() matches prose
     # MENTIONS of the heading (e.g. the ledger's line-3 layout pointer) first
     h = re.search(r"^" + re.escape(JOURNAL_HEAD) + r"[ \t]*$", ledger_text, re.M)
@@ -76,7 +85,14 @@ def split_journal(ledger_text):
     body_end = body_start + (m.start() if m else len(ledger_text) - body_start)
     body = ledger_text[body_start:body_end]
     blocks = [b for b in re.split(r"\n\s*\n", body) if b.strip()]
-    return ledger_text[:body_start], blocks, ledger_text[body_end:]
+
+    before = ledger_text[:body_start]
+    lead = []
+    while blocks and blocks[0].strip().startswith("<!--") and blocks[0].strip().endswith("-->"):
+        lead.append(blocks.pop(0).strip())
+    if lead:
+        before += "\n" + "\n\n".join(lead) + "\n\n"
+    return before, blocks, ledger_text[body_end:]
 
 
 def rotate_journal(ledger_path, history_path, keep, apply_):

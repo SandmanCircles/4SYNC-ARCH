@@ -26,23 +26,23 @@ Protocol (Claude Code PreToolUse):
   exit 0 : allow
   exit 2 : BLOCK (stderr is shown to the agent as the reason)
 
-Modes (env SYNC_HOOKS_MODE):
+Modes (env ARCH_HOOKS_MODE):
   "warn"    (DEFAULT) : violations are logged, action is ALLOWED. Rollout mode —
                         observe automated runs for false positives before enforcing.
   "enforce"           : violations BLOCK with exit 2.
   "off"               : dispatcher exits 0 immediately.
 
 Configuration (env):
-  SYNC_HOOKS_MODE  : warn | enforce | off        (default: warn)
-  SYNC_HOOKS_LOG   : path to the warn-mode log    (default: ~/.sync_hooks_warn.log)
-  SYNC_CONFIG_DIR  : name of your loader-stack config dir, matched as a path
+  ARCH_HOOKS_MODE  : warn | enforce | off        (default: warn)
+  ARCH_HOOKS_LOG   : path to the warn-mode log    (default: ~/.sync_hooks_warn.log)
+  ARCH_CONFIG_DIR  : name of your loader-stack config dir, matched as a path
                     segment (default: "config"). This is what makes g1/g4
                     portable — no hard-coded project paths.
-  SYNC_MANIFEST    : basename of the instance manifest g5 guards
+  ARCH_MANIFEST    : basename of the instance manifest g5 guards
                     (default: "4sync.yaml").
-  SYNC_STATUS_TOUCHED_MAX : max chars for the STATUS `last_touched` line
+  ARCH_STATUS_TOUCHED_MAX : max chars for the STATUS `last_touched` line
                     before g4 flags scope-creep (default: 200)
-  SYNC_SANDBOX     : set to "1" when running in a sandboxed/mounted environment
+  ARCH_SANDBOX     : set to "1" when running in a sandboxed/mounted environment
                     whose git view may be stale/clipped; enables g3. (default: off)
 
 Per-guard override env vars (intentional edits, set interactively by the owner):
@@ -59,7 +59,7 @@ import time
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 # Config dir name, matched as a lowercased path segment (e.g. "config/").
-CONFIG_DIR = os.environ.get("SYNC_CONFIG_DIR", "config").strip("/").lower()
+CONFIG_DIR = os.environ.get("ARCH_CONFIG_DIR", "config").strip("/").lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -147,8 +147,8 @@ def g2_abba_format_guard(tool, path, text, cmd):
 def g3_sandbox_git_guard(tool, path, text, cmd):
     """In a sandboxed/mounted environment the filesystem view can be stale or clipped;
     a git add/commit there can capture a truncated file and look host-verified.
-    Enabled only when SYNC_SANDBOX=1. Commit host-side instead."""
-    if os.environ.get("SYNC_SANDBOX") != "1":
+    Enabled only when ARCH_SANDBOX=1. Commit host-side instead."""
+    if os.environ.get("ARCH_SANDBOX") != "1":
         return None
     if tool == "Bash" and re.search(r"\bgit\s+(add|commit|stash|rm)\b", cmd or ""):
         return ("Sandbox git guard: this environment's mounted filesystem may serve "
@@ -191,7 +191,7 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
                 "and retry.")
 
     # (c) last_touched scope-creep — one short line, not a second journal.
-    limit = int(os.environ.get("SYNC_STATUS_TOUCHED_MAX", "200"))
+    limit = int(os.environ.get("ARCH_STATUS_TOUCHED_MAX", "200"))
     m = re.search(r'(?m)^\s*last_touched:\s*(.*)$', content)
     if m and len(m.group(1).strip().strip('"').strip("'")) > limit:
         return (f"STATUS write guard: `last_touched` exceeds {limit} chars — that is "
@@ -210,8 +210,8 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
     `declaration_only` is set, no journal-style calendar date leaks in — the
     manifest takes dates from the clock at runtime and records history in the task
     ledger, so a literal YYYY-MM-DD is state/narrative creep. Manifest filename via
-    SYNC_MANIFEST (default '4sync.yaml')."""
-    manifest = os.environ.get("SYNC_MANIFEST", "4sync.yaml").strip().lower()
+    ARCH_MANIFEST (default '4sync.yaml')."""
+    manifest = os.environ.get("ARCH_MANIFEST", "4sync.yaml").strip().lower()
     if tool not in WRITE_TOOLS or os.path.basename(path) != manifest:
         return None
     if full is None:
@@ -274,7 +274,7 @@ def _extract(payload):
 
 
 def _log(msg):
-    logpath = os.environ.get("SYNC_HOOKS_LOG", os.path.expanduser("~/.sync_hooks_warn.log"))
+    logpath = os.environ.get("ARCH_HOOKS_LOG", os.path.expanduser("~/.sync_hooks_warn.log"))
     try:
         with open(logpath, "a", encoding="utf-8") as fh:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
@@ -289,7 +289,7 @@ def _log(msg):
 # ONLY an explicit close clears that row (see 4SYNC.yaml session_debt / close.debt).
 # Effect: a silently-parked, never-wrapped session becomes visible at next boot.
 # Fully isolated + best-effort — it can never alter or block the tool call.
-# Toggle off with SYNC_DEBT=0; relocate the file with SYNC_DEBT_FILE=<abs path>.
+# Toggle off with ARCH_DEBT=0; relocate the file with ARCH_DEBT_FILE=<abs path>.
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEBT_FILENAME = ".session_debt.tsv"
@@ -315,14 +315,14 @@ def _instance_root(cwd):
 def _record_debt(payload):
     """Upsert THIS session's unwrapped row on a file-write. Best-effort: swallow
     every error — debt bookkeeping must never affect the tool call it rides on."""
-    if os.environ.get("SYNC_DEBT", "1") == "0":
+    if os.environ.get("ARCH_DEBT", "1") == "0":
         return
     if payload.get("tool_name", "") not in WRITE_TOOLS:
         return
     sid = (payload.get("session_id")
            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
     cwd = payload.get("cwd") or os.getcwd()
-    debtfile = os.environ.get("SYNC_DEBT_FILE") or os.path.join(_instance_root(cwd), DEBT_FILENAME)
+    debtfile = os.environ.get("ARCH_DEBT_FILE") or os.path.join(_instance_root(cwd), DEBT_FILENAME)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     rows = {}
@@ -357,7 +357,7 @@ def _record_debt(payload):
 
 
 def main():
-    mode = os.environ.get("SYNC_HOOKS_MODE", "warn").lower()
+    mode = os.environ.get("ARCH_HOOKS_MODE", "warn").lower()
     if mode == "off":
         sys.exit(0)
 

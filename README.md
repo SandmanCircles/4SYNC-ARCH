@@ -3,14 +3,24 @@
 **A Return on Context Harness.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 
-**4SYNC solves "many sessions, one project."** You're building with AI agents, and every
-few sessions the context window fills, the model drifts, and you're re-explaining the
-project from scratch. AI coding sessions are goldfish: every context window starts
-cold and dies silent, and everything a session learned — decisions, task state, naming
-discipline, deploy facts — evaporates unless it's deposited somewhere the next session
-will actually look. 4SYNC is that somewhere — the discipline that keeps a project's context
-lean and trustworthy across sessions, so more of every window goes to the work. More model,
-same subscription.
+**AI coding sessions are goldfish.** Every context window starts cold and dies silent,
+and everything a session learned — decisions, task state, naming discipline, deploy
+facts — evaporates unless it's deposited somewhere the next session will actually look.
+
+It gets worse the moment you use two surfaces:
+
+> *You edited files in Cowork. It couldn't commit them. Your next Claude Code session
+> has no idea any of it happened.*
+
+If you have Claude Desktop, you already have both — Cowork and Claude Code, on the same
+folder, with no shared memory and no handoff. Most of what's distinctive in ARCH exists
+because of that collision: a queue for commits a bridge session can't make, sentinels
+that catch a clipped read through a mount, a post-write check that catches one session
+silently reverting another's ledger edit.
+
+4SYNC is where the state goes — the discipline that keeps a project's context lean and
+trustworthy across sessions and surfaces, so more of every window goes to the work.
+More model, same subscription.
 
 ## Quickstart — three steps, no installation
 
@@ -40,9 +50,11 @@ Three pillars, with distinct authority and write discipline:
 | **Identity state** | `config/` — `KERNEL` · `STATUS` · `CANON_INDEX` · `REFERENCE` · `HISTORY` | KERNEL edit-rarely · STATUS overwrite-only · INDEX pointer rows · REFERENCE on-demand · HISTORY frozen. |
 | **Vocabulary state** | `NAMING_CONVENTIONS.md` | Canonical marks, retired names; loaded before external output. |
 
-Multi-agent extras (adopt when you need them): `ABBA.md` — a bulletin board of
-messages addressed by agent name; `LANDING_QUEUE.md` — commit handoffs from
-surfaces that can't safely run git.
+Multi-agent extras: `ABBA.md` — a bulletin board of messages addressed by agent
+name, which also carries the **roster** of who those agents are; `LANDING_QUEUE.md`
+— commit handoffs from surfaces that can't safely run git. Both ship **inert**:
+declare an `agents:` block in the manifest to switch them on, omit it and sessions
+never read them. Nothing to delete, and adding a surface later is two lines.
 
 ## The manifest — `4SYNC.yaml`
 
@@ -58,7 +70,15 @@ integrity rules run through everything:
   whole-file rewrites from it silently revert other sessions' work.
 
 Close fires only on the user's explicit signal — a pause is not an ending, and
-paused sessions resume rather than wrap.
+paused sessions resume rather than wrap. (An unattended run has no pause: finishing
+its declared task *is* its signal. It journals and deposits, but never overwrites
+STATUS — a nightly job shouldn't rewrite the project's active focus.)
+
+**Trim to taste.** `session_debt`, `agents`, `naming_check`, `rotate`, `meter`, and
+the `bulletin` step are each optional — delete any block you don't use and the
+protocol still runs. Genesis prunes for you: it drops the blocks your seed didn't
+ask for, and deletes its own `bootstrap:` section once it has run, since it can
+never fire again.
 
 ## Hardening (optional)
 
@@ -73,22 +93,75 @@ paused sessions resume rather than wrap.
 ### Installing the hooks
 
 The hooks ship inert — nothing runs until you wire them into Claude Code. Wiring is
-per-checkout (the paths are machine-specific), so it goes in local settings, not the
+per-checkout (the paths are machine-specific), so it lives in local settings, not the
 committed repo:
 
-1. **Copy** `hooks/claude-settings.example.json` → `.claude/settings.local.json`.
-2. **Fix the paths** — replace the placeholder interpreter and script paths with your
-   own. Forward slashes work on Windows too; use the *full* Python path if bare
-   `python` is shadowed on your machine (e.g. by the Windows Store stub).
-3. **Reload** — open `/hooks` once, or restart the session. A `.claude/` folder that
-   didn't exist when the session started isn't watched mid-session, so a fresh wiring
-   won't fire until you reload.
+```bash
+python scripts/wire_hooks.py            # dry run — prints exactly what it would write
+python scripts/wire_hooks.py --write    # merge it into .claude/settings.local.json
+```
 
-Env knobs: `SYNC_HOOKS_MODE` = `warn` | `enforce` | `off` (start in `warn` — logs,
-never blocks; flip to `enforce` after a clean stretch) · `SYNC_DEBT=0` disables the
-session-debt recorder · `SYNC_MANIFEST` sets the manifest filename the boring-guard
-watches (default `4sync.yaml`). Add `.claude/settings.local.json` and the warn-mode
+It derives both paths from itself, **proves the interpreter runs before writing it**,
+and merges without disturbing settings you already have. Then **reload** — open
+`/hooks` once, or restart the session; a `.claude/` folder that didn't exist when the
+session started isn't watched mid-session.
+
+Prefer to do it by hand? Copy `hooks/claude-settings.example.json` →
+`.claude/settings.local.json` and fix the two paths. Forward slashes work on Windows;
+use the *full* Python path if bare `python` is shadowed by the Store stub.
+
+Env knobs: `ARCH_HOOKS_MODE` = `warn` | `enforce` | `off` (start in `warn` — logs,
+never blocks; flip to `enforce` after a clean stretch) · `ARCH_DEBT=0` disables the
+session-debt recorder · `ARCH_MANIFEST` sets the manifest filename — honored by both
+the boring-guard and `scripts/meter.py`, so a renamed manifest is one variable,
+not two (default `4SYNC.yaml`). Add `.claude/settings.local.json` and the warn-mode
 log to your `.gitignore` — they're local, not shared.
+
+### What the guards do and don't cover
+
+Hooks and the session-debt recorder fire on **host-side execution** only. A Cowork
+session running in the cloud makes its tool calls there and delivers the bytes to your
+disk as a file transfer — there is no local tool event for a local hook to intercept.
+That isn't a misconfiguration and no setting fixes it. (If you want the guards in the
+loop, start the task with **"On your computer"** in the desktop app's *Run this task*
+picker.)
+
+That surface isn't unprotected — it's protected by the **protocol** rather than the
+hooks: `LANDING_QUEUE.md` for the handoff it can't commit, EOF sentinels for the reads
+it can't trust, the freshness gate and post-write check for the ledger it shares. Those
+are executed by a session reading the manifest, so they hold everywhere. The hooks are
+local reinforcement; the protocol is the load-bearing layer. Design accordingly.
+
+### Python
+
+**The protocol needs no Python.** Boot, close, and genesis are a session reading
+`4SYNC.yaml` and editing markdown and YAML — nothing shells out. Python is only for the
+optional hardening, and without it you lose exactly three things: the guards, automatic
+ledger rotation (do it by hand — the close steps describe it), and the boot-cost number.
+
+When you do have it: **3.8+**, standard library only. No pip install, ever. PyYAML is
+used *if present* and every script falls back to a hand-rolled parser without it.
+
+<details>
+<summary><b>Troubleshooting</b> — the failures that actually happen</summary>
+
+- **The hook never fires.** Three usual causes, in order of likelihood: (1) settings
+  resolve at launch from the git-repo root, so a session started somewhere else — a
+  parent folder, a different repo — never reads them; (2) you created `.claude/` mid-session
+  and didn't reload; (3) the interpreter path doesn't execute. `scripts/wire_hooks.py`
+  rules out (3) by testing before it writes.
+- **On Windows, bare `python` may be the Microsoft Store stub.** It sits on PATH and
+  does not run scripts. Always wire the full interpreter path.
+- **A read that doesn't end with its `# ═══ EOF … ═══` sentinel was clipped.** Discard
+  it and re-read host-side. Never write on top of a bad read — that is how one session
+  silently reverts another's work.
+- **A guard fired on an edit you meant to make.** That's the design. `warn` mode logs
+  and allows; the KERNEL guard takes `CLAUDE_KERNEL_EDIT=1` for deliberate edits.
+- **Don't cite `/status`** — it's an interactive terminal panel and isn't available in
+  every environment. Probe the hooks empirically instead: make a trivial write and check
+  whether `.session_debt.tsv` gained a row.
+
+</details>
 
 ## Provenance
 

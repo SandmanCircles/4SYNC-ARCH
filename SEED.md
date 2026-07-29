@@ -42,10 +42,13 @@ guardrails (e.g. internal names that must never reach external copy).
 
 ## Agents & surfaces
 
-*Skip this section if it's just you and one Claude session.*
+*Not a headcount question. If you use Claude Desktop you already have two surfaces on this folder —
+Claude Code and Cowork — and they hand work to each other. Skip only if exactly one surface will
+ever touch it.*
 
-- **Named agents/surfaces and what each does:**
-- **Any surface that can't safely run git** (sandboxes, mounts)?
+- **Which surfaces touch this folder, and what should each be called?** (e.g. Claude Code, Cowork)
+- **Any that can't safely run git** (a cloud/bridge session, a sandbox, a mount)?
+- **Any named role agents** — jobs rather than surfaces (a nightly triage, a research agent)?
 
 ## Anything else a brand-new collaborator must know
 

@@ -204,9 +204,9 @@ def main():
     archive = os.path.join(d, "ABBA_ARCHIVE.md")
 
     if (sys.platform.startswith("linux") and os.path.isdir("/sessions")
-            and os.environ.get("SYNC_ROTATE_SANDBOX_OK") != "1"):
+            and os.environ.get("ARCH_ROTATE_SANDBOX_OK") != "1"):
         print("REFUSING: this looks like a sandbox mount environment. Run rotate.py "
-              "host-side (native git) only. (SYNC_ROTATE_SANDBOX_OK=1 overrides — for "
+              "host-side (native git) only. (ARCH_ROTATE_SANDBOX_OK=1 overrides — for "
               "tests on NON-mounted paths like /tmp only, never on the real ledgers.)",
               file=sys.stderr)
         sys.exit(1)

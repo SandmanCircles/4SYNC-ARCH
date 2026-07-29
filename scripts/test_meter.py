@@ -170,6 +170,98 @@ class TestBuildReport(unittest.TestCase):
         self.assertIn("DEFERRED TOTAL", report)
         self.assertIn("SAVINGS", report)
 
+    def test_renamed_manifest_is_measured(self):
+        # An instance that renamed its manifest: the renamed file must be the one
+        # measured into the boot stack, at its real size.
+        renamed = "ARCH.yaml"
+        self._write(renamed, SAMPLE_MANIFEST)
+        data = meter.build_report_data(self.root, self.lists, renamed)
+        self.assertEqual(data["manifest"], renamed)
+        row = next(r for r in data["boot"] if r["path"] == renamed)
+        self.assertEqual(row["bytes"], self.sizes["4SYNC.yaml"])
+        self.assertFalse(row["missing"])
+
+
+class TestBulletinBootFile(unittest.TestCase):
+    """ABBA.md is read at session start but declared under close.bulletin, not in
+    boot: — the meter must charge for it, but only when the board is live."""
+
+    LIVE = SAMPLE_MANIFEST + """
+agents:
+  self: [declared, env:ARCH_AGENT, shell, ask]
+  roster: ABBA.md
+
+close:
+  bulletin:
+    file: ABBA.md
+    check_at_boot: true
+    archive_done_after_days: 10
+"""
+    # Same close block, no `agents:` — the board is inert and must NOT be charged.
+    INERT = SAMPLE_MANIFEST + """
+close:
+  bulletin:
+    file: ABBA.md
+    check_at_boot: true
+"""
+
+    def test_live_board_is_detected(self):
+        self.assertEqual(meter.bulletin_boot_file(self.LIVE), "ABBA.md")
+
+    def test_inert_board_is_not_charged(self):
+        self.assertIsNone(meter.bulletin_boot_file(self.INERT))
+
+    def test_no_close_block_at_all(self):
+        self.assertIsNone(meter.bulletin_boot_file(SAMPLE_MANIFEST))
+
+    def test_bulletin_lands_in_the_boot_list(self):
+        lists = meter.parse_load_lists(self.LIVE)
+        self.assertIn("ABBA.md", lists["boot"])
+        # and it does not displace the declared entries
+        self.assertIn("MERGE_PLAN.md", lists["boot"])
+        self.assertIn("config/KERNEL.yaml", lists["boot"])
+
+    def test_inert_board_absent_from_boot_list(self):
+        self.assertNotIn("ABBA.md", meter.parse_load_lists(self.INERT)["boot"])
+
+    def test_no_duplicate_when_also_declared_in_boot(self):
+        dup = self.LIVE.replace("  - config/KERNEL.yaml", "  - config/KERNEL.yaml\n  - ABBA.md")
+        self.assertEqual(meter.parse_load_lists(dup)["boot"].count("ABBA.md"), 1)
+
+    def test_line_fallback_matches_yaml_path(self):
+        # Exercise the dependency-free fallback directly, regardless of whether
+        # PyYAML is installed — otherwise this branch is never covered here.
+        self.assertEqual(meter._bulletin_from_lines(self.LIVE), "ABBA.md")
+        self.assertIsNone(meter._bulletin_from_lines(self.INERT))
+        self.assertIsNone(meter._bulletin_from_lines(SAMPLE_MANIFEST))
+
+    def test_line_fallback_strips_inline_comment(self):
+        withc = self.LIVE.replace("    file: ABBA.md", "    file: ABBA.md   # the board")
+        self.assertEqual(meter._bulletin_from_lines(withc), "ABBA.md")
+
+
+class TestResolveManifest(unittest.TestCase):
+    """ARCH_MANIFEST — the same knob the g5 boring-guard reads."""
+
+    def test_default_when_unset(self):
+        self.assertEqual(meter.resolve_manifest({}), meter.MANIFEST_DEFAULT)
+
+    def test_env_override_wins(self):
+        self.assertEqual(meter.resolve_manifest({"ARCH_MANIFEST": "ARCH.yaml"}),
+                         "ARCH.yaml")
+
+    def test_blank_falls_back_to_default(self):
+        # Empty or whitespace-only must not yield a manifest named "" or "  ".
+        for blank in ("", "   ", "\t"):
+            self.assertEqual(meter.resolve_manifest({"ARCH_MANIFEST": blank}),
+                             meter.MANIFEST_DEFAULT)
+
+    def test_case_is_preserved(self):
+        # The hook lowercases (it compares); the meter must not (it opens).
+        # On a case-sensitive filesystem, lowercasing here would fail to open.
+        self.assertEqual(meter.resolve_manifest({"ARCH_MANIFEST": "MyProject.YAML"}),
+                         "MyProject.YAML")
+
 
 if __name__ == "__main__":
     unittest.main()

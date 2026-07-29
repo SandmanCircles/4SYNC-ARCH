@@ -19,7 +19,7 @@ At the start of every session, load (in this order):
 
 3. **`NAMING_CONVENTIONS.md`** — brand marks, internal taxonomies, retired terms, the reasoning behind each. **Vocabulary state.** Load on demand before generating reports, documents, web assets, or external communications.
 
-4. **`ABBA.md`** *(only if you run more than one agent/surface)* — the agent bulletin board. **Session-start inbox check.** If you are a named agent, check for any OPEN message addressed `To:` your name (or alias) and action/acknowledge it before your planned work; mark it `Status: DONE` with a one-line resolution when handled. This is a cross-agent nudge channel — NOT a replacement for the merge plan ledger.
+4. **`ABBA.md`** *(only if `4SYNC.yaml` declares an `agents:` block — otherwise the board is inert; skip it)* — the agent bulletin board. **Session-start inbox check.** Resolve which agent you are from its **Roster** (`declared` → `ARCH_AGENT` → shell → ask), then check for any OPEN message addressed `To:` your name or alias — matched case-insensitively — and action/acknowledge it before your planned work; mark it `Status: DONE` with a one-line resolution when handled. This is a cross-agent nudge channel — NOT a replacement for the merge plan ledger.
 
 5. **Any other persistent context files your project depends on** — architecture notes, decision logs (ADRs), open design issues. List them here in load order.
 

@@ -9,6 +9,36 @@ look at this" nudges between agents/surfaces that don't fit the task taxonomy ye
 > the moment work hands off between named agents (e.g. Cowork ↔ Local Claude Code ↔ scheduled
 > runs), each of which needs an inbox the others can write to.
 
+## Roster — who this board can address
+
+Names live here, not in `4SYNC.yaml` (which declares only `agents.roster: ABBA.md`) — the directory
+grows with your operation; the manifest must not.
+
+| Name | Aliases | Shell | Git |
+|---|---|---|---|
+| `<your git-capable agent>` | | yes | yes |
+| `<your bridge-only agent>` | | no | no |
+
+<!-- | Mailman | | declared | yes |   ← a role agent: blank/`declared` Shell = told, never probed -->
+
+**Resolving which entry you are** — the `agents.self` ladder, first hit wins, zero tool calls:
+`declared` (the invocation named you — a scheduled run, a skill, a role agent; does **not** consult
+this table) → `ARCH_AGENT` (env pin) → `shell` (do you have a shell tool? separates a bridge-only
+surface from a host-side one, and nothing else) → `ask` (interactive only — an unattended run must
+never reach this rung). A one-entry roster skips resolution entirely.
+
+A blank or `declared` **Shell** value means the name is never inferred, only told. That is what
+stops a role agent colliding with a host surface: both are git-capable, but only one is probed.
+
+**Matching is case- and whitespace-insensitive** across the name, every alias, and the value of
+`ARCH_AGENT` — `LoCo`, `loco`, `LOCO`, `Loco` all resolve to the same entry. Use `casefold()`.
+
+> **A directory, not a guest list.** This table answers *who am I?* — never *who may exist?* `To:`
+> accepts **any** name: a human, a persona that has never run, an agent invented mid-conversation.
+> Unknown-name messages are legal and stay OPEN until something identifying as that name claims
+> them — that queueing is the mechanism, not an accident. Never validate `To:` against this table,
+> and never auto-append discovered names to it.
+
 ## ABBA vs the merge plan
 
 | | `MERGE_PLAN.md` | `ABBA.md` |
@@ -16,7 +46,7 @@ look at this" nudges between agents/surfaces that don't fit the task taxonomy ye
 | Holds | task **state** (what's done / in progress / blocked) | **messages** addressed to a specific agent |
 | Lifespan | permanent ledger | short-lived; DONE messages archived after ~10 days |
 | Addressed to | the project | a named agent / surface |
-| Example | "Task 14: ship the export endpoint — blocked by 12" | "To HostAgent: I edited X but couldn't commit — please land it" |
+| Example | "Task 14: ship the export endpoint — blocked by 12" | "To \<your git-capable agent\>: I edited X but couldn't commit — please land it" |
 
 If a note grows into real work, open a task row and point to it from the message, then mark the
 message DONE. Don't let ABBA become a second task tracker.
@@ -48,9 +78,8 @@ Re: <subject>
 Resolution: <filled in when DONE>
 ```
 
-Pick stable agent names and (optionally) aliases up front — e.g. a desktop planning agent, a
-local code agent, a scheduled overnight agent. Casing-insensitive matching on the name + alias
-keeps the check forgiving.
+Recipients come from the **Roster** above — but that table is a directory, not a restriction:
+address anyone, declared or not.
 
 ---
 
@@ -69,4 +98,4 @@ Resolution:
 
 ---
 
-*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Adapt agent names to your setup.*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Fill the Roster with your own agents.*

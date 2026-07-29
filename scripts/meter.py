@@ -12,6 +12,8 @@ What it does:
   - Reads 4SYNC.yaml (the instance manifest) to learn the load lists — it does NOT
     hardcode filenames. The `boot:` list is what every session pays up front; the
     `on_demand:` + `never_load_whole:` lists are what the design keeps deferred.
+    An instance that renamed its manifest points BOTH this meter and the g5
+    boring-guard at the new name with one variable: ARCH_MANIFEST.
   - Sizes each referenced file on disk and converts bytes → an ESTIMATE of tokens.
   - Prints a boot-stack total, a deferred total, and a savings line: how many
     tokens the loader stack keeps out of the window, as an absolute count and as a
@@ -34,7 +36,25 @@ import os
 import re
 import sys
 
-MANIFEST = "4SYNC.yaml"
+MANIFEST_DEFAULT = "4SYNC.yaml"
+
+
+def resolve_manifest(env=None):
+    """Basename of the instance manifest, honoring the ARCH_MANIFEST env knob.
+
+    Same variable the g5 boring-guard reads (hooks/pre_tool_use.py), so an
+    instance that renames its manifest configures both tools once.
+
+    One deliberate difference from the hook: the hook lowercases this, because it
+    only ever COMPARES it against the basename of a path being written. The meter
+    OPENS the file, so the case must survive — on a case-sensitive filesystem
+    '4sync.yaml' does not open '4SYNC.yaml'.
+
+    An unset, empty, or whitespace-only value falls back to the default.
+    """
+    env = os.environ if env is None else env
+    return (env.get("ARCH_MANIFEST") or "").strip() or MANIFEST_DEFAULT
+
 
 # The three load lists the manifest declares. Order here is display order.
 LIST_KEYS = ("boot", "on_demand", "never_load_whole")
@@ -95,12 +115,56 @@ def _parse_load_lists_lines(manifest_text):
     return lists
 
 
+def _bulletin_from_lines(manifest_text):
+    """Dependency-free fallback for bulletin_boot_file — same contract, regex only.
+    Split out so the suite can exercise it whether or not PyYAML is installed
+    (mirrors _parse_load_lists_lines)."""
+    if not re.search(r"(?m)^agents:", manifest_text):
+        return None
+    m = re.search(r"(?ms)^\s{2}bulletin:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", manifest_text)
+    if not m or not re.search(r"(?m)^\s*check_at_boot:\s*true\b", m.group(1)):
+        return None
+    fm = re.search(r"(?m)^\s*file:\s*(\S+)", m.group(1))
+    return _strip_inline_comment(fm.group(1)) if fm else None
+
+
+def bulletin_boot_file(manifest_text):
+    """The bulletin board is read at SESSION START but is not declared in `boot:` —
+    it sits under `close.bulletin` with `check_at_boot: true`. Reading only the load
+    lists therefore undercounts the boot stack by a whole file that every multi-agent
+    session actually pays for.
+
+    It is CONDITIONAL: without an `agents:` block the board is inert and no session
+    opens it, so a single-surface instance must not be charged for it.
+
+    Returns the bulletin's relative path, or None. Mirrors parse_load_lists' handling —
+    PyYAML when importable, regex fallback otherwise (zero third-party deps)."""
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(manifest_text)
+        if isinstance(data, dict):
+            if not data.get("agents"):
+                return None
+            b = (data.get("close") or {}).get("bulletin") or {}
+            if b.get("check_at_boot") and b.get("file"):
+                return str(b["file"]).strip()
+            return None
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    return _bulletin_from_lines(manifest_text)
+
+
 def parse_load_lists(manifest_text):
     """Extract the boot / on_demand / never_load_whole file lists from 4SYNC.yaml
     text. Best-effort: use PyYAML if importable, else fall back to a line/regex
     parser over the load-list blocks (mirrors the hook's YAML handling — the module
     must run with zero third-party deps). Returns a dict with exactly the LIST_KEYS
-    keys, each a list of relative path strings (possibly empty)."""
+    keys, each a list of relative path strings (possibly empty).
+
+    The `boot` list also picks up the conditionally-read bulletin board (see
+    bulletin_boot_file) — it is read at session start, so the meter must charge for
+    it even though the manifest declares it elsewhere."""
+    lists = None
     try:
         import yaml  # type: ignore
         data = yaml.safe_load(manifest_text)
@@ -117,10 +181,16 @@ def parse_load_lists(manifest_text):
                     ok = False
                     break
             if ok:
-                return out
+                lists = out
     except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
         pass
-    return _parse_load_lists_lines(manifest_text)
+    if lists is None:
+        lists = _parse_load_lists_lines(manifest_text)
+
+    bulletin = bulletin_boot_file(manifest_text)
+    if bulletin and bulletin not in lists["boot"]:
+        lists["boot"].append(bulletin)
+    return lists
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,12 +229,15 @@ def _row(root, relpath, tag=None):
     return row
 
 
-def build_report_data(root, lists):
+def build_report_data(root, lists, manifest=None):
     """Pure-ish data builder for the meter (the only impurity is stat()/getsize via
     measure_file). Returns a dict describing the boot stack, the deferred set, their
-    totals, and the savings math. The 'full boot read' is 4SYNC.yaml itself PLUS
-    every file in the boot: list — the manifest is read to START boot, so it counts."""
-    boot_rows = [_row(root, MANIFEST)]
+    totals, and the savings math. The 'full boot read' is the manifest itself PLUS
+    every file in the boot: list — the manifest is read to START boot, so it counts.
+
+    manifest: basename of the instance manifest; defaults to resolve_manifest()."""
+    manifest = manifest or resolve_manifest()
+    boot_rows = [_row(root, manifest)]
     boot_rows += [_row(root, p) for p in lists.get("boot", [])]
 
     deferred_rows = [_row(root, p, tag="on_demand") for p in lists.get("on_demand", [])]
@@ -180,7 +253,7 @@ def build_report_data(root, lists):
 
     return {
         "root": root,
-        "manifest": MANIFEST,
+        "manifest": manifest,
         "bytes_per_token": BYTES_PER_TOKEN,
         "boot": boot_rows,
         "deferred": deferred_rows,
@@ -198,9 +271,9 @@ def _fmt_int(n):
     return f"{n:,}"
 
 
-def build_report(root, lists):
+def build_report(root, lists, manifest=None):
     """Render the human-readable text report from build_report_data()."""
-    data = build_report_data(root, lists)
+    data = build_report_data(root, lists, manifest)
 
     # Column widths — right-align the byte and token columns across all rows.
     all_rows = data["boot"] + data["deferred"]
@@ -273,14 +346,18 @@ def main():
     ap = argparse.ArgumentParser(
         description="Read-only boot-cost meter for a 4SYNC instance.")
     ap.add_argument("--dir", default=".",
-                    help="project root (holds 4SYNC.yaml). Default: current dir.")
+                    help="project root (holds the instance manifest). Default: current dir.")
     ap.add_argument("--json", action="store_true",
                     help="emit machine-readable JSON instead of the text report")
     args = ap.parse_args()
 
     root = os.path.abspath(args.dir)
 
-    manifest_path = os.path.join(root, MANIFEST)
+    # Resolve ONCE and thread it down, so the file we opened and the file the
+    # report names can never disagree.
+    manifest = resolve_manifest()
+
+    manifest_path = os.path.join(root, manifest)
     try:
         with open(manifest_path, encoding="utf-8") as f:
             manifest_text = f.read()
@@ -291,9 +368,9 @@ def main():
     lists = parse_load_lists(manifest_text)
 
     if args.json:
-        print(json.dumps(build_report_data(root, lists), indent=2))
+        print(json.dumps(build_report_data(root, lists, manifest), indent=2))
     else:
-        print(build_report(root, lists))
+        print(build_report(root, lists, manifest))
 
 
 if __name__ == "__main__":

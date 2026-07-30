@@ -194,6 +194,7 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
 # ── task-description archive ─────────────────────────────────────────────────
 
 DESC_HEAD_RE = re.compile(r"^### #(\d+) —[^\n]*$", re.M)
+ARCH_SECTION = "## Task descriptions (archived)"
 TERMINAL_MARKS = ("✅", "❌")   # ✅ completed · ❌ dropped
 # The ledger's own convention: a terminal description opens by stating when it
 # closed — "Completed 2026-07-28.", "Implemented …", "Resolved …", "Found AND
@@ -277,8 +278,16 @@ def rotate_descriptions(ledger_path, archive_path, age_days, apply_):
     arch = orig_archive if orig_archive is not None else (
         "# Merge Plan Archive\n\nLong-form descriptions of closed tasks, moved out of "
         "MERGE_PLAN.md by scripts/rotate.py (verbatim). The summary-table row stays in "
-        "the ledger — only the description lives here.\n")
-    arch = arch.rstrip("\n") + "\n\n" + "\n\n".join(b.strip() for b in blocks) + "\n"
+        "the ledger — only the description lives here.\n\n" + ARCH_SECTION + "\n")
+    # Insert UNDER the section heading, not at end-of-file: these archives carry a
+    # footer, and appending blindly strands it mid-document.
+    hm = re.search(r"^" + re.escape(ARCH_SECTION) + r"[ \t]*$", arch, re.M)
+    joined = "\n\n".join(b.strip() for b in blocks)
+    if hm:
+        cut = arch.index("\n", hm.start()) + 1
+        arch = arch[:cut] + "\n" + joined + "\n" + arch[cut:]
+    else:
+        arch = arch.rstrip("\n") + "\n\n" + joined + "\n"
     new_text = text
     for s, e, _ in sorted(to_move, key=lambda t: -t[0]):   # delete bottom-up
         new_text = new_text[:s] + new_text[e:]

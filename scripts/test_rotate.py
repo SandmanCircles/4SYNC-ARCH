@@ -224,6 +224,25 @@ class TestDescriptionArchive(unittest.TestCase):
         blocks = rotate.split_descriptions(DESC_LEDGER)
         self.assertEqual(len(blocks), 5)
 
+    def test_lands_under_the_section_heading_not_after_the_footer(self):
+        """An archive with a footer must not have entries appended past it."""
+        with open(self.archive, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Archive\n\nBlurb.\n\n## Task descriptions (archived)\n\n"
+                     "---\n\n*Footer line — must stay last.*\n")
+        self._apply()
+        with open(self.archive, encoding="utf-8") as fh:
+            arch = fh.read()
+        self.assertLess(arch.index("### #1 —"), arch.index("*Footer line"),
+                        "entries must sit above the footer")
+        self.assertLess(arch.index("## Task descriptions (archived)"), arch.index("### #1 —"))
+
+    def test_appends_when_no_section_heading_exists(self):
+        with open(self.archive, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Archive\n\nNo section heading here.\n")
+        self._apply()
+        with open(self.archive, encoding="utf-8") as fh:
+            self.assertIn("### #1 —", fh.read())
+
 
 if __name__ == "__main__":
     unittest.main()

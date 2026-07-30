@@ -111,6 +111,120 @@ class TestRotateJournalBehaviour(unittest.TestCase):
             self.assertEqual(fh.read(), text)
 
 
+DESC_LEDGER = """# Ledger
+
+## Session journal (recent)
+
+2026-07-28 [agent] — a block.
+
+---
+
+## Summary table
+
+| ID | Status | Subject | Blocked by |
+|---|---|---|---|
+| 1 | ✅ | Old closed thing | — |
+| 2 | ⏳ | Still open | — |
+| 3 | ✅ | Closed yesterday | — |
+| 4 | ❌ | Dropped long ago | — |
+| 5 | ✅ | Closed but undated | — |
+
+## Task descriptions
+
+### #1 — Old closed thing ✅
+Completed 2020-01-01. Long historical detail that no session needs at boot.
+
+### #2 — Still open ⏳
+Open work. Mentions 2020-01-01 in passing, which must NOT archive it.
+
+### #3 — Closed yesterday ✅
+Implemented 2099-01-01 (a future date stands in for "recent"). Keep me.
+
+### #4 — Dropped long ago ❌
+Dropped 2020-02-02. Terminal via ❌, so it archives too.
+
+### #5 — Closed but undated ✅
+No date anywhere in this body at all.
+
+## Something after
+Must survive untouched.
+"""
+
+
+class TestDescriptionArchive(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_desc_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+        self.archive = os.path.join(self.root, "MERGE_PLAN_ARCHIVE.md")
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(DESC_LEDGER)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _apply(self):
+        return rotate.rotate_descriptions(self.ledger, self.archive, age_days=10, apply_=True)
+
+    def test_only_terminal_and_aged_move(self):
+        moved = [h for _, _, h in self._apply()]
+        self.assertTrue(any("#1" in h for h in moved))
+        self.assertTrue(any("#4" in h for h in moved), "❌ dropped is terminal too")
+        self.assertFalse(any("#2" in h for h in moved), "open task must never archive")
+        self.assertFalse(any("#3" in h for h in moved), "recently closed must stay")
+        self.assertFalse(any("#5" in h for h in moved), "undated must be skipped, not guessed")
+
+    def test_open_task_with_an_old_date_is_not_archived(self):
+        """The regression that would hurt most: a live task mentioning an old date."""
+        self._apply()
+        with open(self.ledger, encoding="utf-8") as fh:
+            after = fh.read()
+        self.assertIn("### #2 — Still open", after)
+
+    def test_summary_table_rows_never_move(self):
+        self._apply()
+        with open(self.ledger, encoding="utf-8") as fh:
+            after = fh.read()
+        for row in ("| 1 |", "| 2 |", "| 3 |", "| 4 |", "| 5 |"):
+            self.assertIn(row, after, "the table is canonical — rows stay")
+
+    def test_moved_text_lands_in_archive_verbatim(self):
+        self._apply()
+        with open(self.archive, encoding="utf-8") as fh:
+            arch = fh.read()
+        self.assertIn("Long historical detail", arch)
+        self.assertIn("Dropped 2020-02-02", arch)
+
+    def test_surrounding_sections_survive(self):
+        self._apply()
+        with open(self.ledger, encoding="utf-8") as fh:
+            after = fh.read()
+        self.assertIn("## Something after", after)
+        self.assertIn("Must survive untouched", after)
+        self.assertIn("## Session journal (recent)", after)
+
+    def test_dry_run_writes_nothing(self):
+        rotate.rotate_descriptions(self.ledger, self.archive, age_days=10, apply_=False)
+        with open(self.ledger, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), DESC_LEDGER)
+        self.assertFalse(os.path.exists(self.archive))
+
+    def test_idempotent(self):
+        self._apply()
+        second = self._apply()
+        self.assertEqual(second, [], "nothing left to move on a second pass")
+
+    def test_close_date_prefers_the_completion_verb(self):
+        block = "### #9 — x ✅\nCompleted 2026-07-20. Supersedes the 2019-01-01 design.\n"
+        self.assertEqual(rotate.description_close_date(block).strftime("%Y-%m-%d"), "2026-07-20")
+
+    def test_close_date_none_when_absent(self):
+        self.assertIsNone(rotate.description_close_date("### #9 — x ✅\nno dates here\n"))
+
+    def test_split_ignores_headings_outside_the_section(self):
+        blocks = rotate.split_descriptions(DESC_LEDGER)
+        self.assertEqual(len(blocks), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
 

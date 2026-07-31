@@ -56,6 +56,25 @@ import sys
 from datetime import datetime, timedelta
 
 JOURNAL_HEAD = "## Session journal (recent)"
+HIST_SECTION = "## Session entries (newest first)"
+
+
+def _insert_under_section(text, heading, payload):
+    """Insert `payload` immediately under a column-0 `heading`, newest-first.
+
+    Destination files are DOCUMENTS, not append logs: they open with a title and
+    explanatory prose, carry their own how-to section, and end with a footer.
+    Inserting after line 1 — which this did until 2026-07-30 — buries the entry
+    above the file's own explanation; appending at EOF strands the footer (the
+    same defect fixed for the description archive a day earlier). Both stem from
+    treating a structured document as a place to dump text. Anchor on the
+    section that exists to hold entries; fall back to append only when the file
+    has no such section (a freshly created one)."""
+    m = re.search(r"^" + re.escape(heading) + r"[ \t]*$", text, re.M)
+    if not m:
+        return text.rstrip("\n") + "\n\n" + payload + "\n"
+    cut = text.index("\n", m.start()) + 1
+    return text[:cut] + "\n" + payload + "\n" + text[cut:]
 
 
 def _utf8_stdout():
@@ -152,11 +171,10 @@ def rotate_journal(ledger_path, history_path, keep, apply_):
         print("  -", b.strip().splitlines()[0][:100])
     if not apply_:
         return moved
-    hist = read(history_path) if os.path.exists(history_path) else "# Session journal — history (newest-first)\n"
-    # insert after the first heading line of the history file, newest-first
-    lines = hist.split("\n", 1)
-    head, rest = lines[0], (lines[1] if len(lines) > 1 else "")
-    new_hist = head + "\n\n" + "\n\n".join(b.strip() for b in moved) + "\n\n" + rest.lstrip("\n")
+    hist = read(history_path) if os.path.exists(history_path) else (
+        "# Session journal — history (newest-first)\n\n" + HIST_SECTION + "\n")
+    new_hist = _insert_under_section(hist, HIST_SECTION,
+                                     "\n\n".join(b.strip() for b in moved))
     new_ledger = before + "\n\n".join(b.strip() for b in blocks[:keep]) + "\n\n" + after.lstrip("\n")
     atomic_write(history_path, new_hist)
     atomic_write(ledger_path, new_ledger)

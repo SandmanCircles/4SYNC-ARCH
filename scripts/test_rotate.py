@@ -110,6 +110,50 @@ class TestRotateJournalBehaviour(unittest.TestCase):
         with open(self.ledger, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), text)
 
+    def _structured_history(self):
+        """The shipped history file: title, prose, a how-to section, an entries
+        section, and a footer. Not an append log."""
+        with open(self.history, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Project — Session Journal History\n\n"
+                     "Explanatory prose that must stay directly under the title.\n\n"
+                     "---\n\n## When to roll an entry here\n\nRules.\n\n---\n\n"
+                     + rotate.HIST_SECTION + "\n\n"
+                     "2026-01-01 [older] — a pre-existing entry.\n\n"
+                     "---\n\n*Footer line — must stay last.*\n")
+
+    def test_moved_entry_lands_under_the_entries_section(self):
+        """The regression: entries were inserted after line 1, burying them above
+        the file's own explanation."""
+        self._structured_history()
+        self._write(ledger(range(6), comment=True))
+        rotate.rotate_journal(self.ledger, self.history, keep=5, apply_=True)
+        h = open(self.history, encoding="utf-8").read()
+        self.assertLess(h.index("Explanatory prose"), h.index("entry 5"),
+                        "prose must stay above the entries")
+        self.assertLess(h.index(rotate.HIST_SECTION), h.index("entry 5"))
+
+    def test_moved_entry_stays_above_the_footer(self):
+        self._structured_history()
+        self._write(ledger(range(6), comment=True))
+        rotate.rotate_journal(self.ledger, self.history, keep=5, apply_=True)
+        h = open(self.history, encoding="utf-8").read()
+        self.assertLess(h.index("entry 5"), h.index("*Footer line"))
+
+    def test_newest_entry_lands_above_older_ones(self):
+        self._structured_history()
+        self._write(ledger(range(6), comment=True))
+        rotate.rotate_journal(self.ledger, self.history, keep=5, apply_=True)
+        h = open(self.history, encoding="utf-8").read()
+        self.assertLess(h.index("entry 5"), h.index("2026-01-01 [older]"),
+                        "history is newest-first")
+
+    def test_history_without_the_section_falls_back_to_append(self):
+        with open(self.history, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Bare history\n\nNo entries section here.\n")
+        self._write(ledger(range(6), comment=True))
+        rotate.rotate_journal(self.ledger, self.history, keep=5, apply_=True)
+        self.assertIn("entry 5", open(self.history, encoding="utf-8").read())
+
 
 TASK_LEDGER = """# Ledger
 

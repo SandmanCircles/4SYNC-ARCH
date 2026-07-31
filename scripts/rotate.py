@@ -34,6 +34,12 @@ Does two things, both as verbatim block moves:
    8 KB manifest and left the file that actually dominates boot unmeasured;
    this is the number that closes that asymmetry.
 
+5. SUBJECT REPORT: flag summary-table rows whose Subject cell has grown into a
+   description (default cap ~120 chars). Once long form lives in tasks/, the
+   TABLE is the boot cost and nothing bounds it — capping descriptions while
+   leaving rows unbounded just relocates the growth one level up. Reports;
+   never blocks, and the fix is a task document, not a shorter sentence.
+
 Safety:
   --dry-run          : print what would move; write nothing (DEFAULT unless --apply).
   --apply            : actually write.
@@ -257,6 +263,24 @@ def doc_name(task_id):
     return f"MP-{int(task_id):03d}.md"
 
 
+def summary_table_section(ledger_text):
+    """Return the text of the canonical summary table, or None if absent.
+
+    The section is bounded by the next `## ` OR `### ` heading — not `## ` alone.
+    A ledger that has not been split yet keeps its `### #NNN` description blocks
+    inside this same section (Coworker had 23 of them there), so a `## `-only
+    bound runs the row scan through tens of KB of prose. It finds no phantom row
+    there today, but the moment a description quotes a table whose first column
+    is numeric it would invent one — and rotate.py would then fail every close
+    demanding a document for a row that does not exist."""
+    m = re.search(r"^## Summary table[ \t]*$", ledger_text, re.M)
+    if not m:
+        return None
+    tail = ledger_text[m.end():]
+    nxt = re.search(r"^#{2,3} ", tail, re.M)
+    return tail[: nxt.start()] if nxt else tail
+
+
 def parse_summary_table(ledger_text):
     """Return {task_id: is_terminal} from the canonical summary table.
 
@@ -264,12 +288,9 @@ def parse_summary_table(ledger_text):
     for state; the document holds substance only. If this ever falls back to
     reading status out of a document, the two copies can disagree and neither
     announces it."""
-    m = re.search(r"^## Summary table[ \t]*$", ledger_text, re.M)
-    if not m:
+    table = summary_table_section(ledger_text)
+    if table is None:
         return None
-    tail = ledger_text[m.end():]
-    nxt = re.search(r"^## ", tail, re.M)
-    table = tail[: nxt.start()] if nxt else tail
     return {int(r.group(1)): any(k in r.group(2) for k in TERMINAL_MARKS)
             for r in TABLE_ROW_RE.finditer(table)}
 
@@ -329,6 +350,63 @@ def rotate_task_docs(root, ledger_path, apply_):
             os.remove(src)
         print("verify: all moved documents present in destination, absent from source ✓")
     return moved, missing
+
+
+# ── subject-length report ────────────────────────────────────────────────────
+
+SUBJECT_MAX_DEFAULT = 120
+# id | status | subject | …  — the 3rd cell, which TABLE_ROW_RE deliberately skips
+TABLE_SUBJECT_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*[^|]*\|\s*(.*?)\s*\|", re.M)
+
+
+def report_subjects(ledger_path, subject_max):
+    """Flag summary-table rows whose Subject cell has become a description.
+
+    THE ASYMMETRY THIS CLOSES: the split moved task substance out of the boot
+    path and capped nothing about the table it left behind — so after the split
+    the TABLE IS THE BOOT COST, and a row may hold any amount of text. Measured
+    on the Coworker ledger the day this was written: 119 rows carrying 24,087 B
+    of Subject text (~6,000 tok), mean 199 chars, longest 2,426 — a bolded
+    multi-clause paragraph carrying defect IDs. That is a description that
+    migrated into a table cell. Ship the split without this and the growth
+    simply relocates one level up and is rediscovered in a month.
+
+    REPORTS, NEVER BLOCKS. A session mid-write must not be stopped from
+    recording a row; the number is the whole intervention. And the fix for an
+    over-long Subject is never to compress meaning out of the ledger — it is a
+    signal that the row wants a tasks/MP-0NN.md, which now exists to receive it.
+
+    ~120 chars is roughly where a subject stops being a label and starts being a
+    description. Returns (rows, over) for callers and tests."""
+    table = summary_table_section(read(ledger_path))
+    if table is None:
+        print("subjects: no '## Summary table' found — skipped")
+        return {}, []
+    subjects = {int(r.group(1)): r.group(2) for r in TABLE_SUBJECT_RE.finditer(table)}
+    if not subjects:
+        print("subjects: summary table has no rows — nothing to measure")
+        return {}, []
+
+    total = sum(len(s.encode("utf-8")) for s in subjects.values())
+    longest = max(len(s) for s in subjects.values())
+    over = sorted(((len(s), t) for t, s in subjects.items() if len(s) > subject_max),
+                  reverse=True)
+    if not over:
+        print(f"subjects: {len(subjects)} rows, {total:,} B — longest {longest} chars "
+              f"(cap {subject_max}) ✓")
+        return subjects, over
+
+    mean = round(sum(len(s) for s in subjects.values()) / len(subjects))
+    print(f"subjects: {len(over)} of {len(subjects)} rows over the {subject_max}-char cap — "
+          f"mean {mean}, {total:,} B total (~{total // 4:,} tok)")
+    for n, tid in over[:10]:
+        head = " ".join(subjects[tid].split())[:70]
+        print(f"  ! #{tid:<4} {n:>5,} chars — {head}…")
+    if len(over) > 10:
+        print(f"  … and {len(over) - 10} more")
+    print(f"  An over-long Subject wants a {TASKS_DIRNAME}/MP-0NN.md, not a shorter "
+          "sentence. (Reported, not blocked.)")
+    return subjects, over
 
 
 # ── size report ──────────────────────────────────────────────────────────────
@@ -414,6 +492,8 @@ def main():
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument("--journal-max-bytes", type=int, default=None,
                     help="override the manifest's close.journal.max_bytes")
+    ap.add_argument("--subject-max", type=int, default=SUBJECT_MAX_DEFAULT,
+                    help="summary-table Subject length to report over (0 disables)")
     args = ap.parse_args()
 
     d = os.path.abspath(args.dir)
@@ -446,6 +526,8 @@ def main():
     if os.path.exists(ledger):
         jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
         report_sizes(d, ledger, jmax)
+        if args.subject_max > 0:
+            report_subjects(ledger, args.subject_max)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 
     # A live row with no document is an unexecutable task. Exit non-zero so a

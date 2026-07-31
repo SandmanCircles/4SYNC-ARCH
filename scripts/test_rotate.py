@@ -316,6 +316,83 @@ class TestSizeReport(unittest.TestCase):
         self.assertEqual(rotate.manifest_journal_max(self.root), rotate.JOURNAL_MAX_DEFAULT)
 
 
+SUBJ_LEDGER = """# Ledger
+
+## Summary table
+
+| ID | Status | Subject | Blocked by |
+|---|---|---|---|
+| 1 | ✅ | Short label | — |
+| 2 | ⏳ | {long} | — |
+
+---
+
+*footer*
+"""
+
+
+class TestSubjectReport(unittest.TestCase):
+    """MP#29(a): once long form moved to tasks/, the TABLE became the boot cost
+    and nothing bounded it. These prove the number gets reported and that it
+    never blocks — a session mid-write must still be able to record a row."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_subj_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, long_subject):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(SUBJ_LEDGER.format(long=long_subject))
+        return self.ledger
+
+    def test_flags_only_the_over_cap_row(self):
+        self._write("x" * 300)
+        subjects, over = rotate.report_subjects(self.ledger, subject_max=120)
+        self.assertEqual(sorted(subjects), [1, 2])
+        self.assertEqual([tid for _n, tid in over], [2])
+
+    def test_within_cap_reports_nothing(self):
+        self._write("still a label")
+        _subjects, over = rotate.report_subjects(self.ledger, subject_max=120)
+        self.assertEqual(over, [])
+
+    def test_boundary_is_exclusive(self):
+        """Exactly `subject_max` is fine; one more is not — otherwise the cap
+        reported in the message and the cap enforced would differ by one."""
+        self._write("y" * 120)
+        self.assertEqual(rotate.report_subjects(self.ledger, 120)[1], [])
+        self._write("y" * 121)
+        self.assertEqual(len(rotate.report_subjects(self.ledger, 121 - 1)[1]), 1)
+
+    def test_reports_but_never_raises(self):
+        self._write("z" * 5000)
+        subjects, over = rotate.report_subjects(self.ledger, subject_max=10)
+        self.assertEqual(len(over), 2)          # both rows now over
+        self.assertTrue(all(isinstance(s, str) for s in subjects.values()))
+
+    def test_missing_table_is_skipped_not_fatal(self):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Ledger\n\nno table here.\n")
+        self.assertEqual(rotate.report_subjects(self.ledger, 120), ({}, []))
+
+    def test_table_bound_stops_at_description_headings(self):
+        """An unmigrated ledger keeps '### #NNN' blocks in the summary-table
+        section. A '## '-only bound scans them for '| N |' rows and can invent a
+        row that does not exist — after which rotate.py fails every close
+        demanding a document for it."""
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n"
+                     "|---|---|---|---|\n| 1 | ✅ | real row | — |\n\n"
+                     "### #1 — real row ✅\n\nA quoted table follows:\n\n"
+                     "| 999 | ✅ | phantom row from a description | — |\n")
+        subjects, _over = rotate.report_subjects(self.ledger, 120)
+        self.assertEqual(sorted(subjects), [1], "phantom row leaked past the bound")
+        self.assertEqual(sorted(rotate.parse_summary_table(rotate.read(self.ledger))), [1])
+
+
 if __name__ == "__main__":
     unittest.main()
 

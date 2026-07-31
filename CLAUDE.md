@@ -9,7 +9,7 @@
 
 At the start of every session, load (in this order):
 
-1. **`MERGE_PLAN.md`** — persistent task ledger. **Operational state.** The session task tool is session-local and does NOT survive between sessions; this file is the source of truth for task state. Populate the task tool from this file at session start; mirror changes back at session close. See the "Session protocol" section at the top of the file. *(For larger projects, long-form descriptions of older closed tasks may live in `MERGE_PLAN_ARCHIVE.md` and older session history in `MERGE_PLAN_HISTORY.md`. The summary table in `MERGE_PLAN.md` is always canonical.)*
+1. **`MERGE_PLAN.md`** — persistent task ledger. **Operational state.** The session task tool is session-local and does NOT survive between sessions; this file is the source of truth for task state. Populate the task tool from this file at session start; mirror changes back at session close. See the "Session protocol" section at the top of the file. *(This file holds the summary table + journal ONLY — it is always canonical for task state. Each task's long form lives at `tasks/MP-0NN.md`, path derived from the row ID, loaded **on demand** and never at boot; closed tasks' docs move to `tasks/closed/`. Older session history is in `JOURNAL_HISTORY.md`.)* **Open only the task doc you are about to work** — reading them all defeats the split.
 
 2. **The `config/` loader stack** — **Identity state.** Read these three in order; they are small by design:
    - a. **`config/KERNEL.yaml`** — identity + front-loaded `agent_directives` + invariants + naming quickref (the always-on operating contract).

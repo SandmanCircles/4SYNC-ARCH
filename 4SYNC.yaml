@@ -96,9 +96,14 @@ close:
   journal:
     file: MERGE_PLAN.md
     section: "## Session journal (recent)"
-    mode: prepend_one_block  # if the top block is already this session's, edit it
-    keep: 5
-    overflow_to: MERGE_PLAN_HISTORY.md
+    mode: prepend_one_block  # this session's block already on top? edit it
+    keep: 5                  # COUNT cap — a block can run KBs; can't bound size
+    max_bytes: 16384         # SIZE cap; rotate.py reports over-cap, never blocks
+    overflow_to: JOURNAL_HISTORY.md
+  tasks:
+    dir: tasks               # long form: tasks/MP-0NN.md, path derived from row id
+    closed_dir: tasks/closed
+    on_missing_open_doc: fail
   ledger_sync:
     file: MERGE_PLAN.md      # flip touched rows only; never delete, never renumber
   snapshot:

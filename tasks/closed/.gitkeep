@@ -1,0 +1,4 @@
+# Closed tasks land here.
+#
+# scripts/rotate.py moves a task document into this folder when its summary-table
+# row goes terminal. Nothing here is ever loaded at boot; it stays greppable.

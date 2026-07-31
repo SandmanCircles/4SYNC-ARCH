@@ -8,18 +8,31 @@ Does two things, both as verbatim block moves:
 1. JOURNAL KEEP-N: if the '## Session journal (recent)' section of the ledger
    (MERGE_PLAN.md) holds more than N blocks (default 5), move the oldest
    (bottom) blocks to the TOP of the history file's journal area
-   (MERGE_PLAN_HISTORY.md), newest-first order preserved.
+   (JOURNAL_HISTORY.md), newest-first order preserved.
 
-2. DESCRIPTION ARCHIVE: move long-form descriptions of TERMINAL tasks (✅/❌)
-   closed longer than --age days from the ledger's '## Task descriptions'
-   section to MERGE_PLAN_ARCHIVE.md. The summary-table row never moves — the
-   table stays the canonical list; only the long form leaves the boot path.
-   Descriptions are the largest thing in the ledger, so this is the single
-   biggest boot-cost lever available. A terminal description with no parseable
-   close date is skipped and reported, never guessed at.
+2. TASK DOCS: long-form task documents live OUTSIDE the ledger, one per row, at
+   tasks/MP-0NN.md — derived from the row ID, never written down as a pointer.
+   This pass does two things with them:
+     - moves the document of every TERMINAL row (✅/❌) to tasks/closed/. No age
+       lag: the document is not in the boot path either way, so there is nothing
+       to wait for. (This supersedes the dated MERGE_PLAN_ARCHIVE.md scheme —
+       when descriptions lived inline, a lag was the only way to keep recent
+       context reachable. Now every document is always reachable and never in
+       the boot path, so the lag bought nothing and the date-parsing heuristic
+       it needed was pure risk.)
+     - reports any NON-terminal row whose document is missing. A row with no
+       document is a task nobody can execute — the exact failure the ledger's
+       task-authoring rule exists to prevent — so this exits non-zero.
 
 3. ABBA ARCHIVE: move 'Status: DONE' messages older than --age days (default 10)
    from ABBA.md to ABBA_ARCHIVE.md (created with a header if absent), newest-first.
+
+4. SIZE REPORT: print the ledger's boot cost and the journal's share of it, and
+   warn when the journal exceeds the manifest's close.journal.max_bytes. `keep`
+   is a COUNT cap, and a single session block can run several KB — so the count
+   cap alone cannot bound the journal. Reports; never blocks. ARCH capped its
+   8 KB manifest and left the file that actually dominates boot unmeasured;
+   this is the number that closes that asymmetry.
 
 Safety:
   --dry-run          : print what would move; write nothing (DEFAULT unless --apply).
@@ -43,6 +56,26 @@ import sys
 from datetime import datetime, timedelta
 
 JOURNAL_HEAD = "## Session journal (recent)"
+
+
+def _utf8_stdout():
+    """Windows consoles default to cp1252, where this module's '✓'/'✅' status
+    prints raise UnicodeEncodeError — AFTER an --apply has already written, so the
+    exit code lies about what happened on disk.
+
+    This runs at IMPORT, not in main(): main() alone left every other caller
+    exposed, and the test suite is exactly such a caller — it failed on a cp1252
+    console while passing wherever stdout happened to be UTF-8, which made the
+    suite's own result depend on the terminal it ran in."""
+    for s in (sys.stdout, sys.stderr):
+        if hasattr(s, "reconfigure"):
+            try:
+                s.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):   # detached//redirected stream
+                pass
+
+
+_utf8_stdout()
 
 
 def read(p):
@@ -191,112 +224,150 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
     return to_move
 
 
-# ── task-description archive ─────────────────────────────────────────────────
+# ── task documents (tasks/MP-0NN.md) ─────────────────────────────────────────
 
-DESC_HEAD_RE = re.compile(r"^### #(\d+) —[^\n]*$", re.M)
-ARCH_SECTION = "## Task descriptions (archived)"
+TASKS_DIRNAME = "tasks"
+CLOSED_DIRNAME = "closed"
 TERMINAL_MARKS = ("✅", "❌")   # ✅ completed · ❌ dropped
-# The ledger's own convention: a terminal description opens by stating when it
-# closed — "Completed 2026-07-28.", "Implemented …", "Resolved …", "Found AND
-# fixed …". Anchor on that verb first; fall back to the first date in the body.
-CLOSE_VERB_RE = re.compile(
-    r"\b(?:completed|implemented|resolved|shipped|landed|fixed|dropped)\b[^\n]{0,60}?"
-    r"(20\d\d-[01]\d-[0-3]\d)", re.I)
+TABLE_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", re.M)
 
 
-def split_descriptions(text):
-    """Return (start, end, header) for every '### #N — …' block inside the
-    '## Task descriptions' section. Bounded by that heading and the next column-0
-    '## ', so a '### #' appearing anywhere else in the ledger is never touched."""
-    m = re.search(r"^## Task descriptions[ \t]*$", text, re.M)
-    if not m:
-        return []
-    body_start = text.index("\n", m.start()) + 1
-    nxt = re.search(r"^## ", text[body_start:], re.M)
-    body_end = body_start + (nxt.start() if nxt else len(text) - body_start)
-    heads = [h for h in DESC_HEAD_RE.finditer(text) if body_start <= h.start() < body_end]
-    out = []
-    for i, h in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else body_end
-        out.append((h.start(), end, h.group(0)))
-    return out
+def doc_name(task_id):
+    """tasks/MP-027.md for row 27. Zero-padded to three digits so a directory
+    listing sorts in ID order past 99 — Coworker is already at 117 rows, where
+    unpadded names sort 1, 10, 100, 11 and the folder stops being readable."""
+    return f"MP-{int(task_id):03d}.md"
 
 
-def description_close_date(block):
-    """The date a description says it closed, or None. Searches the BODY only —
-    a subject line can contain a date that is about the work, not its closure.
-    None means SKIP: this function never guesses, because guessing early moves
-    live context out of the ledger."""
-    body = block.split("\n", 1)[1] if "\n" in block else ""
-    m = CLOSE_VERB_RE.search(body) or DATE_RE.search(body)
+def parse_summary_table(ledger_text):
+    """Return {task_id: is_terminal} from the canonical summary table.
+
+    STATUS IS READ HERE AND NOWHERE ELSE. The table is the single source of truth
+    for state; the document holds substance only. If this ever falls back to
+    reading status out of a document, the two copies can disagree and neither
+    announces it."""
+    m = re.search(r"^## Summary table[ \t]*$", ledger_text, re.M)
     if not m:
         return None
-    try:
-        return datetime.strptime(m.group(1), "%Y-%m-%d")
-    except ValueError:
-        return None
+    tail = ledger_text[m.end():]
+    nxt = re.search(r"^## ", tail, re.M)
+    table = tail[: nxt.start()] if nxt else tail
+    return {int(r.group(1)): any(k in r.group(2) for k in TERMINAL_MARKS)
+            for r in TABLE_ROW_RE.finditer(table)}
 
 
-def rotate_descriptions(ledger_path, archive_path, age_days, apply_):
-    """Move long-form descriptions of terminal (✅/❌) tasks older than the lag out
-    of MERGE_PLAN.md and into MERGE_PLAN_ARCHIVE.md.
+def rotate_task_docs(root, ledger_path, apply_):
+    """Move terminal rows' documents to tasks/closed/, and fail on any live row
+    whose document is missing.
 
-    THE SUMMARY-TABLE ROW NEVER MOVES — only the description. The table stays the
-    canonical list of every task; this is purely a boot-cost measure, since
-    descriptions are the largest thing in the ledger and closed ones are dead
-    weight in every session's context window.
+    No age lag by design: a document is out of the boot path the moment it stops
+    being inline, whether it sits in tasks/ or tasks/closed/. Waiting ten days to
+    move a file that costs nothing either way buys nothing, and the close-date
+    heuristic a lag requires is a guess about live context — the one thing worth
+    refusing to guess about.
 
-    Terminal-but-undated descriptions are skipped and REPORTED, not guessed at."""
-    text = read(ledger_path)
-    cutoff = datetime.now() - timedelta(days=age_days)
-    to_move, undated = [], []
-    for start, end, header in split_descriptions(text):
-        if not header.rstrip().endswith(TERMINAL_MARKS):
-            continue
-        when = description_close_date(text[start:end])
-        if when is None:
-            undated.append(header)
-            continue
-        if when < cutoff:
-            to_move.append((start, end, header))
+    Returns (moved, missing). A non-empty `missing` is a hard failure at close."""
+    rows = parse_summary_table(read(ledger_path))
+    if rows is None:
+        print("tasks: no '## Summary table' found — skipped")
+        return [], []
+    tasks_dir = os.path.join(root, TASKS_DIRNAME)
+    closed_dir = os.path.join(tasks_dir, CLOSED_DIRNAME)
 
-    for h in undated:
-        print("  ! closed but undated, left in place:", h.strip()[:90])
-    if not to_move:
-        print(f"descriptions: none closed longer than {age_days} days — nothing to move")
-        return []
-    print(f"descriptions: moving {len(to_move)} closed description(s) (older than {age_days}d) to archive")
-    for _, _, h in to_move[:10]:
-        print("  -", h.strip()[:100])
-    if len(to_move) > 10:
-        print(f"  … and {len(to_move) - 10} more")
-    if not apply_:
-        return to_move
+    moved, missing = [], []
+    for tid in sorted(rows):
+        name = doc_name(tid)
+        live_p, closed_p = os.path.join(tasks_dir, name), os.path.join(closed_dir, name)
+        if rows[tid]:                                   # terminal
+            if os.path.exists(live_p):
+                moved.append((tid, name, live_p, closed_p))
+        else:                                           # live
+            if not os.path.exists(live_p):
+                # tolerate a live row whose doc is still in closed/ (a reopened
+                # task) — report it as missing only if it exists nowhere at all
+                missing.append((tid, name, os.path.exists(closed_p)))
 
-    blocks = [text[s:e] for s, e, _ in to_move]
-    orig_archive = read(archive_path) if os.path.exists(archive_path) else None
-    arch = orig_archive if orig_archive is not None else (
-        "# Merge Plan Archive\n\nLong-form descriptions of closed tasks, moved out of "
-        "MERGE_PLAN.md by scripts/rotate.py (verbatim). The summary-table row stays in "
-        "the ledger — only the description lives here.\n\n" + ARCH_SECTION + "\n")
-    # Insert UNDER the section heading, not at end-of-file: these archives carry a
-    # footer, and appending blindly strands it mid-document.
-    hm = re.search(r"^" + re.escape(ARCH_SECTION) + r"[ \t]*$", arch, re.M)
-    joined = "\n\n".join(b.strip() for b in blocks)
-    if hm:
-        cut = arch.index("\n", hm.start()) + 1
-        arch = arch[:cut] + "\n" + joined + "\n" + arch[cut:]
+    for tid, name, in_closed in missing:
+        where = "found in tasks/closed/ — REOPENED task, move it back" if in_closed else "NOT FOUND anywhere"
+        print(f"  ! row #{tid} is open but {TASKS_DIRNAME}/{name} is {where}")
+    if not moved:
+        print(f"tasks: no closed rows with a live document — nothing to move")
     else:
-        arch = arch.rstrip("\n") + "\n\n" + joined + "\n"
-    new_text = text
-    for s, e, _ in sorted(to_move, key=lambda t: -t[0]):   # delete bottom-up
-        new_text = new_text[:s] + new_text[e:]
-    new_text = re.sub(r"\n{4,}", "\n\n\n", new_text)
-    atomic_write(archive_path, arch)
-    atomic_write(ledger_path, new_text)
-    verify_moves(blocks, src=read(ledger_path), dst=read(archive_path),
-                 restore=[(ledger_path, text), (archive_path, orig_archive or "")])
-    return to_move
+        print(f"tasks: moving {len(moved)} closed task document(s) to {TASKS_DIRNAME}/{CLOSED_DIRNAME}/")
+        for tid, name, _, _ in moved[:10]:
+            print(f"  - #{tid} {name}")
+        if len(moved) > 10:
+            print(f"  … and {len(moved) - 10} more")
+
+    if apply_ and moved:
+        os.makedirs(closed_dir, exist_ok=True)
+        for tid, name, src, dst in moved:
+            payload = read(src)
+            atomic_write(dst, payload)
+            if read(dst) != payload:                    # verify BEFORE unlinking
+                print(f"VERIFY FAILED — {name} did not land in {CLOSED_DIRNAME}/; "
+                      "source left in place.", file=sys.stderr)
+                sys.exit(1)
+            os.remove(src)
+        print("verify: all moved documents present in destination, absent from source ✓")
+    return moved, missing
+
+
+# ── size report ──────────────────────────────────────────────────────────────
+
+JOURNAL_MAX_DEFAULT = 12288
+
+
+def manifest_journal_max(root, manifest_name="4SYNC.yaml"):
+    """close.journal.max_bytes from the manifest, or the default.
+
+    Tries yaml, falls back to a scoped regex — rotate.py must run on a bare
+    interpreter with no third-party packages, the same constraint meter.py has."""
+    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    if not os.path.exists(p):
+        return JOURNAL_MAX_DEFAULT
+    text = read(p)
+    try:
+        import yaml  # type: ignore
+        v = (yaml.safe_load(text) or {}).get("close", {}).get("journal", {}).get("max_bytes")
+        if isinstance(v, int):
+            return v
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    m = re.search(r"(?ms)^\s{2}journal:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", text)
+    if m:
+        mb = re.search(r"^\s*max_bytes:\s*(\d+)", m.group(1), re.M)
+        if mb:
+            return int(mb.group(1))
+    return JOURNAL_MAX_DEFAULT
+
+
+def report_sizes(root, ledger_path, journal_max):
+    """Print what the ledger costs at boot, and flag an over-cap journal.
+
+    `keep` bounds the journal by COUNT; nothing bounds it by SIZE, and one
+    session block can run several KB. Without this number the journal quietly
+    becomes the next thing that dominates boot — which is precisely how the
+    descriptions got there."""
+    text = read(ledger_path)
+    total = len(text.encode("utf-8"))
+    parts = split_journal(text)
+    jbytes = 0
+    if parts:
+        _, blocks, _ = parts
+        # strip() each block, exactly as rotate_journal does when it rebuilds the
+        # section. split_journal leaves a leading newline on blocks[0] when no
+        # instruction comment precedes it, so an unstripped measurement would
+        # differ by a byte depending on whether the comment is present — a number
+        # that changes with the presence of a comment is not a measurement.
+        jbytes = len("\n\n".join(b.strip() for b in blocks).encode("utf-8"))
+    share = (jbytes / total * 100) if total else 0
+    print(f"size: MERGE_PLAN.md {total:,} B (~{total // 4:,} tok) — "
+          f"journal {jbytes:,} B (~{jbytes // 4:,} tok, {share:.0f}%)")
+    if jbytes > journal_max:
+        print(f"  ! journal is over its {journal_max:,} B cap by {jbytes - journal_max:,} B — "
+              "trim the oldest blocks or lower --keep. (Reported, not blocked.)")
+    return total, jbytes
 
 
 # ── verify ───────────────────────────────────────────────────────────────────
@@ -316,25 +387,22 @@ def verify_moves(moved_blocks, src, dst, restore):
 
 
 def main():
-    # Windows consoles default to cp1252 — the '✓' in the status prints would
-    # raise UnicodeEncodeError AFTER a successful --apply (writes done, exit lies)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    _utf8_stdout()   # belt and braces; also runs at import for library callers
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default=".", help="project root (holds MERGE_PLAN.md / ABBA.md)")
     ap.add_argument("--keep", type=int, default=5)
     ap.add_argument("--age", type=int, default=10)
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
     ap.add_argument("--allow-dirty", action="store_true")
+    ap.add_argument("--journal-max-bytes", type=int, default=None,
+                    help="override the manifest's close.journal.max_bytes")
     args = ap.parse_args()
 
     d = os.path.abspath(args.dir)
     ledger = os.path.join(d, "MERGE_PLAN.md")
-    history = os.path.join(d, "MERGE_PLAN_HISTORY.md")
+    history = os.path.join(d, "JOURNAL_HISTORY.md")
     abba = os.path.join(d, "ABBA.md")
     archive = os.path.join(d, "ABBA_ARCHIVE.md")
-    desc_archive = os.path.join(d, "MERGE_PLAN_ARCHIVE.md")
 
     if (sys.platform.startswith("linux") and os.path.isdir("/sessions")
             and os.environ.get("ARCH_ROTATE_SANDBOX_OK") != "1"):
@@ -344,18 +412,31 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    targets = [p for p in (ledger, history, abba, archive, desc_archive) if os.path.exists(p)]
+    targets = [p for p in (ledger, history, abba, archive) if os.path.exists(p)]
+    targets += [os.path.join(d, TASKS_DIRNAME)] if os.path.isdir(os.path.join(d, TASKS_DIRNAME)) else []
     if args.apply and not args.allow_dirty and git_dirty(d, targets):
         print("REFUSING: target files have uncommitted changes (or not a git repo). "
               "Commit first — git is the undo — or pass --allow-dirty.", file=sys.stderr)
         sys.exit(1)
 
+    missing = []
     if os.path.exists(ledger):
         rotate_journal(ledger, history, args.keep, args.apply)
-        rotate_descriptions(ledger, desc_archive, args.age, args.apply)
+        _, missing = rotate_task_docs(d, ledger, args.apply)
     if os.path.exists(abba):
         rotate_abba(abba, archive, args.age, args.apply)
+    if os.path.exists(ledger):
+        jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
+        report_sizes(d, ledger, jmax)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
+
+    # A live row with no document is an unexecutable task. Exit non-zero so a
+    # close that would ship one is impossible to miss — this is the pointer-
+    # integrity gate the split traded the inline description for.
+    if missing:
+        print(f"\nFAILED: {len(missing)} open row(s) have no task document. "
+              f"Write {TASKS_DIRNAME}/MP-0NN.md for each before closing.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

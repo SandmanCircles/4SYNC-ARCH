@@ -6,26 +6,34 @@
 
 The Claude Code / Cowork task tool is a **session-local view** — task state does NOT survive between sessions. This file is the **persistent backing store**: it captures full task state across all sessions and is the source of truth.
 
-## File layout (optional 3-file ledger for larger projects)
+## File layout — short form here, long form in `tasks/`
 
-For a small project, this single `MERGE_PLAN.md` is the whole pattern. As the project grows past a few months of use, the file accumulates two distinct kinds of weight: long-form descriptions of tasks closed weeks ago, and a growing stack of session-journal blocks in the `## Session journal (recent)` section. Both still matter, but neither needs to load on every session.
+This file is read at **every** boot. Nothing else in the ledger is. That single fact drives the whole layout:
 
-The 3-file split is the recommended growth path:
+- **`MERGE_PLAN.md`** (this file) — header, the **`## Session journal (recent)`** section (the most-recent ~5 session entries as blank-line blocks; the **`Last updated:`** line is just a one-line pointer, **not** the journal), status legend, and the full summary table (all rows).
+- **`tasks/MP-0NN.md`** — one long-form document per **live** task. Loaded **on demand**, never at boot.
+- **`tasks/closed/MP-0NN.md`** — the same document once its row reaches a terminal state. Never loaded; kept greppable.
+- **`JOURNAL_HISTORY.md`** — session-journal blocks older than the top ~5, newest-first, same block format.
 
-- **`MERGE_PLAN.md`** (this file) — header, the **`## Session journal (recent)`** section (the most-recent ~5 session entries as blank-line blocks; the **`Last updated:`** line is just a one-line pointer, **not** the journal), status legend, full summary table (all rows, including archived ones), and task descriptions for **open + recently-closed** tasks.
-- **`MERGE_PLAN_ARCHIVE.md`** — task descriptions for tasks closed more than N days ago (recommended lag: **10 days**, tune to taste).
-- **`MERGE_PLAN_HISTORY.md`** — session-journal blocks older than the top ~5 (overflow from the `## Session journal (recent)` section), newest-first, same block format.
+**The path is derived from the row ID, never written down:** row `27` → `tasks/MP-027.md`, zero-padded to three digits so the folder still sorts in ID order past 99. There is no pointer column, because a pointer can be typo'd and a convention cannot.
 
-Cross-references between tasks resolve by ID and work across both files. The summary table here is always canonical and never splits.
+**Table owns state; document owns substance.** Status, blocked-by and owner live in the summary table and **only** there — a document that repeats them creates two copies of state, and neither announces when it goes stale. The *fact* "blocked by 21" belongs in the table; the *argument for why* belongs in the document.
 
-Skip the split until you actually need it. See `How to use this file` below.
+> **Start here, don't graduate into it.** An earlier version of this template kept descriptions inline and offered the split as a growth path for "larger projects." That advice was wrong, and the project that ships this template is what proved it. Inline descriptions are invisible at 3 open tasks, noticeable at 12, and the majority of the file at 26 — and by the time they are noticeable you are already paying on every session, and the fix is a migration rather than a habit. Measured on that project: descriptions were **66% of the ledger** and the ledger was **67% of boot**. Creating one file per task from day one costs nothing. Retrofitting cost a day.
+>
+> The deeper reason it can't be a growth path: **age-based archiving cannot reach open work.** Closed descriptions can be aged out, but a task that stays open for months keeps its long form in the boot path for exactly as long as the work is alive — and a real project has many. Depth is orthogonal to lifecycle, so the tiering has to be by depth, which is what `tasks/` does.
+
+Cross-references between tasks resolve by ID. The summary table here is always canonical and never splits.
 
 ## Session protocol
 
-- **Session start:** read this file. Populate the session task tool from the table below using `TaskCreate` for each task. Restore blocked-by relationships with `TaskUpdate addBlockedBy`. If a task's long-form description has been archived (see file layout above), open `MERGE_PLAN_ARCHIVE.md` only if you need that depth. Then proceed with work.
-- **Session close:** mirror back any task additions, status changes, or description updates from the session tool into this file. Prepend a new block to the **`## Session journal (recent)`** section (newest at top) and refresh the **`Last updated:`** pointer's date + label. If a task crosses the archive lag this session, move its long-form description into `MERGE_PLAN_ARCHIVE.md` (leave the summary-table row here). If the section now holds more than 5 blocks, move the oldest (bottom) block verbatim to the top of `MERGE_PLAN_HISTORY.md`.
+- **Session start:** read this file — the table, not the task documents. Populate the session task tool from the table below using `TaskCreate` for each task, and restore blocked-by relationships with `TaskUpdate addBlockedBy`. **Open `tasks/MP-0NN.md` only for the task you are actually about to work.** Reading them all defeats the split; that is the entire point of it.
+- **Session close:** mirror back task additions, status changes, and description updates. Substance goes to `tasks/MP-0NN.md`; state goes to the table row. Prepend a new block to the **`## Session journal (recent)`** section (newest at top) and refresh the **`Last updated:`** pointer's date + label. If the section now holds more than 5 blocks, move the oldest (bottom) block verbatim to the top of `JOURNAL_HISTORY.md`. `scripts/rotate.py` does the journal overflow, the closed-task document moves, and the size report — run it rather than doing this by hand.
+- **Opening a task:** add the table row **and** write `tasks/MP-0NN.md` in the same edit. A row with no document is a task nobody can execute — the exact failure the authoring rule below exists to prevent. `rotate.py` exits non-zero if any non-terminal row is missing its document, so a close cannot quietly ship one.
+- **Closing a task:** flip the row to ✅/❌ and move the file to `tasks/closed/`. No waiting period — the document is not in the boot path either way, so there is nothing to age out. `rotate.py` moves it for you.
 - **Mid-session:** the table here is the canonical state. If the session tool gets reset, repopulate from this file.
-- **Task-authoring rule (self-contained):** write every task description so it stands fully alone. A different surface — another agent, or an autonomous scheduled run — must be able to pick it up cold and execute it without access to the session that created it. No "continue what we did earlier" and no unstated context: name the files, the acceptance criteria, and the *why* inline. A task a stranger can't execute isn't ledgered yet.
+- **Task-authoring rule (self-contained):** write every task document so it stands fully alone. A different surface — another agent, or an autonomous scheduled run — must be able to pick it up cold and execute it without access to the session that created it. No "continue what we did earlier" and no unstated context: name the files, the acceptance criteria, and the *why* inline. A task a stranger can't execute isn't ledgered yet. **This rule is why the split exists:** depth is not the problem, depth *in the boot path* is. Write the document as long as the work honestly needs — then keep it out of boot.
+- **Cross-midnight sessions:** a session that spans midnight keeps ONE journal block, headed with the span (`2026-07-28/29`), and dates any later addendum inline. The block header carries the date the session *opened*, so without this rule a block reads as a day it did not happen on.
 
 ## Status legend
 
@@ -44,7 +52,7 @@ Skip the split until you actually need it. See `How to use this file` below.
 <!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
      At session close (or via the `wrap` skill): PREPEND your new block here.
      If that makes 6 blocks, move the oldest (bottom) block verbatim to the top of
-     MERGE_PLAN_HISTORY.md. Keep the journal here as blocks — never re-chain it onto the
+     JOURNAL_HISTORY.md. Keep the journal here as blocks — never re-chain it onto the
      one-line `**Last updated:**` pointer (a run-on chain balloons and the prune gets skipped). -->
 
 PRIOR — YYYY-MM-DD [session label] — [what shipped / changed / was decided / was learned — concise].
@@ -69,22 +77,11 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 
 ---
 
-## Task descriptions
+## Task documents
 
-### #1 — [Subject] ✅
-[2–6 lines describing what was done, when it shipped, links to relevant commits/PRs/files. Keep it terse but include enough that a cold-start session can understand what this is and why it was done.]
+**There is no descriptions section in this file, deliberately.** Each task's long form lives at `tasks/MP-0NN.md` — see **File layout** above. Row `2` → `tasks/MP-002.md`; once the row goes ✅ or ❌ the file moves to `tasks/closed/`.
 
-### #2 — [Subject] 🔄
-[Current state of the in-progress work. What's done, what's left, what decisions are pending. Owner if applicable. Links to working-tree files or branch.]
-
-### #3 — [Subject] ⏳
-[Description of what needs to happen. Acceptance criteria. Estimated effort. Any context the picker-up needs.]
-
-### #4 — [Subject] ⏸️
-[Description + what unblocks it. The "Blocked by" column gives the dependency ID; this section explains *why* it's blocked and what the dependent task needs to produce before this can proceed.]
-
-### #5 — [Subject] ❌
-[Why this was dropped. Preserved as audit trail so a future session doesn't re-litigate the decision. Include the date of the drop and any artifacts that survived (e.g., research that informed adjacent work).]
+`tasks/MP-001.md` ships as a worked example. Delete it with the example rows above.
 
 ---
 
@@ -99,9 +96,11 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 4. Work normally — update the session task tool as you go (`TaskUpdate` for status changes, `TaskCreate` for new work).
 5. **Before the session ends:** ask Claude to mirror the task tool state back into this file. Prepend a session-journal block to `## Session journal (recent)` and refresh the `Last updated:` pointer. Commit.
 
-**Bigger projects:** the summary table can grow to 50+ rows without ceasing to be useful. The task descriptions section provides the depth. The summary stays scannable.
+**Bigger projects:** the summary table can grow to 100+ rows without ceasing to be useful — a row costs roughly 50 tokens, so task count can triple and stay cheap. `tasks/` provides the depth. The summary stays scannable.
 
-**If the file gets unwieldy:** adopt the 3-file ledger documented in the **File layout** section above. Copy `templates/MERGE_PLAN_ARCHIVE.md` and `templates/MERGE_PLAN_HISTORY.md` into your repo, then move closed-task descriptions older than your archive lag (default 10 days) into the archive file and any session-journal blocks beyond the top ~5 into the history file. The summary table here stays whole; only long-form descriptions and older session narrative leave.
+**Keeping it lean:** run `scripts/rotate.py` at close. It moves journal overflow past `keep` into `JOURNAL_HISTORY.md`, moves closed tasks' documents into `tasks/closed/`, reports what this file costs at boot, and warns when the journal exceeds `close.journal.max_bytes` in your manifest. Dry-run by default; pass `--apply` to write.
+
+**Watch the journal.** `keep` is a **count** cap and a single session block can run several KB, so the count alone cannot bound the file. Once descriptions move to `tasks/`, the journal becomes the largest thing left in the boot path — which is exactly how descriptions got there. That is what the size report is for; act on it rather than reading past it.
 
 ---
 

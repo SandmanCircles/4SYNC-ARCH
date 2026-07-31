@@ -1,6 +1,8 @@
-# [PROJECT NAME] — Merge Plan Session History
+# [PROJECT NAME] — Session Journal History
 
 Older session-journal blocks from `MERGE_PLAN.md`, retained here for narrative continuity. The **5 most recent** blocks stay in the main file's `## Session journal (recent)` section; everything older lives here.
+
+> **Sessions, not tasks.** This file holds *what happened when* — one block per session. A closed **task's** long-form document goes to `tasks/closed/`, never here. The two overflow destinations split on **time** versus **work**.
 
 The main file keeps its recent session-journal blocks in a `## Session journal (recent)` section (blank-line-separated, newest-first); its `Last updated:` line is just a one-line pointer. As blocks accumulate, the main file's session-load cost grows; rolling older blocks into this file keeps the main file scannable without losing the trail.
 

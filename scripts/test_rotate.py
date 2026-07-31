@@ -27,7 +27,7 @@ import rotate  # noqa: E402
 
 KEEP_COMMENT = """<!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
      At session close: PREPEND your new block here. If that makes 6 blocks, move the
-     oldest (bottom) block verbatim to the top of MERGE_PLAN_HISTORY.md. -->"""
+     oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. -->"""
 
 
 def ledger(blocks, comment=True, trailer="\n---\n\n## Summary table\n"):
@@ -71,7 +71,7 @@ class TestRotateJournalBehaviour(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="rotate_test_")
         self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
-        self.history = os.path.join(self.root, "MERGE_PLAN_HISTORY.md")
+        self.history = os.path.join(self.root, "JOURNAL_HISTORY.md")
         with open(self.history, "w", encoding="utf-8", newline="") as fh:
             fh.write("# History\n")
 
@@ -111,11 +111,11 @@ class TestRotateJournalBehaviour(unittest.TestCase):
             self.assertEqual(fh.read(), text)
 
 
-DESC_LEDGER = """# Ledger
+TASK_LEDGER = """# Ledger
 
 ## Session journal (recent)
 
-2026-07-28 [agent] — a block.
+2026-07-30 [agent] — a block.
 
 ---
 
@@ -123,125 +123,153 @@ DESC_LEDGER = """# Ledger
 
 | ID | Status | Subject | Blocked by |
 |---|---|---|---|
-| 1 | ✅ | Old closed thing | — |
+| 1 | ✅ | Closed thing | — |
 | 2 | ⏳ | Still open | — |
-| 3 | ✅ | Closed yesterday | — |
-| 4 | ❌ | Dropped long ago | — |
-| 5 | ✅ | Closed but undated | — |
-
-## Task descriptions
-
-### #1 — Old closed thing ✅
-Completed 2020-01-01. Long historical detail that no session needs at boot.
-
-### #2 — Still open ⏳
-Open work. Mentions 2020-01-01 in passing, which must NOT archive it.
-
-### #3 — Closed yesterday ✅
-Implemented 2099-01-01 (a future date stands in for "recent"). Keep me.
-
-### #4 — Dropped long ago ❌
-Dropped 2020-02-02. Terminal via ❌, so it archives too.
-
-### #5 — Closed but undated ✅
-No date anywhere in this body at all.
+| 4 | ❌ | Dropped thing | — |
+| 27 | 🔄 | In progress, two digits | — |
 
 ## Something after
 Must survive untouched.
 """
 
 
-class TestDescriptionArchive(unittest.TestCase):
+class TestTaskDocs(unittest.TestCase):
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="rotate_desc_")
+        self.root = tempfile.mkdtemp(prefix="rotate_tasks_")
         self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
-        self.archive = os.path.join(self.root, "MERGE_PLAN_ARCHIVE.md")
         with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
-            fh.write(DESC_LEDGER)
+            fh.write(TASK_LEDGER)
+        self.tasks = os.path.join(self.root, "tasks")
+        self.closed = os.path.join(self.tasks, "closed")
+        os.makedirs(self.closed)
+        for tid in (1, 2, 4, 27):
+            self._doc(tid, f"body of task {tid}")
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def _doc(self, tid, body, closed=False):
+        d = self.closed if closed else self.tasks
+        p = os.path.join(d, rotate.doc_name(tid))
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"# MP#{tid} — subject\n\n{body}\n")
+        return p
+
     def _apply(self):
-        return rotate.rotate_descriptions(self.ledger, self.archive, age_days=10, apply_=True)
+        return rotate.rotate_task_docs(self.root, self.ledger, apply_=True)
 
-    def test_only_terminal_and_aged_move(self):
-        moved = [h for _, _, h in self._apply()]
-        self.assertTrue(any("#1" in h for h in moved))
-        self.assertTrue(any("#4" in h for h in moved), "❌ dropped is terminal too")
-        self.assertFalse(any("#2" in h for h in moved), "open task must never archive")
-        self.assertFalse(any("#3" in h for h in moved), "recently closed must stay")
-        self.assertFalse(any("#5" in h for h in moved), "undated must be skipped, not guessed")
+    def test_doc_name_is_zero_padded(self):
+        self.assertEqual(rotate.doc_name(1), "MP-001.md")
+        self.assertEqual(rotate.doc_name(27), "MP-027.md")
+        self.assertEqual(rotate.doc_name(117), "MP-117.md")
 
-    def test_open_task_with_an_old_date_is_not_archived(self):
-        """The regression that would hurt most: a live task mentioning an old date."""
+    def test_terminal_rows_move_and_open_rows_stay(self):
+        moved, missing = self._apply()
+        ids = sorted(t for t, _, _, _ in moved)
+        self.assertEqual(ids, [1, 4], "✅ and ❌ are terminal; ⏳ and 🔄 are not")
+        self.assertEqual(missing, [])
+        self.assertTrue(os.path.exists(os.path.join(self.closed, "MP-001.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.closed, "MP-004.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.tasks, "MP-002.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.tasks, "MP-027.md")))
+
+    def test_source_is_removed_and_content_is_verbatim(self):
         self._apply()
-        with open(self.ledger, encoding="utf-8") as fh:
-            after = fh.read()
-        self.assertIn("### #2 — Still open", after)
+        self.assertFalse(os.path.exists(os.path.join(self.tasks, "MP-001.md")))
+        with open(os.path.join(self.closed, "MP-001.md"), encoding="utf-8") as fh:
+            self.assertIn("body of task 1", fh.read())
 
-    def test_summary_table_rows_never_move(self):
-        self._apply()
-        with open(self.ledger, encoding="utf-8") as fh:
-            after = fh.read()
-        for row in ("| 1 |", "| 2 |", "| 3 |", "| 4 |", "| 5 |"):
-            self.assertIn(row, after, "the table is canonical — rows stay")
+    def test_open_row_with_no_document_is_reported(self):
+        """The pointer-integrity gate: an open row with no doc is unexecutable."""
+        os.remove(os.path.join(self.tasks, "MP-002.md"))
+        _, missing = self._apply()
+        self.assertEqual([t for t, _, _ in missing], [2])
+        self.assertFalse(missing[0][2], "not in closed/ either — genuinely absent")
 
-    def test_moved_text_lands_in_archive_verbatim(self):
-        self._apply()
-        with open(self.archive, encoding="utf-8") as fh:
-            arch = fh.read()
-        self.assertIn("Long historical detail", arch)
-        self.assertIn("Dropped 2020-02-02", arch)
+    def test_reopened_task_is_reported_distinctly(self):
+        """Row flipped back to open while its doc still sits in closed/."""
+        os.remove(os.path.join(self.tasks, "MP-002.md"))
+        self._doc(2, "reopened body", closed=True)
+        _, missing = self._apply()
+        self.assertEqual([t for t, _, _ in missing], [2])
+        self.assertTrue(missing[0][2], "must flag that the doc is in closed/, not missing")
 
-    def test_surrounding_sections_survive(self):
-        self._apply()
-        with open(self.ledger, encoding="utf-8") as fh:
-            after = fh.read()
-        self.assertIn("## Something after", after)
-        self.assertIn("Must survive untouched", after)
-        self.assertIn("## Session journal (recent)", after)
+    def test_status_comes_from_the_table_not_the_document(self):
+        """The source-of-truth split. A doc claiming it is closed changes nothing;
+        only the table row decides."""
+        self._doc(2, "This task is ✅ completed and done, honestly.")
+        moved, _ = self._apply()
+        self.assertNotIn(2, [t for t, _, _, _ in moved])
 
-    def test_dry_run_writes_nothing(self):
-        rotate.rotate_descriptions(self.ledger, self.archive, age_days=10, apply_=False)
-        with open(self.ledger, encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), DESC_LEDGER)
-        self.assertFalse(os.path.exists(self.archive))
+    def test_dry_run_moves_nothing(self):
+        rotate.rotate_task_docs(self.root, self.ledger, apply_=False)
+        self.assertTrue(os.path.exists(os.path.join(self.tasks, "MP-001.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.closed, "MP-001.md")))
 
     def test_idempotent(self):
         self._apply()
-        second = self._apply()
-        self.assertEqual(second, [], "nothing left to move on a second pass")
+        moved, missing = self._apply()
+        self.assertEqual(moved, [])
+        self.assertEqual(missing, [])
 
-    def test_close_date_prefers_the_completion_verb(self):
-        block = "### #9 — x ✅\nCompleted 2026-07-20. Supersedes the 2019-01-01 design.\n"
-        self.assertEqual(rotate.description_close_date(block).strftime("%Y-%m-%d"), "2026-07-20")
-
-    def test_close_date_none_when_absent(self):
-        self.assertIsNone(rotate.description_close_date("### #9 — x ✅\nno dates here\n"))
-
-    def test_split_ignores_headings_outside_the_section(self):
-        blocks = rotate.split_descriptions(DESC_LEDGER)
-        self.assertEqual(len(blocks), 5)
-
-    def test_lands_under_the_section_heading_not_after_the_footer(self):
-        """An archive with a footer must not have entries appended past it."""
-        with open(self.archive, "w", encoding="utf-8", newline="") as fh:
-            fh.write("# Archive\n\nBlurb.\n\n## Task descriptions (archived)\n\n"
-                     "---\n\n*Footer line — must stay last.*\n")
+    def test_ledger_is_never_modified(self):
+        """This pass moves files. It must not touch the ledger at all."""
         self._apply()
-        with open(self.archive, encoding="utf-8") as fh:
-            arch = fh.read()
-        self.assertLess(arch.index("### #1 —"), arch.index("*Footer line"),
-                        "entries must sit above the footer")
-        self.assertLess(arch.index("## Task descriptions (archived)"), arch.index("### #1 —"))
+        with open(self.ledger, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), TASK_LEDGER)
 
-    def test_appends_when_no_section_heading_exists(self):
-        with open(self.archive, "w", encoding="utf-8", newline="") as fh:
-            fh.write("# Archive\n\nNo section heading here.\n")
-        self._apply()
-        with open(self.archive, encoding="utf-8") as fh:
-            self.assertIn("### #1 —", fh.read())
+    def test_missing_summary_table_is_skipped_not_guessed(self):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Ledger\n\nno table here\n")
+        self.assertEqual(rotate.rotate_task_docs(self.root, self.ledger, apply_=True), ([], []))
+        self.assertTrue(os.path.exists(os.path.join(self.tasks, "MP-001.md")))
+
+    def test_parse_table_ignores_rows_outside_the_table(self):
+        rows = rotate.parse_summary_table(TASK_LEDGER)
+        self.assertEqual(sorted(rows), [1, 2, 4, 27])
+
+
+class TestSizeReport(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_size_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, text):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+
+    def test_reports_total_and_journal_bytes(self):
+        self._write(ledger(range(3), comment=True))
+        total, jbytes = rotate.report_sizes(self.root, self.ledger, journal_max=999999)
+        self.assertGreater(total, jbytes)
+        self.assertGreater(jbytes, 0)
+
+    def test_journal_bytes_exclude_the_keep_comment(self):
+        """The comment is an instruction; charging the journal for it would make
+        the cap fire on prose the session did not write."""
+        _, with_c = rotate.report_sizes(self.root, self._w(ledger(range(3), comment=True)), 999999)
+        _, without = rotate.report_sizes(self.root, self._w(ledger(range(3), comment=False)), 999999)
+        self.assertEqual(with_c, without)
+
+    def _w(self, text):
+        self._write(text)
+        return self.ledger
+
+    def test_over_cap_is_flagged_but_does_not_raise(self):
+        self._write(ledger(range(5), comment=True))
+        total, jbytes = rotate.report_sizes(self.root, self.ledger, journal_max=1)
+        self.assertGreater(jbytes, 1)   # reports; never blocks
+
+    def test_manifest_max_bytes_is_read(self):
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("close:\n  journal:\n    keep: 5\n    max_bytes: 4096\n")
+        self.assertEqual(rotate.manifest_journal_max(self.root), 4096)
+
+    def test_manifest_absent_falls_back_to_default(self):
+        self.assertEqual(rotate.manifest_journal_max(self.root), rotate.JOURNAL_MAX_DEFAULT)
 
 
 if __name__ == "__main__":

@@ -297,10 +297,19 @@ DEBT_HEADER = ("# 4SYNC session-debt — unwrapped sessions; an explicit close c
                "# session_id\tstarted\tlast_activity\tcwd\tstatus")
 
 
-def _instance_root(cwd):
-    """Nearest ancestor of cwd that contains the loader-stack config dir, else cwd.
+def _instance_root(cwd, strict=False):
+    """Nearest ancestor of cwd that contains the loader-stack config dir.
+
     Keeps the debt file at ONE known place (the instance root) regardless of which
-    subfolder the session's cwd is in — without hard-coding any project path."""
+    subfolder the session's cwd is in — without hard-coding any project path.
+
+    strict=False returns cwd when no instance is found (the original behaviour,
+    kept for callers that need a path no matter what). strict=True returns None
+    instead, which is what the debt recorder needs: this hook is designed to be
+    wired at USER level so its guards protect every ARCH instance on the machine
+    regardless of where a session launched — and at that scope the cwd fallback
+    would drop a .session_debt.tsv into every unrelated project the session ever
+    writes to. No instance means no debt to record."""
     start = os.path.abspath(cwd or ".")
     cur = start
     while True:
@@ -308,7 +317,7 @@ def _instance_root(cwd):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:
-            return start
+            return None if strict else start
         cur = parent
 
 
@@ -322,7 +331,12 @@ def _record_debt(payload):
     sid = (payload.get("session_id")
            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
     cwd = payload.get("cwd") or os.getcwd()
-    debtfile = os.environ.get("ARCH_DEBT_FILE") or os.path.join(_instance_root(cwd), DEBT_FILENAME)
+    debtfile = os.environ.get("ARCH_DEBT_FILE")
+    if not debtfile:
+        root = _instance_root(cwd, strict=True)
+        if root is None:
+            return          # not inside an ARCH instance — record nothing, litter nothing
+        debtfile = os.path.join(root, DEBT_FILENAME)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     rows = {}

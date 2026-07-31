@@ -265,6 +265,57 @@ class TestUnaffectedGuards(GuardCase):
         self.assertIn("ABBA", dirty)
 
 
+class TestDebtRecorderScope(unittest.TestCase):
+    """The recorder is designed to survive a USER-LEVEL wire, where the hook loads
+    for every session on the machine — including sessions working in projects that
+    have nothing to do with ARCH. It must write a debt row inside an instance and
+    write NOTHING anywhere else."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="debt_scope_")
+        self.env = dict(os.environ)
+        os.environ.pop("ARCH_DEBT_FILE", None)
+        os.environ["ARCH_DEBT"] = "1"
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+        os.environ.clear()
+        os.environ.update(self.env)
+
+    def _write_payload(self, cwd):
+        return {"tool_name": "Write", "session_id": "s-test", "cwd": cwd,
+                "tool_input": {"file_path": os.path.join(cwd, "note.txt"), "content": "x"}}
+
+    def test_records_inside_an_instance(self):
+        inst = os.path.join(self.root, "myproject")
+        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR))
+        hooks._record_debt(self._write_payload(inst))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+
+    def test_records_from_a_subfolder_at_the_instance_root(self):
+        inst = os.path.join(self.root, "myproject")
+        sub = os.path.join(inst, "web", "src")
+        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR))
+        os.makedirs(sub)
+        hooks._record_debt(self._write_payload(sub))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+        self.assertFalse(os.path.exists(os.path.join(sub, hooks.DEBT_FILENAME)))
+
+    def test_writes_nothing_outside_an_instance(self):
+        """The regression this exists for: with a user-level wire, the cwd fallback
+        would drop a .session_debt.tsv into every unrelated project touched."""
+        plain = os.path.join(self.root, "some-unrelated-repo")
+        os.makedirs(plain)
+        hooks._record_debt(self._write_payload(plain))
+        self.assertEqual(os.listdir(plain), [], "no instance => no file, anywhere")
+
+    def test_strict_and_lenient_instance_root_differ_only_off_instance(self):
+        plain = os.path.join(self.root, "plain")
+        os.makedirs(plain)
+        self.assertIsNone(hooks._instance_root(plain, strict=True))
+        self.assertEqual(hooks._instance_root(plain), os.path.abspath(plain))
+
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_pre_tool_use.py ═══

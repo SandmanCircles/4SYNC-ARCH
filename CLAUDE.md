@@ -21,7 +21,11 @@ At the start of every session, load (in this order):
 
 4. **`ABBA.md`** *(only if `4SYNC.yaml` declares an `agents:` block — otherwise the board is inert; skip it)* — the agent bulletin board. **Session-start inbox check.** Resolve which agent you are from its **Roster** (`declared` → `ARCH_AGENT` → shell → ask), then check for any OPEN message addressed `To:` your name or alias — matched case-insensitively — and action/acknowledge it before your planned work; mark it `Status: DONE` with a one-line resolution when handled. This is a cross-agent nudge channel — NOT a replacement for the merge plan ledger.
 
-5. **Any other persistent context files your project depends on** — architecture notes, decision logs (ADRs), open design issues. List them here in load order.
+5. **`.session_debt.tsv`** — **do you have company?** Read it at boot and give the rows **two readings**, not one. A row whose `last_activity` is within `4SYNC.yaml`'s `session_debt.live_within` is a session **working right now**: *"⚠ N other session(s) LIVE in this instance; shared ledgers are contested."* An older row is what the tracker was originally for: *"N session(s) holding undeposited state."* Same file, same rows, opposite meanings — one says *be careful now*, the other says *someone forgot*. Pair it with the ledger's `Owner` column: Owner says **who** holds a row, this file says **whether they are still here**.
+   - **Warns, never blocks.** No locking. A session simply knows it has company *before* it starts editing shared ledgers. Concurrency is normal and works; what fails is doing it unknowingly.
+   - **`last_activity` is not activity.** The hook's `WRITE_TOOLS` excludes `Bash`, so a row stops moving at the last *file write* — every git command after that is invisible, and a session that has been reading or thinking looks idle. Treat "not live" as *probably* idle, never as *gone*.
+
+6. **Any other persistent context files your project depends on** — architecture notes, decision logs (ADRs), open design issues. List them here in load order.
 
 Quick reference — fill in your project's critical facts so they're available even without loading the files above:
 

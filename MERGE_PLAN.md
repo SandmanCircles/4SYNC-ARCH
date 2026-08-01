@@ -33,6 +33,8 @@ Cross-references between tasks resolve by ID. The summary table here is always c
 - **Session close:** mirror back task additions, status changes, and description updates. Substance goes to `tasks/MP-0NN.md`; state goes to the table row. Prepend a new block to the **`## Session journal (recent)`** section (newest at top) and refresh the **`Last updated:`** pointer's date + label. If the section now holds more than 5 blocks, move the oldest (bottom) block verbatim to the top of `JOURNAL_HISTORY.md`. `scripts/rotate.py` does the journal overflow, the closed-task document moves, and the size report — run it rather than doing this by hand.
 - **Opening a task:** add the table row **and** write `tasks/MP-0NN.md` in the same edit. A row with no document is a task nobody can execute — the exact failure the authoring rule below exists to prevent. `rotate.py` exits non-zero if any non-terminal row is missing its document, so a close cannot quietly ship one.
 - **Closing a task:** flip the row to ✅/❌ and move the file to `tasks/closed/`. No waiting period — the document is not in the boot path either way, so there is nothing to age out. `rotate.py` moves it for you.
+- **Claiming a row (the `Owner` column):** when you move a row to 🔄, write your **agent/roster name + short session id** into `Owner` — e.g. `LoCo·b2df30b8`. Clear it back to `—` when the row leaves 🔄. The name says *which surface*; the session id separates two concurrent sessions **on that surface**, which no roster entry and no environment pin can do, because both resolve identically. If you run one session at a time this column costs you one character per row and can stay `—`; the moment you run two, it is the only thing standing between them and the same row.
+- **Before claiming a row someone else owns, cross-check `.session_debt.tsv`.** Owner says *who*; the debt file says *whether they are still here*. A row for that session id with `last_activity` inside the manifest's `session_debt.live_within` means **taken and live — pick another row**. No recent row means the owner is gone and the claim is stale — **take it, and overwrite the `Owner` cell**. Without this cross-check a stale 🔄 owner is just a new kind of litter, which is why the column and the live-session boot reading are one change, not two.
 - **Mid-session:** the table here is the canonical state. If the session tool gets reset, repopulate from this file.
 - **Task-authoring rule (self-contained):** write every task document so it stands fully alone. A different surface — another agent, or an autonomous scheduled run — must be able to pick it up cold and execute it without access to the session that created it. No "continue what we did earlier" and no unstated context: name the files, the acceptance criteria, and the *why* inline. A task a stranger can't execute isn't ledgered yet. **This rule is why the split exists:** depth is not the problem, depth *in the boot path* is. Write the document as long as the work honestly needs — then keep it out of boot.
 - **Cross-midnight sessions:** a session that spans midnight keeps ONE journal block, headed with the span (`2026-07-28/29`), and dates any later addendum inline. The block header carries the date the session *opened*, so without this rule a block reads as a day it did not happen on.
@@ -66,13 +68,13 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 
 ## Summary table
 
-| ID | Status | Subject | Blocked by |
-|---|---|---|---|
-| 1 | ✅ | [Example completed task — e.g., "Initial schema migration"] | — |
-| 2 | 🔄 | [Example in-progress task — e.g., "Wire payment provider"] | — |
-| 3 | ⏳ | [Example pickup-ready task — e.g., "Add account settings page"] | — |
-| 4 | ⏸️ | [Example blocked task — e.g., "Backfill historical records"] | #2 |
-| 5 | ❌ | [Example dropped task — e.g., "Original Stripe webhook design"] | — |
+| ID | Status | Subject | Blocked by | Owner |
+|---|---|---|---|---|
+| 1 | ✅ | [Example completed task — e.g., "Initial schema migration"] | — | — |
+| 2 | 🔄 | [Example in-progress task — e.g., "Wire payment provider"] | — | — |
+| 3 | ⏳ | [Example pickup-ready task — e.g., "Add account settings page"] | — | — |
+| 4 | ⏸️ | [Example blocked task — e.g., "Backfill historical records"] | #2 | — |
+| 5 | ❌ | [Example dropped task — e.g., "Original Stripe webhook design"] | — | — |
 
 **Tally:** [N tasks total. X completed, Y in_progress, Z pending, A blocked, B dropped.] [Short narrative on current state — what just shipped, what's next.]
 

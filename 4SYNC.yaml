@@ -35,7 +35,9 @@ never_load_whole:
 
 session_debt:              # unwrapped-session tracker: hook sets on mutation; only explicit close clears
   file: .session_debt.tsv  # local/gitignored; row: session_id started last cwd status
-  at_boot: report_rows     # surface "N session(s) holding undeposited state" (incl. your own parks)
+  live_within: 15m         # newer last_activity = a session working NOW, not debt
+  at_boot: report_rows     # two readings: within live_within → "N other session(s) LIVE,
+                           # ledgers contested"; older → "holding undeposited state"
   at_close: clear_own_row  # delete $CLAUDE_CODE_SESSION_ID's row
 
 agents:                    # OPTIONAL — omit if one surface; the bulletin stays inert

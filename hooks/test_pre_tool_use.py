@@ -316,6 +316,102 @@ class TestDebtRecorderScope(unittest.TestCase):
         self.assertEqual(hooks._instance_root(plain), os.path.abspath(plain))
 
 
+class TestG6RootFence(unittest.TestCase):
+    """MP#21 — flag a write into a DIFFERENT ARCH instance than the session is in.
+
+    The failure it exists for: a session booted in one instance nearly wrote a
+    task row into a separate live instance's ledger, with that ledger's numbering
+    learned by grep rather than by boot. The gate that should have caught it
+    (close.freshness_check) assumes a single instance and could not."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="g6_")
+        # two sibling instances + one ordinary project
+        self.inst_a = os.path.join(self.root, "InstanceA")
+        self.inst_b = os.path.join(self.root, "InstanceB")
+        self.plain = os.path.join(self.root, "just-a-repo")
+        for d in (self.inst_a, self.inst_b):
+            os.makedirs(os.path.join(d, hooks.CONFIG_DIR))
+        os.makedirs(self.plain)
+        # a nested repo INSIDE instance A that ships its own config/ — this is
+        # not hypothetical: the product repo ships the loader stack, so it has one
+        self.nested = os.path.join(self.inst_a, "PRODUCT-REPO")
+        os.makedirs(os.path.join(self.nested, hooks.CONFIG_DIR))
+        self.logfile = os.path.join(self.root, "warn.log")
+        self._old_log = os.environ.get("ARCH_HOOKS_LOG")
+        os.environ["ARCH_HOOKS_LOG"] = self.logfile
+
+    def tearDown(self):
+        if self._old_log is None:
+            os.environ.pop("ARCH_HOOKS_LOG", None)
+        else:
+            os.environ["ARCH_HOOKS_LOG"] = self._old_log
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _fence(self, cwd, target):
+        return hooks.g6_root_fence("Write", target.lower(), "x", "",
+                                   None, {"cwd": cwd, "raw_path": target})
+
+    def _log_text(self):
+        if not os.path.exists(self.logfile):
+            return ""
+        with open(self.logfile, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_in_root_write_passes(self):
+        self.assertIsNone(self._fence(self.inst_a, os.path.join(self.inst_a, "MERGE_PLAN.md")))
+
+    def test_nested_repo_with_its_own_config_passes(self):
+        """Containment, not equality. The nested product repo ships a config/ dir,
+        so an equality test would resolve it as a different instance and flag the
+        most common write path in the project."""
+        self.assertIsNone(self._fence(self.inst_a, os.path.join(self.nested, "MERGE_PLAN.md")))
+
+    def test_write_up_from_nested_repo_passes(self):
+        """Booted in the nested repo, writing to the outer instance — same tree."""
+        self.assertIsNone(self._fence(self.nested, os.path.join(self.inst_a, "MERGE_PLAN.md")))
+
+    def test_sibling_instance_ledger_write_is_flagged(self):
+        reason = self._fence(self.inst_a, os.path.join(self.inst_b, "MERGE_PLAN.md"))
+        self.assertIsNotNone(reason, "the cross-instance write MUST be flagged")
+        self.assertIn("CROSS-INSTANCE", reason)
+        self.assertIn("InstanceB", reason)
+
+    def test_write_into_a_non_arch_project_is_silent(self):
+        """What makes a machine-wide wire safe: no instance at the target => not
+        our business, and nothing is logged."""
+        self.assertIsNone(self._fence(self.inst_a, os.path.join(self.plain, "notes.md")))
+        self.assertEqual(self._log_text(), "")
+
+    def test_lobby_session_write_is_flagged_quietly(self):
+        """Session in no instance at all (home-folder drill-down). Returns None so
+        it never blocks even under enforce, but records one line."""
+        reason = self._fence(self.root, os.path.join(self.inst_a, "config", "KERNEL.yaml"))
+        self.assertIsNone(reason, "a lobby drill-down must never block")
+        log = self._log_text()
+        self.assertIn("QUIET", log)
+        self.assertIn("InstanceA", log)
+
+    def test_non_write_tools_are_ignored(self):
+        self.assertIsNone(hooks.g6_root_fence(
+            "Read", "x", "", "", None,
+            {"cwd": self.inst_a, "raw_path": os.path.join(self.inst_b, "MERGE_PLAN.md")}))
+        self.assertIsNone(hooks.g6_root_fence(
+            "Bash", "", "", "rm -rf /", None,
+            {"cwd": self.inst_a, "raw_path": ""}))
+
+    def test_missing_context_is_silent(self):
+        """4- and 5-arg call shapes must not make g6 throw or guess."""
+        self.assertIsNone(hooks.g6_root_fence("Write", "p", "x", "", None, None))
+        self.assertIsNone(hooks.g6_root_fence("Write", "p", "x", "", None, {"cwd": self.inst_a}))
+
+    def test_dispatcher_passes_context_to_six_arg_guards(self):
+        """The arity dispatch must reach 6 params, or g6 silently never fires."""
+        import inspect
+        self.assertGreaterEqual(len(inspect.signature(hooks.g6_root_fence).parameters), 6)
+        self.assertIn(hooks.g6_root_fence, hooks.GUARDS)
+
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_pre_tool_use.py ═══

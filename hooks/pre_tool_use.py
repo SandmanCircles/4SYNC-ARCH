@@ -2,7 +2,7 @@
 """
 4SYNC ARCH — PreToolUse guard hooks.
 
-Generic, product-shippable guard set. One dispatcher, five guards. Each guard
+Generic, product-shippable guard set. One dispatcher, six guards. Each guard
 enforces a *structural* protocol invariant that applies to ANY adopter of the
 loader-stack pattern — nothing here is specific to any one product or brand.
 
@@ -11,6 +11,8 @@ loader-stack pattern — nothing here is specific to any one product or brand.
   g3  sandbox git guard    — never commit through a distrusted/mounted filesystem
   g4  STATUS write guard    — keep STATUS a parseable, un-clipped, snapshot (not a journal)
   g5  boring guard         — keep the manifest pure declaration (its own max_bytes; no date creep)
+  g6  root fence           — flag a write into a DIFFERENT ARCH instance than the
+                             session booted in; silent outside ARCH entirely
 
 NOTE ON PORTABILITY (why this differs from an internal deployment):
   This is the neutral template shipped with 4SYNC ARCH. An internal deployment may
@@ -246,12 +248,74 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
     return None
 
 
+def _same_tree(a, b):
+    """True when a and b are the same path or one contains the other."""
+    a = os.path.normcase(os.path.normpath(a))
+    b = os.path.normcase(os.path.normpath(b))
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
+def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
+    """Flag a write into a DIFFERENT ARCH instance than the session is booted in.
+
+    The failure this exists for (2026-07-28): a session booted in one instance
+    came one tool call from writing a task row into a *separate live instance's*
+    ledger, having learned that ledger's numbering by grep rather than by boot —
+    no KERNEL, no invariants, no open-task context. `close.freshness_check`
+    could not catch it because that gate assumes a single instance.
+
+    RESOLVE FROM THE TARGET, NOT FROM cwd. This hook is wired at USER level, so
+    it loads for every session on the machine. "Compare against instance.root
+    from the manifest" would assume there is one instance and the session is in
+    it; wired globally there isn't, and a session legitimately working inside
+    another instance must not be flagged merely for not being in this one.
+
+    Containment, not equality — this is the part that needed verifying rather
+    than assuming. A nested repo can ship its OWN config/ dir (4SYNC-ARCH does,
+    since the loader stack is the thing it ships), so a naive equality test
+    resolves every write to the nested product repo as a different instance and
+    flags the single most common write path there is. If either root contains
+    the other they are one tree and one session's business.
+
+    Silent outside ARCH entirely: a target that resolves to no instance is an
+    ordinary project, a scratch file, or ~/.claude/plans/… — not our business.
+    That is what makes a machine-wide wire safe rather than intrusive.
+
+    QUIET on lobby writes (Michael, 2026-07-31): when the SESSION resolves to no
+    instance, a drill-down from the home folder is the normal working pattern
+    here, not a mistake. It logs one line naming the target and returns None, so
+    it never blocks even under enforce. A guard that makes the common case noisy
+    is a guard that gets switched off, and then it is not protecting anything."""
+    if tool not in WRITE_TOOLS or not ctx:
+        return None
+    raw = ctx.get("raw_path") or ""
+    if not raw:
+        return None
+    target_root = _instance_root(os.path.dirname(os.path.abspath(raw)), strict=True)
+    if target_root is None:
+        return None                      # not an ARCH instance — silent
+    session_root = _instance_root(ctx.get("cwd") or ".", strict=True)
+    if session_root is None:
+        _log(f"[g6_root_fence] QUIET tool={tool} path={raw} :: write into ARCH "
+             f"instance {os.path.basename(target_root)} from a session not booted "
+             f"in any instance (lobby drill-down — allowed, recorded)")
+        return None
+    if _same_tree(session_root, target_root):
+        return None
+    return (f"CROSS-INSTANCE WRITE: this session is booted in "
+            f"{os.path.basename(session_root)} but the target is inside "
+            f"{os.path.basename(target_root)} ({raw}). That instance has its own "
+            f"ledger, numbering and invariants, none of which this session loaded "
+            f"— write from a session booted there, or leave it a message.")
+
+
 GUARDS = [
     g1_kernel_write_guard,
     g2_abba_format_guard,
     g3_sandbox_git_guard,
     g4_status_write_guard,
     g5_boring_guard,
+    g6_root_fence,
 ]
 
 
@@ -392,12 +456,28 @@ def main():
     except Exception:  # noqa: BLE001 — recorder is best-effort, never fatal to the call
         pass
 
+    # Context for guards that must reason about WHERE the write lands rather than
+    # what it contains. `path` from _extract is lowercased for content matching,
+    # which is fine on Windows and wrong on a case-sensitive filesystem — so the
+    # raw target is carried here, unmodified, for anything touching the filesystem.
+    ti = payload.get("tool_input") or {}
+    ctx = {
+        "cwd": payload.get("cwd") or os.getcwd(),
+        "raw_path": ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or "",
+    }
+
     for guard in GUARDS:
         try:
-            # Guards opting into whole-file checks take a 5th `full` parameter;
-            # 4-arg guards (including any an adopter appended) are called as-is.
+            # Arity dispatch, extended one step: a 5th param opts into whole-file
+            # checks, a 6th into path context. 4- and 5-arg guards — including any
+            # an adopter appended — keep working unchanged.
             nargs = len(inspect.signature(guard).parameters)
-            reason = guard(tool, path, text, cmd, full) if nargs >= 5 else guard(tool, path, text, cmd)
+            if nargs >= 6:
+                reason = guard(tool, path, text, cmd, full, ctx)
+            elif nargs == 5:
+                reason = guard(tool, path, text, cmd, full)
+            else:
+                reason = guard(tool, path, text, cmd)
         except Exception:  # noqa: BLE001 — a buggy guard must never break the tool call
             continue
         if reason:

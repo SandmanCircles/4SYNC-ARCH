@@ -54,6 +54,14 @@ bootstrap:
   authored_seed:               # the single genesis pipeline: seed → stack.
                                # Steps run IN ORDER — the sequence is binding.
                                # All dates from the system clock, never memory.
+    - CONFIRM WITH THE USER FIRST — WRITE NOTHING UNTIL THEY SAY GO. Read the
+      seed and play back what you understood — project name, instance.root
+      (absolute), one-line purpose, agents/surfaces, naming rules, and anything
+      RETIRED. Ask them to confirm or correct it, and WAIT for an explicit yes.
+      Both entry paths land here, so this is the only gate needed. Why it is worth
+      one question — the steps below author the whole stack, set a root path, flip
+      TEMPLATE markers, make the seed READ-ONLY and delete this block, so a misread
+      seed is cheap to catch now and has to be unpicked by hand later
     - author config/KERNEL.yaml + STATUS.yaml + CANON_INDEX.yaml from the seed
       (fill bracketed placeholders; keep the skeleton's structure + directives;
       remove the TEMPLATE GUARD directive line); route the seed's deep canon
@@ -134,7 +142,7 @@ integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
   hooks: hooks/pre_tool_use.py           # ARCH_HOOKS_MODE: warn | enforce | off
   manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
-    max_bytes: 10240         # raised from 8192 (2026-07-31) — deliberately, in the same
+    max_bytes: 10240         # raised from 8192 — deliberately, in the same
                              # edit that hit it, which is what g5's own message prescribes.
                              # Two declarations pushed this to 8228 and g5 BLOCKED the write.
                              # A cap you raise on reflex is not a cap; this one is raised

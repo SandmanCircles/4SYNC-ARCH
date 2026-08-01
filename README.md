@@ -29,11 +29,15 @@ More model, same subscription.
    `AUTHORED`, or don't: just open a Claude session in the folder and it will
    interview you through the seed conversationally.
 3. **Open a session.** It reads `CLAUDE.md` → `4SYNC.yaml`, detects the untouched
-   stack, runs **genesis** — distills your seed into the config stack, archives the
-   seed verbatim as the project's birth record (locked read-only) — and orients.
-   Note: with an `AUTHORED` seed, genesis runs silently and automatically — opening
-   the session *is* the consent; there is no confirmation step. Every session after
-   that boots oriented and deposits state back on close.
+   stack, and runs **genesis** — distilling your seed into the config stack and
+   archiving the seed verbatim as the project's birth record (locked read-only).
+   **Genesis plays back what it understood — project name, root path, purpose,
+   agents, naming — and waits for your go before writing anything.** One question,
+   once, on the only run that can never happen twice: it authors the whole stack,
+   sets an absolute root, flips the TEMPLATE markers, locks the seed and deletes
+   its own bootstrap block, so a misread seed is far cheaper to catch here than to
+   unpick afterwards. Every session after that boots oriented and deposits state
+   back on close.
 
 No skills to install, no plugins, no per-machine setup. The entire mechanism is two
 files that travel with the folder: `CLAUDE.md` (teaches any session the protocol

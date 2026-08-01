@@ -40,6 +40,11 @@ Does two things, both as verbatim block moves:
    leaving rows unbounded just relocates the growth one level up. Reports;
    never blocks, and the fix is a task document, not a shorter sentence.
 
+6. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
+   That file is on-demand and never booted, so it is cheap — but only while
+   every entry is greppable and every entry has an exit. An entry nothing can
+   grep for never reaches the session that needed it and is counted forever.
+
 Safety:
   --dry-run          : print what would move; write nothing (DEFAULT unless --apply).
   --apply            : actually write.
@@ -466,6 +471,54 @@ def report_sizes(root, ledger_path, journal_max):
     return total, jbytes
 
 
+# ── findings report ──────────────────────────────────────────────────────────
+
+FINDINGS_FILENAME = "FINDINGS.md"
+
+
+def report_findings(root, findings_name=FINDINGS_FILENAME):
+    """Measure FINDINGS.md and flag entries with no `Trigger:` line.
+
+    The file earns its place only because three rules are enforced rather than
+    aspirational, and this is the enforcement for two of them. A findings file
+    with no eviction path is a junk drawer with a nice name; a bucket nobody
+    measures is exactly how the ledger reached 67% of boot.
+
+    An entry without a Trigger is not a finding, it is a thought — nothing can
+    grep for it, so it can never reach the session that needed it, and it sits
+    there being counted forever. Reports; never blocks. Returns (bytes, missing).
+    """
+    p = os.path.join(root, findings_name)
+    if not os.path.exists(p):
+        return 0, []
+    text = read(p)
+    nbytes = len(text.encode("utf-8"))
+    # Scan only below the `## Findings` heading. The protocol section above it
+    # documents the entry format using the same `###` markup, and counting that
+    # as a trigger-less finding is a false positive that trains people to ignore
+    # this report — the one failure mode a reporting-only check cannot survive.
+    body = text
+    m = re.search(r"^## Findings[ \t]*$", text, re.M)
+    if m:
+        body = text[m.end():]
+    heads = list(re.finditer(r"^### (.+)$", body, re.M))
+    missing = []
+    for i, h in enumerate(heads):
+        stop = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        if not re.search(r"^Trigger:\s*\S", body[h.end():stop], re.M):
+            missing.append(h.group(1).strip())
+    print(f"findings: {findings_name} {nbytes:,} B (~{nbytes // 4:,} tok), "
+          f"{len(heads)} entries — NOT in the boot path")
+    for title in missing[:10]:
+        print(f"  ! no Trigger: — {title[:80]}")
+    if len(missing) > 10:
+        print(f"  … and {len(missing) - 10} more")
+    if missing:
+        print("  An entry with no Trigger: cannot be grepped, so it never reaches the "
+              "session that needed it. Add one or move it to the journal. (Reported, not blocked.)")
+    return nbytes, missing
+
+
 # ── verify ───────────────────────────────────────────────────────────────────
 
 def verify_moves(moved_blocks, src, dst, restore):
@@ -528,6 +581,7 @@ def main():
         report_sizes(d, ledger, jmax)
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max)
+    report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 
     # A live row with no document is an unexecutable task. Exit non-zero so a

@@ -56,6 +56,22 @@ message DONE. Don't let ABBA become a second task tracker.
 1. **At session start, every named agent checks ABBA for OPEN messages addressed `To:` its own
    name.** (Wire this into your `CLAUDE.md` load order and your KERNEL `agent_directives` so it's a
    session-start action.) If none, proceed.
+   - **SCAN THE HEADERS — do not read this file.** Grep the `### [n] … To: … Status:` lines and open
+     only the bodies addressed to you (plus your roster aliases, case-folded). This board is
+     **addressed**, and reading it whole makes you pay for every other agent's un-drained inbox.
+     Measured on a real 46,445 B board: the header index was 1,701 B and one agent's own OPEN message
+     ~1,081 B — **90% of the read was waste**, almost all of it one agent's backlog. This is the
+     concrete case behind the rule *addressed files get scanned, unaddressed files get capped*: a cap
+     here would have made every agent pay for one agent's backlog and then started deleting real mail.
+   - **If the header count doesn't add up, fall back to a full read AND SAY SO.** Count raw `### [`
+     occurrences against the headers you parsed; on any mismatch, read the file. A message whose
+     header drifted out of format is an **invisible miss** — strictly worse than an expensive read,
+     because nothing announces it.
+   - **Never validate `To:` against the Roster.** The roster is a directory, not a guest list. A
+     message to a name nobody has declared stays OPEN until something claiming that name arrives.
+   - **Report the counts you already have.** The header index gives OPEN totals by recipient for
+     free — *"19 OPEN: 15 to one agent, 1 to you, 3 others"* — better peripheral awareness than
+     skimming the whole board, at a fraction of the cost.
 2. **Action or explicitly acknowledge** each message that's yours before starting planned work.
 3. When handled, set `Status: DONE` and add a one-line `Resolution:` (link the task/commit it
    produced, if any). Leave DONE messages in place for ~10 days, then move them to the **Archive**

@@ -197,18 +197,37 @@ close:
     check_at_boot: true
     archive_done_after_days: 10
 """
-    # Same close block, no `agents:` — the board is inert and must NOT be charged.
-    INERT = SAMPLE_MANIFEST + """
+    # `check_at_boot: true` but NO `agents:` block. This used to be treated as an
+    # inert board and dropped from the count — the regression MP#30 removed. It is
+    # a real shape: an instance carrying check_at_boot AND a CLAUDE.md telling every
+    # session to read the board, but no agents: block. The old gate silently dropped
+    # 11,611 tokens there, on the one instance whose number justified a migration.
+    NO_AGENTS = SAMPLE_MANIFEST + """
 close:
   bulletin:
     file: ABBA.md
     check_at_boot: true
 """
+    # Genuinely inert: the board is declared but not read at boot.
+    INERT = SAMPLE_MANIFEST + """
+close:
+  bulletin:
+    file: ABBA.md
+    check_at_boot: false
+"""
 
     def test_live_board_is_detected(self):
         self.assertEqual(meter.bulletin_boot_file(self.LIVE), "ABBA.md")
 
+    def test_check_at_boot_is_the_gate_not_an_agents_block(self):
+        """The whole of MP#30's meter fix. `agents:` was a proxy for 'is this board
+        live' that held on one instance and nowhere else; the manifest states the
+        fact directly, so read the fact rather than a correlate of it."""
+        self.assertEqual(meter.bulletin_boot_file(self.NO_AGENTS), "ABBA.md")
+        self.assertEqual(meter._bulletin_from_lines(self.NO_AGENTS), "ABBA.md")
+
     def test_inert_board_is_not_charged(self):
+        """check_at_boot: false — declared but never opened at boot."""
         self.assertIsNone(meter.bulletin_boot_file(self.INERT))
 
     def test_no_close_block_at_all(self):
@@ -224,6 +243,9 @@ close:
     def test_inert_board_absent_from_boot_list(self):
         self.assertNotIn("ABBA.md", meter.parse_load_lists(self.INERT)["boot"])
 
+    def test_no_agents_block_still_lands_in_the_boot_list(self):
+        self.assertIn("ABBA.md", meter.parse_load_lists(self.NO_AGENTS)["boot"])
+
     def test_no_duplicate_when_also_declared_in_boot(self):
         dup = self.LIVE.replace("  - config/KERNEL.yaml", "  - config/KERNEL.yaml\n  - ABBA.md")
         self.assertEqual(meter.parse_load_lists(dup)["boot"].count("ABBA.md"), 1)
@@ -234,6 +256,41 @@ close:
         self.assertEqual(meter._bulletin_from_lines(self.LIVE), "ABBA.md")
         self.assertIsNone(meter._bulletin_from_lines(self.INERT))
         self.assertIsNone(meter._bulletin_from_lines(SAMPLE_MANIFEST))
+
+    def test_scan_mode_detection_and_pricing(self):
+        """A scanned board is priced as header index + one agent's own mail. Charging
+        the whole file reports a cost the protocol stopped paying."""
+        scan = self.LIVE.replace("    check_at_boot: true",
+                                 "    check_at_boot: true\n    mode: scan_headers")
+        self.assertFalse(meter.bulletin_scan_enabled(self.LIVE))
+        self.assertTrue(meter.bulletin_scan_enabled(scan))
+
+        root = tempfile.mkdtemp(prefix="meter_scan_")
+        try:
+            board = ["# Board\n"]
+            for i in range(20):
+                board.append(f"### [{i}] To: Someone · From: X · 2026-07-31 · Status: OPEN\n")
+                board.append("body " * 200 + "\n")
+            with open(os.path.join(root, "ABBA.md"), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("".join(board))
+            full = meter.measure_file(root, "ABBA.md")
+            scanned = meter.measure_bulletin_scan(root, "ABBA.md")
+            self.assertLess(scanned, full // 2, "scan must be far cheaper than the full read")
+            self.assertGreater(scanned, 0)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_scan_pricing_falls_back_when_no_headers_parse(self):
+        """Same posture as the scan itself: if the headers don't parse, pay for the
+        whole file rather than silently under-report it."""
+        root = tempfile.mkdtemp(prefix="meter_scan2_")
+        try:
+            with open(os.path.join(root, "ABBA.md"), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("# Board\n\nno parseable headers here at all\n")
+            self.assertEqual(meter.measure_bulletin_scan(root, "ABBA.md"),
+                             meter.measure_file(root, "ABBA.md"))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_line_fallback_strips_inline_comment(self):
         withc = self.LIVE.replace("    file: ABBA.md", "    file: ABBA.md   # the board")

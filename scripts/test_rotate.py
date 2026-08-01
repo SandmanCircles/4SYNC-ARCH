@@ -393,6 +393,76 @@ class TestSubjectReport(unittest.TestCase):
         self.assertEqual(sorted(rotate.parse_summary_table(rotate.read(self.ledger))), [1])
 
 
+FINDINGS_DOC = """\
+# Findings
+
+## Protocol — read before adding an entry
+
+Rules live here.
+
+### Entry format
+
+```
+### title
+Trigger: when
+Exit: how it leaves
+```
+
+## Findings
+
+### Good entry
+Trigger: something greppable happens
+The finding.
+Exit: hook rule
+
+### Bad entry
+No trigger line at all, so nothing can ever grep for it.
+Exit: retire
+"""
+
+
+class TestFindingsReport(unittest.TestCase):
+    """MP#28: the file earns its seventh-surface place only if the rules are
+    enforced rather than aspirational. This is that enforcement."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_find_")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, text, name=rotate.FINDINGS_FILENAME):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+
+    def test_absent_file_is_not_an_error(self):
+        self.assertEqual(rotate.report_findings(self.root), (0, []))
+
+    def test_flags_only_the_entry_missing_a_trigger(self):
+        self._write(FINDINGS_DOC)
+        nbytes, missing = rotate.report_findings(self.root)
+        self.assertGreater(nbytes, 0)
+        self.assertEqual(missing, ["Bad entry"])
+
+    def test_protocol_section_is_not_scanned(self):
+        """`### Entry format` documents the format using the same markup. Counting
+        it as a trigger-less finding is a false positive, and a reporting-only
+        check does not survive training people to ignore it."""
+        self._write(FINDINGS_DOC)
+        _n, missing = rotate.report_findings(self.root)
+        self.assertNotIn("Entry format", missing)
+
+    def test_all_entries_with_triggers_report_clean(self):
+        self._write("# F\n\n## Findings\n\n### A\nTrigger: x\nbody\nExit: retire\n")
+        self.assertEqual(rotate.report_findings(self.root)[1], [])
+
+    def test_missing_findings_heading_scans_whole_file(self):
+        """A file that has not grown a `## Findings` section yet must still be
+        checked, not silently skipped."""
+        self._write("# F\n\n### A\nno trigger here\n")
+        self.assertEqual(rotate.report_findings(self.root)[1], ["A"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

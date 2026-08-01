@@ -119,13 +119,30 @@ def _bulletin_from_lines(manifest_text):
     """Dependency-free fallback for bulletin_boot_file — same contract, regex only.
     Split out so the suite can exercise it whether or not PyYAML is installed
     (mirrors _parse_load_lists_lines)."""
-    if not re.search(r"(?m)^agents:", manifest_text):
-        return None
     m = re.search(r"(?ms)^\s{2}bulletin:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", manifest_text)
     if not m or not re.search(r"(?m)^\s*check_at_boot:\s*true\b", m.group(1)):
         return None
     fm = re.search(r"(?m)^\s*file:\s*(\S+)", m.group(1))
     return _strip_inline_comment(fm.group(1)) if fm else None
+
+
+def bulletin_scan_enabled(manifest_text):
+    """True when close.bulletin declares `mode: scan_headers`.
+
+    The board is ADDRESSED — every message carries a `To:` — so a session needs the
+    header index plus its own mail, not the file. Nothing in the load path used that
+    addressing until this flag existed; the addressing was honored by the reader and
+    ignored by the load."""
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(manifest_text)
+        if isinstance(data, dict):
+            b = (data.get("close") or {}).get("bulletin") or {}
+            return str(b.get("mode", "")).strip() == "scan_headers"
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    m = re.search(r"(?ms)^\s{2}bulletin:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", manifest_text)
+    return bool(m and re.search(r"(?m)^\s*mode:\s*scan_headers\b", m.group(1)))
 
 
 def bulletin_boot_file(manifest_text):
@@ -134,8 +151,16 @@ def bulletin_boot_file(manifest_text):
     lists therefore undercounts the boot stack by a whole file that every multi-agent
     session actually pays for.
 
-    It is CONDITIONAL: without an `agents:` block the board is inert and no session
-    opens it, so a single-surface instance must not be charged for it.
+    It is CONDITIONAL — on `check_at_boot: true`, and on nothing else.
+
+    IT USED TO GATE ON AN `agents:` BLOCK, and that was wrong. `agents:` was a
+    proxy for "is this board live", and the proxy held on the instance it was
+    written against and nowhere else: a real instance was found carrying
+    `bulletin.check_at_boot: true` AND a CLAUDE.md telling every session to read
+    the board, but no `agents:` block — so the meter silently dropped 11,611
+    tokens, 14% of that instance's true boot, on the one instance whose number
+    was being used to justify a migration. The manifest already states the fact
+    directly; read the fact, not a correlate of it.
 
     Returns the bulletin's relative path, or None. Mirrors parse_load_lists' handling —
     PyYAML when importable, regex fallback otherwise (zero third-party deps)."""
@@ -143,8 +168,6 @@ def bulletin_boot_file(manifest_text):
         import yaml  # type: ignore
         data = yaml.safe_load(manifest_text)
         if isinstance(data, dict):
-            if not data.get("agents"):
-                return None
             b = (data.get("close") or {}).get("bulletin") or {}
             if b.get("check_at_boot") and b.get("file"):
                 return str(b["file"]).strip()
@@ -208,6 +231,37 @@ def measure_file(root, relpath):
         return 0
 
 
+# One agent's own OPEN mail, allowed for on top of the header index. Measured:
+# on a 46 KB board the single OPEN message for one agent was ~1,081 B.
+BULLETIN_BODY_ALLOWANCE = 1200
+
+
+def measure_bulletin_scan(root, relpath, allowance=BULLETIN_BODY_ALLOWANCE):
+    """Price a scanned bulletin board as HEADER INDEX + one agent's own mail.
+
+    Once the boot step greps `### [n] … To: … Status:` header lines and reads only
+    the bodies addressed to this agent, charging the whole file reports a cost the
+    protocol no longer pays. Measured on a real 46,445 B board: 24 header lines are
+    1,701 B, and one agent's single OPEN message ~1,081 B — so the honest number is
+    ~2,800 B, not 46 KB. The file is large mostly because ONE agent is not draining
+    its inbox, and no other agent should be metered for that.
+
+    Falls back to the full size when the file cannot be read or carries no parseable
+    headers — the same posture as the scan itself, which reverts to a full read (and
+    says so) rather than silently missing a message."""
+    p = os.path.join(root, relpath)
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return 0
+    heads = re.findall(r"(?m)^### \[\d+\][^\n]*$", text)
+    if not heads:
+        return len(text.encode("utf-8"))
+    index = sum(len(h.encode("utf-8")) + 1 for h in heads)
+    return min(index + allowance, len(text.encode("utf-8")))
+
+
 def file_exists(root, relpath):
     return os.path.isfile(os.path.join(root, relpath))
 
@@ -216,14 +270,17 @@ def file_exists(root, relpath):
 # Report assembly — a pure data builder (for --json) and a text renderer.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _row(root, relpath, tag=None):
-    nbytes = measure_file(root, relpath)
+def _row(root, relpath, tag=None, scanned=False):
+    nbytes = (measure_bulletin_scan(root, relpath) if scanned
+              else measure_file(root, relpath))
     row = {
         "path": relpath,
         "bytes": nbytes,
         "tokens": estimate_tokens(nbytes),
         "missing": not file_exists(root, relpath),
     }
+    if scanned:
+        row["scanned"] = True
     if tag is not None:
         row["tag"] = tag
     return row
@@ -237,8 +294,22 @@ def build_report_data(root, lists, manifest=None):
 
     manifest: basename of the instance manifest; defaults to resolve_manifest()."""
     manifest = manifest or resolve_manifest()
+    # A scanned bulletin is priced as header-index + one agent's own mail, not as
+    # a whole-file read — otherwise the meter keeps reporting a cost the protocol
+    # stopped paying the moment `bulletin.mode: scan_headers` landed.
+    scan_set = set()
+    try:
+        with open(os.path.join(root, manifest), encoding="utf-8") as fh:
+            mtext = fh.read()
+        if bulletin_scan_enabled(mtext):
+            b = bulletin_boot_file(mtext)
+            if b:
+                scan_set.add(b)
+    except OSError:
+        pass
+
     boot_rows = [_row(root, manifest)]
-    boot_rows += [_row(root, p) for p in lists.get("boot", [])]
+    boot_rows += [_row(root, p, scanned=(p in scan_set)) for p in lists.get("boot", [])]
 
     deferred_rows = [_row(root, p, tag="on_demand") for p in lists.get("on_demand", [])]
     deferred_rows += [_row(root, p, tag="never_load_whole") for p in lists.get("never_load_whole", [])]

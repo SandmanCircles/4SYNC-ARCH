@@ -106,6 +106,27 @@ def main():
         check("trailing status mark stripped from subject",
               S.collect_descriptions("### #7 — Subject ✅\n\nb\n")[0][1] == "Subject")
 
+        # The id had no word boundary after it, so a SUB-SECTION heading parsed as a
+        # second description for the same task — and the refusal that followed named
+        # a duplicate the ledger did not contain, in a file the operator never
+        # suspected. Unfixable by inspection: `grep '^### #32'` returns one hit.
+        check("sub-section heading is NOT parsed as a description",
+              S.collect_descriptions("### #32-original-design-context (historical)\n\nb\n") == [],
+              str(S.collect_descriptions("### #32-original-design-context (historical)\n\nb\n")))
+        check("  … nor an underscored one",
+              S.collect_descriptions("### #32_notes\n\nb\n") == [])
+        for form, label in (("### #32 — Subject ✅", "em-dash"), ("### #32: Subject", "colon"),
+                            ("### #32 Subject", "bare space"), ("### #32 -- Subject", "double dash")):
+            check(f"  … while the {label} form still parses",
+                  [t for t, *_ in S.collect_descriptions(form + "\n\nb\n")] == [32], form)
+
+        # the blast radius: one sub-section heading refused a whole migration
+        with tempfile.TemporaryDirectory() as td:
+            root = make(td, extra="\n### #2-original-design-context (historical)\n\nold notes.\n")
+            code, out = run(root, "--dir", root)
+            check("a sub-section heading no longer forges a duplicate",
+                  code == 0 and "TWO descriptions" not in out, out[:160])
+
         print("\nparse_table")
         t = S.parse_table(LEDGER.format(extra="", extra_rows=""))
         check("statuses read from the table, not the heading emoji",

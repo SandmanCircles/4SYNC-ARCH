@@ -17,9 +17,31 @@ loader-stack pattern — nothing here is specific to any one product or brand.
 NOTE ON PORTABILITY (why this differs from an internal deployment):
   This is the neutral template shipped with 4SYNC ARCH. An internal deployment may
   add its OWN domain-specific guards (brand-leak guards, protected-prompt guards,
-  retired-concept guards, etc.) by appending functions to the GUARDS list below.
-  Keep those in a separate, clearly-labeled module in your own checkout — do NOT
-  bake org-specific business logic into this shared file.
+  retired-concept guards, etc.). Do NOT bake org-specific business logic into this
+  shared file.
+
+  DO NOT extend this file by appending to the GUARDS list in your own checkout.
+  Wire this file at USER level — the placement that closes the launch-directory
+  bypass, so the guards cover every ARCH instance on the machine including ones a
+  session merely drills into. At that scope your instance's copy is NOT what
+  executes, and an appended guard never runs. The failure is silent and total:
+  settings still say enforce, the log still fills with structural catches, and
+  your domain guards are simply gone. (Wire only at project level and the append
+  does run — but you lose it on every upgrade of this file, and you keep the
+  bypass. Neither placement makes the append a good idea.)
+
+  This paragraph used to recommend that append. The first external adopter carried
+  three domain guards with a history of real interceptions; following the old
+  advice would have dropped all three with no error and no change in output.
+
+  Extend with the TWO-HOOK PATTERN instead — see "Adding your own guards" in
+  README.md. Two PreToolUse hooks with DISJOINT guard sets: this file at user
+  level (structural), your own `hooks/guards_<org>.py` at project level (domain),
+  both reading ARCH_HOOKS_MODE so one setting governs both and no guard fires
+  twice. It is explicit, it survives an upgrade of this file, and the shared
+  machine-wide hook never imports or executes adopter code — which auto-discovery
+  would have required, and which is an arbitrary-code-execution surface, not a
+  style question (decision: Michael, 2026-08-03).
 
 Wire via .claude/settings.json -> hooks.PreToolUse (see hooks/claude-settings.example.json).
 
@@ -137,12 +159,18 @@ def g1_kernel_write_guard(tool, path, text, cmd):
 
 def g2_abba_format_guard(tool, path, text, cmd):
     """Coordination hygiene: every new 'Status: OPEN' bulletin message must carry a
-    'To:' field, or nobody owns it. Applies to the cross-agent board (ABBA.md)."""
+    'To:' field, or nobody owns it. Applies to the cross-agent board (ABBA.md).
+
+    Scoped to the message HEADER line. The board's documented format carries `To:`
+    INLINE — `### [n] To: <Agent> · From: <who> · <date> · Status: OPEN` — so a
+    block-scoped check anchored to line-start can never be satisfied by a correctly
+    formatted message, and at `enforce` makes the board unwritable."""
     if tool in WRITE_TOOLS and os.path.basename(path) == "abba.md":
-        for block in re.split(r"\n\s*\n", text or ""):
-            if "status: open" in block.lower() and not re.search(r"(^|\n)\s*to:\s*\S", block, re.IGNORECASE):
-                return ("ABBA format guard: a new 'Status: OPEN' message lacks a 'To:' "
-                        "field. Address every open bulletin to a named recipient.")
+        for line in (text or "").splitlines():
+            if re.match(r"^###\s*\[\d+\]", line) and "status: open" in line.lower():
+                if not re.search(r"\bto:\s*\S", line, re.IGNORECASE):
+                    return ("ABBA format guard: a new 'Status: OPEN' message lacks a 'To:' "
+                            "field. Address every open bulletin to a named recipient.")
     return None
 
 

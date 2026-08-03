@@ -89,10 +89,40 @@ def write_payload(path, content):
     return {"tool_name": "Write", "tool_input": {"file_path": path, "content": content}}
 
 
-class GuardCase(unittest.TestCase):
+class ManifestEnvCase(unittest.TestCase):
+    """Pin ARCH_MANIFEST to the fixture's own manifest name for the whole test.
+
+    These fixtures write a manifest literally named `4SYNC.yaml`, then exercise code
+    that resolves `os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml"`. Inheriting an
+    ambient value aims that lookup at a file the fixture never wrote, so the guard
+    finds no manifest and quietly passes what it should block.
+
+    The bite: MP#20 tells adopters to rename their manifest off the colliding
+    `4SYNC.yaml`, which sets exactly this variable — so every adopter who followed
+    the product's own advice broke their suite, with no way to tell those failures
+    from real ones. A test must not depend on the environment it happens to run in."""
+
+    MANIFEST_NAME = "4SYNC.yaml"
+
+    def setUp(self):
+        super().setUp()
+        prev = os.environ.get("ARCH_MANIFEST")
+        os.environ["ARCH_MANIFEST"] = self.MANIFEST_NAME
+
+        def restore():
+            if prev is None:
+                os.environ.pop("ARCH_MANIFEST", None)
+            else:
+                os.environ["ARCH_MANIFEST"] = prev
+
+        self.addCleanup(restore)
+
+
+class GuardCase(ManifestEnvCase):
     """Builds a throwaway instance root: <root>/config/STATUS.yaml + <root>/4SYNC.yaml."""
 
     def setUp(self):
+        super().setUp()
         self.root = tempfile.mkdtemp(prefix="sync-hooks-test-")
         os.makedirs(os.path.join(self.root, "config"))
         self.status = os.path.join(self.root, "config", "STATUS.yaml")
@@ -245,6 +275,11 @@ class TestBoringGuard(GuardCase):
 class TestUnaffectedGuards(GuardCase):
     """g1/g2/g3 keep their 4-arg signature and their fragment-level semantics."""
 
+    def test_manifest_env_is_pinned_to_the_fixture(self):
+        """Locks the isolation itself: drop ManifestEnvCase and this fails loudly
+        instead of the whole suite failing only on machines that set the var."""
+        self.assertEqual(os.environ.get("ARCH_MANIFEST"), "4SYNC.yaml")
+
     def test_kernel_guard_still_blocks(self):
         kernel = os.path.join(self.root, "config", "KERNEL.yaml")
         self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
@@ -254,15 +289,58 @@ class TestUnaffectedGuards(GuardCase):
         self.assertIn("KERNEL", reason)
 
     def test_abba_guard_judges_the_fragment_not_the_file(self):
-        """A new OPEN block without To: is flagged; the guard must not start
-        re-flagging pre-existing blocks it wasn't asked to write."""
+        """A new OPEN message without To: is flagged; the guard must not start
+        re-flagging pre-existing messages it wasn't asked to write.
+
+        The fixture carries real `### [n]` headers: this test once asserted the
+        guard's own defect, using headerless prose that only a block-scoped check
+        could flag. The fragment-vs-file intent it was written for is unchanged."""
         abba = os.path.join(self.root, "ABBA.md")
-        self._put(abba, "## Board\n\nStatus: OPEN\nBody: legacy message, no To:\n")
+        self._put(abba, "## Board\n\n### [1] From: X · Status: OPEN\nlegacy message, no To:\n")
         clean = self.run_guards(edit_payload(abba, "## Board", "## Board (renamed)"))
         self.assertIsNone(clean)
-        dirty = self.run_guards(edit_payload(abba, "## Board", "## Board\n\nStatus: OPEN\nBody: hi\n"))
+        dirty = self.run_guards(edit_payload(
+            abba, "## Board", "## Board\n\n### [2] From: X · Status: OPEN\nRe: hi\n"))
         self.assertIsNotNone(dirty)
         self.assertIn("ABBA", dirty)
+
+
+class TestAbbaHeaderFormat(GuardCase):
+    """Regression cover for a guard that rejected the format the product ships.
+
+    `To:` lives INLINE in the documented header — `### [n] To: <Agent> · From: …
+    · Status: OPEN` — but g2 anchored it to the start of a line inside the block,
+    so NO correctly formatted message could satisfy it. Latent since it shipped:
+    under `warn` it logged and allowed, and the log line read like a real catch.
+    The first instance to run at `enforce` found its bulletin board unwritable."""
+
+    HEADER = "### [251] To: LoCo · From: Cow · 2026-08-03 · Status: OPEN"
+
+    def _edit(self, new):
+        abba = os.path.join(self.root, "ABBA.md")
+        self._put(abba, "## OPEN messages\n")
+        return self.run_guards(edit_payload(abba, "## OPEN messages", new))
+
+    def test_documented_inline_to_header_passes(self):
+        self.assertIsNone(self._edit(f"## OPEN messages\n\n{self.HEADER}\nRe: x\nBody.\n"))
+
+    def test_open_header_without_to_still_blocks(self):
+        reason = self._edit("## OPEN messages\n\n"
+                            "### [252] From: Cow · 2026-08-03 · Status: OPEN\nRe: x\n")
+        self.assertIsNotNone(reason)
+        self.assertIn("ABBA", reason)
+
+    def test_template_placeholder_header_is_ignored(self):
+        """`### [n]` is the format template every board ships, not a message."""
+        self.assertIsNone(self._edit(
+            "## OPEN messages\n\n### [n] To: <Agent> · From: <who> · <date> · Status: OPEN|DONE\n"))
+
+    def test_body_prose_cannot_satisfy_the_guard(self):
+        """Header-scoping is TIGHTER than the fix it was chosen over: body prose
+        containing 'according to:' must not count as addressing the message."""
+        reason = self._edit("## OPEN messages\n\n### [253] From: Cow · Status: OPEN\n"
+                            "Re: x\nAccording to: the spec, this is fine.\n")
+        self.assertIsNotNone(reason)
 
 
 class TestDebtRecorderScope(unittest.TestCase):

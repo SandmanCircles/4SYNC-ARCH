@@ -90,8 +90,44 @@ class TestParseLoadLists(unittest.TestCase):
         self.assertEqual(lists["never_load_whole"], ["config/HISTORY.md"])
 
 
-class TestBuildReport(unittest.TestCase):
+class ManifestEnvCase(unittest.TestCase):
+    """Pin ARCH_MANIFEST to the fixture's own manifest name for the whole test.
+
+    These fixtures write a manifest literally named `4SYNC.yaml`, then call code
+    that resolves `os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml"`. Inheriting an
+    ambient value aims that lookup at a file the fixture never wrote.
+
+    The bite: MP#20 tells adopters to rename their manifest off the colliding
+    `4SYNC.yaml`, which sets exactly this variable — so every adopter who followed
+    the product's own advice broke their suite, with no way to tell those failures
+    from real ones. A test must not depend on the environment it happens to run in.
+    (TestResolveManifest is deliberately NOT a subclass: it passes env dicts in
+    explicitly, which is how the knob's own behaviour should be tested.)"""
+
+    MANIFEST_NAME = "4SYNC.yaml"
+
     def setUp(self):
+        super().setUp()
+        prev = os.environ.get("ARCH_MANIFEST")
+        os.environ["ARCH_MANIFEST"] = self.MANIFEST_NAME
+
+        def restore():
+            if prev is None:
+                os.environ.pop("ARCH_MANIFEST", None)
+            else:
+                os.environ["ARCH_MANIFEST"] = prev
+
+        self.addCleanup(restore)
+
+
+class TestBuildReport(ManifestEnvCase):
+    def test_manifest_env_is_pinned_to_the_fixture(self):
+        """Locks the isolation itself: drop ManifestEnvCase and this fails loudly
+        instead of the whole suite failing only on machines that set the var."""
+        self.assertEqual(os.environ.get("ARCH_MANIFEST"), "4SYNC.yaml")
+
+    def setUp(self):
+        super().setUp()
         # Build a tiny fake repo on disk with known file sizes.
         self.root = tempfile.mkdtemp(prefix="meter_test_")
         os.makedirs(os.path.join(self.root, "config"), exist_ok=True)

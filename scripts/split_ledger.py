@@ -59,7 +59,10 @@ TASKS_DIRNAME = "tasks"
 CLOSED_DIRNAME = "closed"
 
 # `### #111 — Subject ✅`  ·  the dash is optional, the trailing status mark is stripped
-HEADING_RE = re.compile(r"^### #(\d+)[ \t]*(?:—|--|–|:)?[ \t]*(.*?)[ \t]*$", re.M)
+# `(?![-\w])` is load-bearing: without it a SUB-SECTION heading — `### #32-original-design-context`
+# — parses as a second description for task 32, and the duplicate refusal then names a collision
+# the ledger does not contain (often in another file this scans), which no inspection can find.
+HEADING_RE = re.compile(r"^### #(\d+)(?![-\w])[ \t]*(?:—|--|–|:)?[ \t]*(.*?)[ \t]*$", re.M)
 # a block ends at the next heading of either level
 BLOCK_END_RE = re.compile(r"^#{2,3} ", re.M)
 TABLE_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", re.M)

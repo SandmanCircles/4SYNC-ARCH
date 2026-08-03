@@ -86,11 +86,14 @@ never fire again.
 
 ## Hardening (optional)
 
-- **`hooks/pre_tool_use.py`** — five structural guards (KERNEL-write, ABBA-format,
-  sandbox-git, STATUS-snapshot, and the **boring-guard** that holds the manifest
-  within its own declared `max_bytes` and keeps it declaration-only) plus a
-  **session-debt recorder** that flags a session which did work but never ran an
+- **`hooks/pre_tool_use.py`** — six structural guards (KERNEL-write, ABBA-format,
+  sandbox-git, STATUS-snapshot, the **boring-guard** that holds the manifest within
+  its own declared `max_bytes` and keeps it declaration-only, and the **root fence**
+  that flags a write into a different ARCH instance than the session booted in) plus
+  a **session-debt recorder** that flags a session which did work but never ran an
   explicit close — surfaced at the next boot, cleared only by a real close.
+  Adding domain guards of your own? See **Adding your own guards** below — not by
+  appending to this file's `GUARDS` list.
 - **`scripts/rotate.py`** — ledger rotation: journal keep-N overflow to history,
   aged bulletin messages to archive. Run at close from a git-capable session.
 
@@ -120,6 +123,44 @@ session-debt recorder · `ARCH_MANIFEST` sets the manifest filename — honored 
 the boring-guard and `scripts/meter.py`, so a renamed manifest is one variable,
 not two (default `4SYNC.yaml`). Add `.claude/settings.local.json` and the warn-mode
 log to your `.gitignore` — they're local, not shared.
+
+### Adding your own guards
+
+The six shipped guards are **structural** — they protect the shape of the pattern, and
+nothing in them is specific to any product or brand. Most adopters eventually want
+domain guards too: don't leak this brand name, don't revive that retired concept,
+don't edit this protected prompt.
+
+**Do not add them by appending to the `GUARDS` list in your copy of
+`hooks/pre_tool_use.py`.** Wire the shipped hook at **user level**
+(`~/.claude/settings.json`) and the copy that executes is the shared one, not your
+instance's — an appended guard silently never runs, while your settings still say
+`enforce` and the log still fills with structural catches. Wire it only at project
+level and the append does run, but you lose it every time you upgrade this file, and
+you keep the launch-directory bypass that the user-level wire exists to close.
+
+**Use two hooks with disjoint guard sets.** Both are `PreToolUse`; both read
+`ARCH_HOOKS_MODE`, so one setting governs both and no guard fires twice:
+
+| | wired at | holds | upgrades |
+|---|---|---|---|
+| `hooks/pre_tool_use.py` | user (`~/.claude/settings.json`) | the 6 structural guards | replace wholesale |
+| `hooks/guards_<org>.py` | project (`.claude/settings.local.json`) | your domain guards | yours, never touched |
+
+Your file is a standalone hook, not an import of this one: same stdin/exit contract
+(exit 0 allow, exit 2 block with the reason on stderr), same `ARCH_HOOKS_MODE` read,
+its own `GUARDS` list. Copy this file's dispatcher as a starting point and delete the
+six guards. The arity dispatch is worth keeping — 4-arg `(tool, path, text, cmd)`
+guards and 5-arg ones taking the prospective whole-file content both work.
+
+**Why not auto-discovery?** The obvious alternative — have the shared hook import a
+`guards_local.py` from whichever instance a write resolves into — was considered and
+**rejected on security grounds** (2026-08-03). A machine-wide hook that auto-imports
+Python from any directory a write lands in is an arbitrary-code-execution vector:
+clone a repo that ships a `config/` dir and a malicious guards file, write one file
+into it, and someone else's code runs with your privileges on every write. Two
+explicit hooks cost one settings entry and keep the shared hook from executing
+adopter code at all.
 
 ### What the guards do and don't cover
 

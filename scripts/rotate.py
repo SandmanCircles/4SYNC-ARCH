@@ -7,8 +7,9 @@ Does two things, both as verbatim block moves:
 
 1. JOURNAL KEEP-N: if the '## Session journal (recent)' section of the ledger
    (MERGE_PLAN.md) holds more than N blocks (default 5), move the oldest
-   (bottom) blocks to the TOP of the history file's journal area
-   (JOURNAL_HISTORY.md), newest-first order preserved.
+   (bottom) blocks to the TOP of the history file's journal area, newest-first
+   order preserved. The history file is whatever the manifest's
+   close.journal.overflow_to declares, defaulting to JOURNAL_HISTORY.md.
 
 2. TASK DOCS: long-form task documents live OUTSIDE the ledger, one per row, at
    tasks/MP-0NN.md — derived from the row ID, never written down as a pointer.
@@ -417,6 +418,35 @@ def report_subjects(ledger_path, subject_max):
 # ── size report ──────────────────────────────────────────────────────────────
 
 JOURNAL_MAX_DEFAULT = 12288
+JOURNAL_HISTORY_DEFAULT = "JOURNAL_HISTORY.md"
+
+
+def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
+    """close.journal.overflow_to from the manifest, or the default filename.
+
+    Mirrors manifest_journal_max(), fallback and all. A manifest that declares
+    where its journal overflows must be OBEYED — this was hardcoded, so an
+    instance declaring its own history file had rotation silently scatter journal
+    blocks into a second file it never declared, with no error to notice. A
+    manifest key that is parsed but never honoured is worse than an absent one,
+    because it is trusted."""
+    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    if not os.path.exists(p):
+        return JOURNAL_HISTORY_DEFAULT
+    text = read(p)
+    try:
+        import yaml  # type: ignore
+        v = (yaml.safe_load(text) or {}).get("close", {}).get("journal", {}).get("overflow_to")
+        if isinstance(v, str) and v.strip():
+            return os.path.basename(v.strip())
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    m = re.search(r"(?ms)^\s{2}journal:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", text)
+    if m:
+        ov = re.search(r"^\s*overflow_to:\s*[\"']?([^\"'\s#]+)", m.group(1), re.M)
+        if ov:
+            return os.path.basename(ov.group(1))
+    return JOURNAL_HISTORY_DEFAULT
 
 
 def manifest_journal_max(root, manifest_name="4SYNC.yaml"):
@@ -551,7 +581,7 @@ def main():
 
     d = os.path.abspath(args.dir)
     ledger = os.path.join(d, "MERGE_PLAN.md")
-    history = os.path.join(d, "JOURNAL_HISTORY.md")
+    history = os.path.join(d, manifest_journal_overflow(d))
     abba = os.path.join(d, "ABBA.md")
     archive = os.path.join(d, "ABBA_ARCHIVE.md")
 

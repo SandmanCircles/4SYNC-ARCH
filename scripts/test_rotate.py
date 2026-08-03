@@ -15,11 +15,14 @@ rotated one legitimate block out. The comment must also SURVIVE a rotation, sinc
 rotate_journal rebuilds the ledger from `before + blocks`.
 """
 
+import builtins
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rotate  # noqa: E402
@@ -28,6 +31,35 @@ import rotate  # noqa: E402
 KEEP_COMMENT = """<!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
      At session close: PREPEND your new block here. If that makes 6 blocks, move the
      oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. -->"""
+
+
+class ManifestEnvCase(unittest.TestCase):
+    """Pin ARCH_MANIFEST to the fixture's own manifest name for the whole test.
+
+    These fixtures write a manifest literally named `4SYNC.yaml`, then call code
+    that resolves `os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml"`. Inheriting an
+    ambient value aims that lookup at a file the fixture never wrote, so the reader
+    finds nothing and returns its default.
+
+    The bite: MP#20 tells adopters to rename their manifest off the colliding
+    `4SYNC.yaml`, which sets exactly this variable — so every adopter who followed
+    the product's own advice broke their suite, with no way to tell those failures
+    from real ones. A test must not depend on the environment it happens to run in."""
+
+    MANIFEST_NAME = "4SYNC.yaml"
+
+    def setUp(self):
+        super().setUp()
+        prev = os.environ.get("ARCH_MANIFEST")
+        os.environ["ARCH_MANIFEST"] = self.MANIFEST_NAME
+
+        def restore():
+            if prev is None:
+                os.environ.pop("ARCH_MANIFEST", None)
+            else:
+                os.environ["ARCH_MANIFEST"] = prev
+
+        self.addCleanup(restore)
 
 
 def ledger(blocks, comment=True, trailer="\n---\n\n## Summary table\n"):
@@ -273,8 +305,9 @@ class TestTaskDocs(unittest.TestCase):
         self.assertEqual(sorted(rows), [1, 2, 4, 27])
 
 
-class TestSizeReport(unittest.TestCase):
+class TestSizeReport(ManifestEnvCase):
     def setUp(self):
+        super().setUp()
         self.root = tempfile.mkdtemp(prefix="rotate_size_")
         self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
 
@@ -307,6 +340,11 @@ class TestSizeReport(unittest.TestCase):
         total, jbytes = rotate.report_sizes(self.root, self.ledger, journal_max=1)
         self.assertGreater(jbytes, 1)   # reports; never blocks
 
+    def test_manifest_env_is_pinned_to_the_fixture(self):
+        """Locks the isolation itself: drop ManifestEnvCase and this fails loudly
+        instead of the whole suite failing only on machines that set the var."""
+        self.assertEqual(os.environ.get("ARCH_MANIFEST"), "4SYNC.yaml")
+
     def test_manifest_max_bytes_is_read(self):
         with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write("close:\n  journal:\n    keep: 5\n    max_bytes: 4096\n")
@@ -314,6 +352,88 @@ class TestSizeReport(unittest.TestCase):
 
     def test_manifest_absent_falls_back_to_default(self):
         self.assertEqual(rotate.manifest_journal_max(self.root), rotate.JOURNAL_MAX_DEFAULT)
+
+
+OVERFLOW_MANIFEST = """\
+sync_version: "1.0"
+
+close:
+  journal:
+    file: MERGE_PLAN.md
+    keep: 5
+    max_bytes: 16384
+    overflow_to: MERGE_PLAN_HISTORY.md
+"""
+
+
+class TestJournalOverflowTarget(ManifestEnvCase):
+    """The overflow target was HARDCODED to JOURNAL_HISTORY.md while the manifest
+    declared close.journal.overflow_to — so an instance with its own history file
+    had rotation quietly scatter journal blocks into a second file it never
+    declared, and nothing errored. A manifest key that is parsed but not obeyed is
+    worse than an absent one, because it is trusted."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = tempfile.mkdtemp(prefix="rotate_overflow_")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _manifest(self, text, name="4SYNC.yaml"):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+
+    def test_declared_overflow_target_is_read(self):
+        self._manifest(OVERFLOW_MANIFEST)
+        self.assertEqual(rotate.manifest_journal_overflow(self.root), "MERGE_PLAN_HISTORY.md")
+
+    def test_manifest_absent_falls_back_to_default(self):
+        self.assertEqual(rotate.manifest_journal_overflow(self.root),
+                         rotate.JOURNAL_HISTORY_DEFAULT)
+
+    def test_declaration_is_read_without_pyyaml(self):
+        """rotate.py must run on a bare interpreter with no third-party packages —
+        its sibling manifest_journal_max has a regex fallback for exactly that, and
+        a yaml-only reader would re-create this defect wherever PyYAML is absent."""
+        self._manifest(OVERFLOW_MANIFEST)
+        real_import = builtins.__import__
+
+        def no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("PyYAML not installed")
+            return real_import(name, *a, **k)
+
+        with mock.patch.object(builtins, "__import__", no_yaml):
+            self.assertEqual(rotate.manifest_journal_overflow(self.root),
+                             "MERGE_PLAN_HISTORY.md")
+
+    def test_overflow_target_cannot_escape_the_instance_root(self):
+        """The manifest names a sibling file, never a path. Rotation writes verbatim
+        blocks of session history; a declaration like `../elsewhere.md` must not
+        steer that write outside the instance."""
+        self._manifest(OVERFLOW_MANIFEST.replace("MERGE_PLAN_HISTORY.md",
+                                                 "../../escaped.md"))
+        self.assertEqual(rotate.manifest_journal_overflow(self.root), "escaped.md")
+
+    def test_end_to_end_rotation_lands_in_the_declared_file(self):
+        """The resolver being right is not enough — main() held the literal."""
+        self._manifest(OVERFLOW_MANIFEST)
+        led = os.path.join(self.root, "MERGE_PLAN.md")
+        with open(led, "w", encoding="utf-8", newline="") as fh:
+            fh.write(ledger(range(6), comment=True))
+        declared = os.path.join(self.root, "MERGE_PLAN_HISTORY.md")
+        with open(declared, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# History\n")
+
+        subprocess.run([sys.executable, os.path.abspath(rotate.__file__),
+                        "--dir", self.root, "--keep", "5", "--apply", "--allow-dirty"],
+                       capture_output=True, text=True, check=False)
+
+        with open(declared, encoding="utf-8") as fh:
+            self.assertIn("2026-07-15", fh.read())          # the oldest block, rotated out
+        self.assertFalse(os.path.exists(os.path.join(self.root, "JOURNAL_HISTORY.md")),
+                         "rotation created a history file the manifest never declared")
 
 
 SUBJ_LEDGER = """# Ledger

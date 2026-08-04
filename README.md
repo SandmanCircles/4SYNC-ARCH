@@ -79,8 +79,11 @@ Three pillars, with distinct authority and write discipline:
 Multi-agent extras: `ABBA.md` — a bulletin board of messages addressed by agent
 name, which also carries the **roster** of who those agents are; `LANDING_QUEUE.md`
 — commit handoffs from surfaces that can't safely run git. Both ship **inert**:
-declare an `agents:` block in the manifest to switch them on, omit it and sessions
-never read them. Nothing to delete, and adding a surface later is two lines.
+set `close.bulletin.check_at_boot: true` to switch the board on, leave it `false`
+and sessions never read it. Nothing to delete, and adding a surface later is two
+lines. (Gate on that key, not on whether you have an `agents:` block — the meter
+prices the board off `check_at_boot`, and gating the two differently makes the
+manifest declare one thing while the meter measures another.)
 
 ## The manifest — `4SYNC.yaml`
 

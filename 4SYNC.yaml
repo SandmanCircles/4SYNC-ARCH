@@ -133,14 +133,20 @@ close:
     script: scripts/rotate.py  # run if present AND runnable (no Python → skip silently);
                                # dry-run on first-ever use
   meter:
-    script: scripts/meter.py   # token-saving boot-cost meter — read-only reporting, never blocks
+    script: scripts/meter.py   # boot-cost meter — never blocks
+    args: --log                # append one row to metrics/roc_series.jsonl; --note is optional
+    on_missing: skip           # a measurement never blocks a close
+    # Drop `args` and it only reports. Keep it and the series starts on day one —
+    # which is the only day it can start: a run not logged cannot be backfilled.
   commit:
     trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
     untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount
 
 integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
-  hooks: hooks/pre_tool_use.py           # ARCH_HOOKS_MODE: warn | enforce | off
+  hooks:                                 # ARCH_HOOKS_MODE: warn | enforce | off
+    - hooks/pre_tool_use.py              # PreToolUse — six structural guards + debt recorder
+    - hooks/session_start.py             # SessionStart — boot receipt; ARCH_BOOT_MODE: announce | inject | off
   manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
     max_bytes: 10240         # raised from 8192 — deliberately, in the same
                              # edit that hit it, which is what g5's own message prescribes.

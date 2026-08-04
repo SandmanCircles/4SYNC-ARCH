@@ -149,6 +149,10 @@ series became interesting.
   explicit close — surfaced at the next boot, cleared only by a real close.
   Adding domain guards of your own? See **Adding your own guards** below — not by
   appending to this file's `GUARDS` list.
+- **`hooks/session_start.py`** — a **boot receipt** injected at session start:
+  which instance this is, the ordered boot stack with its measured cost, any
+  missing EOF sentinel, and the session-debt reading (sessions live *right now*
+  vs. sessions holding undeposited state). See **Making boot non-optional** below.
 - **`scripts/rotate.py`** — ledger rotation: journal keep-N overflow to history,
   aged bulletin messages to archive. Run at close from a git-capable session.
 
@@ -218,6 +222,46 @@ for a human to make by hand. Copy `hooks/claude-settings.example.json` into
 keep comments to that one — and if you set `ARCH_HOOKS_MODE=enforce` at the user
 level you have set it for **every ARCH instance on the machine**, which is usually
 what you want and never what you want by accident.
+
+### Making boot non-optional
+
+Boot is otherwise enforced by prose: `CLAUDE.md` tells a session to read the
+manifest and load the stack, and nothing checks that it did. That gap is not
+hypothetical. Asked point-blank what it had loaded, one session answered:
+
+> "I never ran the boot sequence this session. I have not loaded the KERNEL,
+> STATUS, MERGE_PLAN, NAMING_CONVENTIONS, ABBA, or DEFECTS."
+
+It had oriented on the `CLAUDE.md` files and a folder listing, and no code
+noticed — because no code was watching. Wire the `SessionStart` hook and it is:
+
+```json
+"SessionStart": [
+  { "hooks": [ { "type": "command",
+                 "command": "python \"/path/to/hooks/session_start.py\"" } ] }
+]
+```
+
+Two modes, via `ARCH_BOOT_MODE`:
+
+| mode | what it injects | cost |
+|---|---|---|
+| `announce` *(default)* | the receipt — instance, ordered boot list, measured cost, sentinel status, debt readings | a few hundred tokens |
+| `inject` | the receipt **plus the contents of every boot file** | your whole boot budget, every session |
+
+`announce` makes it impossible for a session to *not know* it was supposed to
+boot. `inject` makes booting not a choice at all. Start with `announce`; reach
+for `inject` when you have a surface that keeps skipping anyway. `off` disables.
+
+It resolves the instance from cwd **strictly** — outside an ARCH instance it
+prints nothing and exits 0, which matters because the placement that fixes the
+launch-directory bypass is user level, where it runs for every session on the
+machine. It never blocks: any error and the session proceeds without a receipt.
+
+**The limit that must travel with it:** a **cloud** Cowork session gets no hooks
+at all, so it gets no receipt either. On that surface the instrument is the probe
+that caught the failure above — *ask the session to summarise what it loaded, and
+to look nothing up.* Cheap, and worth running on any surface.
 
 ### Adding your own guards
 

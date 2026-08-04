@@ -1,10 +1,5 @@
 {
-  "//": "Example wiring for the 4SYNC ARCH guard + session-debt hook (hooks/pre_tool_use.py). Copy to .claude/settings.local.json and adjust paths.",
-  "//guards": "pre_tool_use.py runs FIVE structural guards (KERNEL-write, ABBA-format, sandbox-git, STATUS-snapshot, boring-guard) plus a session-debt recorder that flags a session which worked but never ran an explicit close.",
-  "//rollout": "Start with ARCH_HOOKS_MODE=warn (violations logged, never blocked). After ~a week of clean runs, flip to 'enforce'. 'off' disables entirely.",
-  "//paths": "Adjust the interpreter + script + log paths to your checkout. Forward slashes work on Windows too; use the FULL python path if bare 'python' is shadowed (e.g. the Windows Store stub).",
-  "//activate": "After creating this file, reload config: open /hooks once, or restart the session — a freshly-created .claude/ is not watched mid-session.",
-  "//env": "Optional: ARCH_DEBT=0 disables the session-debt recorder; ARCH_MANIFEST sets the manifest filename the boring-guard watches (default 4sync.yaml).",
+  "//": "Example wiring for the 4SYNC ARCH guard + session-debt hook (hooks/pre_tool_use.py). PROJECT scope: copy to .claude/settings.local.json and adjust paths. USER scope (covers every ARCH instance on the machine, and closes the launch-directory bypass): copy the same 'hooks' block to ~/.claude/settings.json, WITHOUT the 'env' block below — see README 'Where to wire them'. SIX structural guards: KERNEL-write, ABBA-format, sandbox-git, STATUS-snapshot, boring-guard, root-fence — plus a session-debt recorder that flags a session which worked but never ran an explicit close. Rollout: start at ARCH_HOOKS_MODE=warn (logged, never blocked), flip to 'enforce' after a clean stretch; 'off' disables. Adjust the interpreter + script + log paths to your checkout; forward slashes work on Windows, and use the FULL python path if bare 'python' is shadowed by the Store stub. After creating this file, reload: open /hooks once or restart the session, since a freshly-created .claude/ is not watched mid-session. Optional env: ARCH_DEBT=0 disables the debt recorder; ARCH_MANIFEST sets the manifest filename the boring-guard watches (default 4SYNC.yaml). KEEP COMMENTS IN THIS SINGLE '//' KEY: a NAMED comment key such as '//note' was rejected by the settings schema.",
   "hooks": {
     "PreToolUse": [
       {

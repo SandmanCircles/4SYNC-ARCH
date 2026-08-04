@@ -41,8 +41,30 @@ More model, same subscription.
 
 No skills to install, no plugins, no per-machine setup. The entire mechanism is two
 files that travel with the folder: `CLAUDE.md` (teaches any session the protocol
-exists) and `4SYNC.yaml` (declares what this instance's protocol is). Users can layer
-their own trigger-phrase skills on top; the system needs none.
+exists) and `4SYNC.yaml` (declares what this instance's protocol is).
+
+**Want a trigger phrase anyway?** Say "wrap up" and a session closes; that already
+works, because the manifest declares what closing means. If you'd rather have a
+slash command, write one in *your* `.claude/`, not in this folder — six lines is
+the whole thing:
+
+```markdown
+---
+name: wrap
+description: Close out this 4SYNC ARCH session.
+---
+Read `4SYNC.yaml` and execute its `close:` steps in order, honoring
+`freshness_check` before any ledger write.
+```
+
+That is a convenience for your fingers, and deliberately not a dependency: the
+protocol has to run for a session that has never heard of your skill — a
+scheduled job, a teammate's machine, a different surface. Anything that only
+works when the skill is installed has moved a load-bearing step out of the folder
+that travels. Keep the manifest authoritative and let the skill be a shortcut to it.
+
+For a filled-in instance end to end — seed, the config genesis writes from it, and
+one of each artefact in use — see **[`EXAMPLE.md`](EXAMPLE.md)**.
 
 ## The shape of the protocol
 
@@ -151,11 +173,51 @@ Prefer to do it by hand? Copy `hooks/claude-settings.example.json` →
 use the *full* Python path if bare `python` is shadowed by the Store stub.
 
 Env knobs: `ARCH_HOOKS_MODE` = `warn` | `enforce` | `off` (start in `warn` — logs,
-never blocks; flip to `enforce` after a clean stretch) · `ARCH_DEBT=0` disables the
+never blocks; flip to `enforce` after a clean stretch, and read *What the first
+adoption found* below before you trust a warn log) · `ARCH_DEBT=0` disables the
 session-debt recorder · `ARCH_MANIFEST` sets the manifest filename — honored by both
 the boring-guard and `scripts/meter.py`, so a renamed manifest is one variable,
 not two (default `4SYNC.yaml`). Add `.claude/settings.local.json` and the warn-mode
 log to your `.gitignore` — they're local, not shared.
+
+### Where to wire them — project level or user level
+
+> **One project: wire the project. Multiple instances, or sessions launched from
+> outside them: wire the user level.**
+
+This is the decision the commands above don't make for you, and it is not
+guessable from them:
+
+- Claude Code resolves settings **once at launch, from the git-repo root of the
+  start directory**. A project-level wire therefore protects only sessions
+  *launched inside that project* — a session started one directory up and drilled
+  down into it carries no guards at all. That is not a bug and no setting changes it.
+- `~/.claude/settings.json` is **user-level, not parent-directory**. Every session
+  reads it regardless of where the project lives — another drive, anywhere. That
+  is what makes it the answer for multi-instance setups, and it is a common
+  misreading: it looks like directory inheritance and isn't.
+- The guards match on the **target path**, not the working directory, so one
+  user-level wire covers every ARCH instance on the machine at once — including
+  instances whose config stack is prefixed (`config/ACME_KERNEL.yaml` trips the
+  KERNEL guard exactly as `config/KERNEL.yaml` does).
+
+**Both is safe, and verified.** Claude Code **dedupes identical hook commands**
+across settings sources: with a user-level and a project-level wire both live, a
+guard event produces one log line, not two. So a project `.claude/settings.local.json`
+can stay for its `env` values while the user-level wire does the covering. (Earlier
+revisions of this file said "not both" — that was written while the behaviour was
+unverified, and the verification changed the advice.)
+
+**`wire_hooks.py` writes the project level only.** The user-level wire is a
+deliberate manual step: an assistant editing your global settings is a command
+that would then run on every tool call in every project, and that is a decision
+for a human to make by hand. Copy `hooks/claude-settings.example.json` into
+`~/.claude/settings.json` and fix the paths. Two traps that cost real time: a
+**named** comment key such as `"//note"` was rejected by the settings schema
+(2026-07-30) — the single bare `"//"` key that `wire_hooks.py` writes is fine, so
+keep comments to that one — and if you set `ARCH_HOOKS_MODE=enforce` at the user
+level you have set it for **every ARCH instance on the machine**, which is usually
+what you want and never what you want by accident.
 
 ### Adding your own guards
 
@@ -194,6 +256,34 @@ clone a repo that ships a `config/` dir and a malicious guards file, write one f
 into it, and someone else's code runs with your privileges on every write. Two
 explicit hooks cost one settings entry and keep the shared hook from executing
 adopter code at all.
+
+### What the first adoption found
+
+ARCH's first outside adoption produced five product defects. Every one was
+invisible from inside the instance the product was written in — which is the
+argument for treating an adoption as a **test**, not a delivery. The pattern is
+worth more than the five fixes, so here it is as a checklist to run against any
+guard or manifest key you add:
+
+| Shape | What happened | The check it implies |
+|---|---|---|
+| **The product documented a workflow it does not support** | The hook's docstring prescribed an extension mechanism that cannot execute under the wiring the product recommends. An adopter following the docs loses their guards silently. | Every extension point named in prose needs a test proving it executes. |
+| **A guard rejected the product's own format** | The bulletin guard demanded `To:` at line start; every documented example, including the shipped template, puts it inline. At `enforce` the board was unwritable. | A guard and the format it guards must share a fixture. If your template doesn't pass your guard in a test, the guard is wrong. |
+| **A declaration was decorative** | `close.journal.overflow_to` was parsed and obeyed by nothing, so an instance declaring its own history file had rotation quietly scatter blocks into a second, undeclared one. | Every manifest key needs a test proving that changing it changes behaviour. A key that is read but not honoured is worse than an absent one, because it is trusted. |
+| **Following the advice broke the tooling** | The docs tell adopters to rename their manifest; doing so failed four tests, with no way to tell those failures from real ones. | Run the suite in an instance that has taken every piece of advice the docs give. The adoption path itself needs a test. |
+
+**And the meta-finding, which is the one to keep:**
+
+> **Warn mode hides the class of defect where the guard itself is wrong.**
+>
+> Two of those defects had been latent since the day they shipped. The hook ran
+> with no `ARCH_HOOKS_MODE` set, so it defaulted to `warn`: it logged the false
+> positive, **allowed the action, and the log line read exactly like a real
+> catch.** It was recorded as one. The first instance to run at `enforce` hit
+> both within the hour.
+>
+> A guard that is never enforced is never tested. **Run `enforce` early, on one
+> instance, before you trust warn-mode logs as evidence of anything.**
 
 ### What the guards do and don't cover
 

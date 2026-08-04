@@ -84,6 +84,39 @@ protocol still runs. Genesis prunes for you: it drops the blocks your seed didn'
 ask for, and deletes its own `bootstrap:` section once it has run, since it can
 never fire again.
 
+## Measuring it — `scripts/meter.py`
+
+ARCH's claim is Return on Context, so the boot cost is the number that has to be
+real. The meter reads your manifest's load lists and prices them:
+
+```bash
+python scripts/meter.py --dir .
+```
+
+It reports what boot loads, what is deferred, and the share kept out of every
+session's window. Token counts are estimates (bytes ÷ 4), not tokenizer output —
+useful for trend and proportion, not for billing.
+
+**Start the series on day one.** `--log` appends one row per run to
+`metrics/roc_series.jsonl`:
+
+```bash
+python scripts/meter.py --dir . --log --note "after the ledger split"
+```
+
+Each row carries the timestamp, the commit, the totals, and **the byte size of
+every file in the stack**. The per-file breakdown is the point: the useful
+question later is never *did boot grow* but *which file grew* — and that is
+unrecoverable from a total after the fact. Add it to your manifest's `close:`
+block so it runs at every wrap.
+
+Two properties worth knowing before you rely on it. It **only ever appends** —
+a measurement series has no undo, so a run you didn't log is gone for good and
+a writer that could truncate would destroy the only copy. And it is **JSONL, not
+CSV**, because the boot stack itself changes over time — files get added, split,
+deferred, renamed — and fixed columns would break at exactly the moment the
+series became interesting.
+
 ## Hardening (optional)
 
 - **`hooks/pre_tool_use.py`** — six structural guards (KERNEL-write, ABBA-format,

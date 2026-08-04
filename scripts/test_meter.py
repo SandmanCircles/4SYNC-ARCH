@@ -10,6 +10,7 @@ same scripts/ directory. Run either way:
   python scripts/test_meter.py           # from the repo root
 """
 
+import json
 import os
 import shutil
 import sys
@@ -354,6 +355,94 @@ class TestResolveManifest(unittest.TestCase):
         # On a case-sensitive filesystem, lowercasing here would fail to open.
         self.assertEqual(meter.resolve_manifest({"ARCH_MANIFEST": "MyProject.YAML"}),
                          "MyProject.YAML")
+
+
+class TestSeriesRow(unittest.TestCase):
+    """The row schema. This is the part that cannot be changed later without
+    orphaning every row already written, so it is pinned by tests."""
+
+    def _data(self):
+        return {
+            "manifest": "4SYNC.yaml",
+            "bytes_per_token": 4,
+            "boot": [{"path": "MERGE_PLAN.md", "bytes": 800, "tokens": 200, "missing": False},
+                     {"path": "gone.md", "bytes": 0, "tokens": 0, "missing": True}],
+            "deferred": [{"path": "REF.yaml", "bytes": 400, "tokens": 100, "missing": False}],
+            "boot_total_bytes": 800, "boot_total_tokens": 200,
+            "deferred_total_bytes": 400, "deferred_total_tokens": 100,
+            "deferred_pct": 33.3333,
+        }
+
+    def test_per_file_bytes_are_recorded(self):
+        """The wedge chart's whole requirement: WHICH file grew, not just that
+        boot did. Unrecoverable from a scalar after the fact."""
+        row = meter.series_row(self._data())
+        self.assertEqual(row["files"]["MERGE_PLAN.md"], 800)
+
+    def test_missing_files_are_omitted_not_zeroed(self):
+        """A zero would read as 'this file was empty', which is a different and
+        false claim from 'this file did not exist at that commit'."""
+        self.assertNotIn("gone.md", meter.series_row(self._data())["files"])
+
+    def test_per_file_tokens_are_not_stored(self):
+        """Tokens are bytes // divisor. Storing both invites a series whose two
+        halves disagree the first time the divisor is tuned."""
+        row = meter.series_row(self._data())
+        self.assertIsInstance(row["files"]["MERGE_PLAN.md"], int)
+        self.assertEqual(set(row["files"].keys()), {"MERGE_PLAN.md"})
+
+    def test_commit_and_note_are_carried(self):
+        row = meter.series_row(self._data(), commit="abc1234", note="after trim")
+        self.assertEqual(row["commit"], "abc1234")
+        self.assertEqual(row["note"], "after trim")
+
+    def test_absent_commit_is_null_not_fatal(self):
+        self.assertIsNone(meter.series_row(self._data())["commit"])
+
+    def test_row_is_json_serialisable(self):
+        json.dumps(meter.series_row(self._data()))
+
+
+class TestAppendSeries(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="meter_series_")
+        self.path = os.path.join(self.root, "metrics", "roc_series.jsonl")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_creates_the_directory(self):
+        meter.append_series(self.path, {"ts": "t", "boot_bytes": 1})
+        self.assertTrue(os.path.isfile(self.path))
+
+    def test_appends_never_overwrites(self):
+        """The series has no backfill. A write path that can truncate destroys
+        the only copy of data that cannot be regenerated."""
+        for i in range(3):
+            meter.append_series(self.path, {"ts": f"t{i}", "boot_bytes": i})
+        with open(self.path, encoding="utf-8") as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+        self.assertEqual([r["boot_bytes"] for r in rows], [0, 1, 2])
+
+    def test_one_json_object_per_line(self):
+        meter.append_series(self.path, {"ts": "t", "nested": {"a": 1}})
+        meter.append_series(self.path, {"ts": "u", "nested": {"b": 2}})
+        with open(self.path, encoding="utf-8") as fh:
+            lines = [l for l in fh.read().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 2)
+        for l in lines:
+            json.loads(l)
+
+    def test_a_changed_boot_stack_does_not_break_earlier_rows(self):
+        """Why JSONL and not TSV: the stack being measured is itself what
+        changes, so fixed columns break exactly when the series gets useful."""
+        meter.append_series(self.path, {"ts": "t", "files": {"a.md": 1}})
+        meter.append_series(self.path, {"ts": "u", "files": {"a.md": 1, "b.md": 2},
+                                        "new_field": True})
+        with open(self.path, encoding="utf-8") as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+        self.assertEqual(rows[0]["files"], {"a.md": 1})
+        self.assertEqual(len(rows[1]["files"]), 2)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+from datetime import datetime
 
 MANIFEST_DEFAULT = "4SYNC.yaml"
 
@@ -403,6 +405,76 @@ def build_report(root, lists, manifest=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Longitudinal series (--log)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SERIES_DEFAULT = os.path.join("metrics", "roc_series.jsonl")
+
+
+def _git_commit(root):
+    """Short HEAD sha, or None outside a repo. A row without one is still a
+    valid measurement; it just cannot be re-derived later."""
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def series_row(data, commit=None, note=None, when=None):
+    """One measurement, as a plain dict. Pure — the caller supplies time and sha.
+
+    WHY PER-FILE BYTES AND NOT JUST THE TOTAL: the question the series has to
+    answer later is not "did boot grow" but "WHICH FILE grew" — that is the
+    wedge chart, and it is unrecoverable from a scalar. This silo has now had
+    the same disease three times (inline descriptions, then Subject cells, then
+    the table's own prose paragraphs), and each time the total moved for a
+    reason no total could name.
+
+    Tokens are omitted per file and kept only in the aggregates: they are
+    bytes // BYTES_PER_TOKEN, so storing both invites a series where the two
+    disagree after the divisor is ever tuned. Store the measurement, derive the
+    estimate."""
+    return {
+        "ts": (when or datetime.now()).isoformat(timespec="seconds"),
+        "commit": commit,
+        "manifest": data.get("manifest"),
+        "bytes_per_token": data.get("bytes_per_token"),
+        "boot_bytes": data["boot_total_bytes"],
+        "boot_tokens": data["boot_total_tokens"],
+        "deferred_bytes": data["deferred_total_bytes"],
+        "deferred_tokens": data["deferred_total_tokens"],
+        "deferred_pct": round(data["deferred_pct"], 2),
+        "files": {r["path"]: r["bytes"] for r in data["boot"] if not r.get("missing")},
+        "deferred_files": {r["path"]: r["bytes"] for r in data["deferred"]
+                           if not r.get("missing")},
+        "note": note,
+    }
+
+
+def append_series(path, row):
+    """APPEND one JSON line. Never rewrites, never reorders, never blocks.
+
+    JSONL rather than TSV, deliberately: the boot stack itself changes over time
+    — files are added, deferred, split, renamed — and that change IS the thing
+    being measured. Fixed columns would break at exactly the moment the series
+    got interesting, and the repair would be to rewrite history in the one file
+    whose entire value is that it cannot be backfilled.
+
+    Same reason this only ever appends. A measurement series has no undo: a run
+    that is not logged today can never be recovered, and a bug that rewrites the
+    file destroys the only copy. Duplicate rows at one commit are honest (two
+    measurements really were taken) and cost a line."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -420,6 +492,13 @@ def main():
                     help="project root (holds the instance manifest). Default: current dir.")
     ap.add_argument("--json", action="store_true",
                     help="emit machine-readable JSON instead of the text report")
+    ap.add_argument("--log", nargs="?", const=SERIES_DEFAULT, default=None,
+                    metavar="PATH",
+                    help=f"append this measurement to a longitudinal series "
+                         f"(default: {SERIES_DEFAULT}). The series cannot be "
+                         f"backfilled — a close that skips this loses the point.")
+    ap.add_argument("--note", default=None,
+                    help="short label stored with the logged row (e.g. 'after ledger trim')")
     args = ap.parse_args()
 
     root = os.path.abspath(args.dir)
@@ -438,10 +517,27 @@ def main():
 
     lists = parse_load_lists(manifest_text)
 
+    data = build_report_data(root, lists, manifest)
+
     if args.json:
-        print(json.dumps(build_report_data(root, lists, manifest), indent=2))
+        print(json.dumps(data, indent=2))
     else:
         print(build_report(root, lists, manifest))
+
+    if args.log:
+        row = series_row(data, commit=_git_commit(root), note=args.note)
+        path = args.log if os.path.isabs(args.log) else os.path.join(root, args.log)
+        try:
+            append_series(path, row)
+        except OSError as exc:
+            # A measurement is never worth failing a close over. Say so and exit 0.
+            print(f"\n! could not append to the series ({exc}) — measurement NOT "
+                  f"recorded. This run is unrecoverable; the series has no backfill.",
+                  file=sys.stderr)
+        else:
+            print(f"\nlogged: {os.path.relpath(path, root)} — boot "
+                  f"{row['boot_bytes']:,} B (~{row['boot_tokens']:,} tok)"
+                  + (f" [{args.note}]" if args.note else ""))
 
 
 if __name__ == "__main__":

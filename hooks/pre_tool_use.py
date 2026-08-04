@@ -58,7 +58,7 @@ Modes (env ARCH_HOOKS_MODE):
 
 Configuration (env):
   ARCH_HOOKS_MODE  : warn | enforce | off        (default: warn)
-  ARCH_HOOKS_LOG   : path to the warn-mode log    (default: ~/.sync_hooks_warn.log)
+  ARCH_HOOKS_LOG   : path to the warn-mode log    (default: ~/.arch_hooks_warn.log)
   ARCH_CONFIG_DIR  : name of your loader-stack config dir, matched as a path
                     segment (default: "config"). This is what makes g1/g4
                     portable — no hard-coded project paths.
@@ -366,7 +366,7 @@ def _extract(payload):
 
 
 def _log(msg):
-    logpath = os.environ.get("ARCH_HOOKS_LOG", os.path.expanduser("~/.sync_hooks_warn.log"))
+    logpath = os.environ.get("ARCH_HOOKS_LOG", os.path.expanduser("~/.arch_hooks_warn.log"))
     try:
         with open(logpath, "a", encoding="utf-8") as fh:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")

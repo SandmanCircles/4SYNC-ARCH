@@ -16,6 +16,7 @@ At the start of every session, load (in this order):
    - b. **`config/STATUS.yaml`** — current live state (overwrite snapshot: deploy versions, active focus, blockers).
    - c. **`config/CANON_INDEX.yaml`** — the map of where every deeper detail lives.
    - Pull **`config/REFERENCE.yaml`** (deep canon) **on demand** — never at session start. Never load **`config/HISTORY.md`** (frozen archive) whole.
+   - **These filenames carry a project prefix after genesis.** Genesis renames the stack to `config/<PROJECT>_KERNEL.yaml`, `config/<PROJECT>_STATUS.yaml` and so on, and the manifest to `<PROJECT>.yaml`, so two instances on one machine never share a stack filename and a wrong-instance read is visible rather than invisible. The names above are the pre-genesis ones — **the manifest's `boot:` list is always current, so read that, not this.**
 
 3. **`NAMING_CONVENTIONS.md`** — brand marks, internal taxonomies, retired terms, the reasoning behind each. **Vocabulary state.** Load on demand before generating reports, documents, web assets, or external communications.
 

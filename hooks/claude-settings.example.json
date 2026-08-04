@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"/path/to/4SYNC-ARCH/hooks/pre_tool_use.py\""
+            "command": "\"/full/path/to/python\" \"/path/to/4SYNC-ARCH/hooks/pre_tool_use.py\""
           }
         ]
       }
@@ -15,6 +15,6 @@
   },
   "env": {
     "ARCH_HOOKS_MODE": "warn",
-    "ARCH_HOOKS_LOG": "/path/to/project/.claude/sync_hooks_warn.log"
+    "ARCH_HOOKS_LOG": "/path/to/project/.claude/arch_hooks_warn.log"
   }
 }

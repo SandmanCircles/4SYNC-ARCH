@@ -3,7 +3,8 @@
 4SYNC ARCH — ledger rotation. Run at wrap from a GIT-CAPABLE,
 host-side session only (git is the undo; never run through a sandbox mount).
 
-Does two things, both as verbatim block moves:
+Three passes MOVE or REWRITE (1-3, all verbatim or derived, all gated on
+--apply); the rest only measure and never block:
 
 1. JOURNAL KEEP-N, THEN CAP-BY-SIZE: if the '## Session journal (recent)'
    section of the ledger (MERGE_PLAN.md) holds more than N blocks (default 5),
@@ -33,30 +34,38 @@ Does two things, both as verbatim block moves:
        document is a task nobody can execute — the exact failure the ledger's
        task-authoring rule exists to prevent — so this exits non-zero.
 
-3. ABBA ARCHIVE: move 'Status: DONE' messages older than --age days (default 10)
+3. TALLY: derive the ledger's '**Tally:**' line from the summary table and, on
+   --apply, rewrite it. The only pass here that changes text rather than moving
+   it, because a tally needs no human judgement — it is a count of rows sitting
+   right there, and a hand-maintained count against a table the same session is
+   editing drifts every time (measured here: rewritten by hand, wrong within the
+   hour). Refuses to write if any row's status cell carries no recognised mark:
+   a total that silently omits a row is worse than a stale one.
+
+4. ABBA ARCHIVE: move 'Status: DONE' messages older than --age days (default 10)
    from ABBA.md to ABBA_ARCHIVE.md (created with a header if absent), newest-first.
 
-4. SIZE REPORT: print the ledger's boot cost and the journal's share of it, and
+5. SIZE REPORT: print the ledger's boot cost and the journal's share of it, and
    warn when the journal exceeds the manifest's close.journal.max_bytes. `keep`
    is a COUNT cap, and a single session block can run several KB — so the count
    cap alone cannot bound the journal. Reports; never blocks. ARCH capped its
    8 KB manifest and left the file that actually dominates boot unmeasured;
    this is the number that closes that asymmetry.
 
-5. SUBJECT REPORT: flag summary-table rows whose Subject cell has grown into a
+6. SUBJECT REPORT: flag summary-table rows whose Subject cell has grown into a
    description (default cap ~120 chars). Once long form lives in tasks/, the
    TABLE is the boot cost and nothing bounds it — capping descriptions while
    leaving rows unbounded just relocates the growth one level up. Reports;
    never blocks, and the fix is a task document, not a shorter sentence.
 
-6. TABLE-PROSE REPORT: measure the non-row prose in the summary-table section
+7. TABLE-PROSE REPORT: measure the non-row prose in the summary-table section
    (the running "Tally:" commentary and friends) against the rows it annotates.
    The third place the growth went: descriptions were capped and moved to
    tasks/, row cells were capped after them, and the paragraphs AROUND the table
    were watched by nothing. Prose outweighing rows means the section stopped
    being a table with a note on it. Reports; never blocks.
 
-7. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
+8. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
    That file is on-demand and never booted, so it is cheap — but only while
    every entry is greppable and every entry has an exit. An entry nothing can
    grep for never reaches the session that needed it and is counted forever.
@@ -335,8 +344,8 @@ def doc_name(task_id):
     return f"MP-{int(task_id):03d}.md"
 
 
-def summary_table_section(ledger_text):
-    """Return the text of the canonical summary table, or None if absent.
+def summary_table_span(ledger_text):
+    """Return (start, end) offsets of the canonical summary-table section, or None.
 
     The section is bounded by the next `## ` OR `### ` heading — not `## ` alone.
     A ledger that has not been split yet keeps its `### #NNN` description blocks
@@ -344,13 +353,24 @@ def summary_table_section(ledger_text):
     bound runs the row scan through tens of KB of prose. It finds no phantom row
     there today, but the moment a description quotes a table whose first column
     is numeric it would invent one — and rotate.py would then fail every close
-    demanding a document for a row that does not exist."""
+    demanding a document for a row that does not exist.
+
+    Offsets rather than text, because reconcile_tally has to WRITE back into this
+    section and a substring cannot say where it came from. summary_table_section()
+    stays the reader's interface and is defined in terms of this, so the bound is
+    computed in exactly one place."""
     m = re.search(r"^## Summary table[ \t]*$", ledger_text, re.M)
     if not m:
         return None
-    tail = ledger_text[m.end():]
-    nxt = re.search(r"^#{2,3} ", tail, re.M)
-    return tail[: nxt.start()] if nxt else tail
+    start = m.end()
+    nxt = re.search(r"^#{2,3} ", ledger_text[start:], re.M)
+    return start, (start + nxt.start() if nxt else len(ledger_text))
+
+
+def summary_table_section(ledger_text):
+    """Return the text of the canonical summary table, or None if absent."""
+    span = summary_table_span(ledger_text)
+    return None if span is None else ledger_text[span[0]:span[1]]
 
 
 def parse_summary_table(ledger_text):
@@ -422,6 +442,127 @@ def rotate_task_docs(root, ledger_path, apply_):
             os.remove(src)
         print("verify: all moved documents present in destination, absent from source ✓")
     return moved, missing
+
+
+# ── tally reconciliation ─────────────────────────────────────────────────────
+
+# Ordered — this is also the order the rendered line reports in. Keys are the
+# BASE codepoint with no variation selector: ⏸️ is U+23F8 U+FE0F but a ledger may
+# write the bare U+23F8, and two ledgers rendering the same status differently
+# must not produce two different counts.
+STATUS_MARKS = (
+    ("✅",         "completed"),    # ✅
+    ("\U0001f504",     "in_progress"),  # 🔄
+    ("⏳",         "pending"),      # ⏳
+    ("⏸",         "blocked"),      # ⏸️
+    ("❌",         "dropped"),      # ❌
+)
+
+TALLY_RE = re.compile(r"^\*\*Tally:\*\*[^\n]*$", re.M)
+
+
+def compute_tally(ledger_text):
+    """Count summary-table rows by status mark. Returns (counts, unknown).
+
+    Reads the TABLE and nothing else, for the same reason parse_summary_table
+    does: the table is the single source of truth for state. A tally derived
+    from anywhere else is a second copy of state that cannot announce its own
+    drift — which is the entire defect this closes."""
+    table = summary_table_section(ledger_text)
+    if table is None:
+        return None, None
+    counts = {name: 0 for _, name in STATUS_MARKS}
+    unknown = []
+    for r in TABLE_ROW_RE.finditer(table):
+        cell = r.group(2).replace("️", "")
+        hit = [name for mark, name in STATUS_MARKS if mark in cell]
+        if len(hit) == 1:
+            counts[hit[0]] += 1
+        else:
+            # zero marks (a typo, an empty cell) or two (an edit half-applied).
+            # Both are "this row has no single status", and guessing at one is
+            # how a count starts lying with total confidence.
+            unknown.append((int(r.group(1)), " ".join(r.group(2).split())))
+    return counts, unknown
+
+
+def render_tally(counts):
+    """The one place the Tally sentence is spelled. Matches the shipped format
+    exactly, so a reconciled ledger diffs on the NUMBERS and never on wording."""
+    parts = ", ".join(f"{counts[name]} {name}" for _, name in STATUS_MARKS)
+    return f"**Tally:** {sum(counts.values())} tasks total — {parts}."
+
+
+def reconcile_tally(ledger_path, apply_):
+    """Derive the Tally line from the table and, on --apply, WRITE it.
+
+    WHY THIS WRITES INSTEAD OF REPORTING. Every other check in this file
+    reports, and that is right for them: an over-long Subject wants a human
+    judgement about what the row is for. A tally wants no judgement at all — it
+    is a count of rows that are sitting right there. Measured on this silo
+    2026-08-04: the Tally paragraph was rewritten by hand and was WRONG WITHIN
+    THE HOUR, because the same session closed four more rows afterwards. A
+    number a human maintains by hand against a table the same human is editing
+    will drift every time, and rotate.py's own journal fix is the precedent —
+    'a number nobody can act on mechanically gets re-reported until it is
+    ignored.' So this makes the line DERIVED. On a dry run it prints the drift;
+    on --apply the ledger stops disagreeing with itself.
+
+    UNKNOWN ROWS BLOCK THE REWRITE. If any row's status cell carries no
+    recognised mark, the computed total would silently omit it — and writing a
+    confidently wrong number is strictly worse than leaving a stale one, which
+    at least still looks like something to check. Report and leave it alone.
+
+    Never blocks the close; returns (counts, changed)."""
+    text = read(ledger_path)
+    counts, unknown = compute_tally(text)
+    if counts is None:
+        print("tally: no '## Summary table' found — skipped")
+        return None, False
+
+    total = sum(counts.values())
+    print(f"tally: {total} rows — " +
+          ", ".join(f"{counts[n]} {n}" for _, n in STATUS_MARKS))
+
+    for tid, cell in unknown[:10]:
+        print(f"  ! row #{tid} has no recognised status mark (cell: {cell!r}) — not counted")
+    if len(unknown) > 10:
+        print(f"  … and {len(unknown) - 10} more")
+    if unknown:
+        print("  Tally left alone: a total that silently omits rows is worse than a "
+              "stale one. Fix the status cells, then re-run. (Reported, not blocked.)")
+        return counts, False
+
+    span = summary_table_span(text)
+    match = next((m for m in TALLY_RE.finditer(text) if span[0] <= m.start() < span[1]), None)
+    if match is None:
+        # Bounded to the table section on purpose: a journal block quoting a
+        # tally must never be mistaken for the ledger's own. Absent means absent
+        # — this reconciles a line the ledger already has, it does not invent
+        # structure in a ledger that never asked for one.
+        print("  (no '**Tally:**' line in the summary-table section — nothing to reconcile)")
+        return counts, False
+
+    written, computed = match.group(0), render_tally(counts)
+    if written == computed:
+        print("  written Tally matches the table ✓")
+        return counts, False
+
+    print("  ! the written Tally disagrees with the table")
+    print(f"      written:  {written}")
+    print(f"      computed: {computed}")
+    if not apply_:
+        print("  Run with --apply to rewrite it from the rows. (Reported, not blocked.)")
+        return counts, False
+
+    new_text = text[:match.start()] + computed + text[match.end():]
+    atomic_write(ledger_path, new_text)
+    if computed not in read(ledger_path):            # verify BEFORE claiming it
+        atomic_write(ledger_path, text)
+        print("VERIFY FAILED — Tally not written; ledger restored.", file=sys.stderr)
+        sys.exit(1)
+    print("  Tally rewritten from the table ✓")
+    return counts, True
 
 
 # ── subject-length report ────────────────────────────────────────────────────
@@ -721,6 +862,12 @@ def main():
     if os.path.exists(ledger):
         rotate_journal(ledger, history, args.keep, args.apply, jmax)
         _, missing = rotate_task_docs(d, ledger, args.apply)
+        # BEFORE the reports, not after: report_table_prose measures this very
+        # section, so a reconciled Tally is what gets measured. A close that
+        # rewrote the line and then reported the pre-rewrite byte count would be
+        # two numbers disagreeing about one file — the shape this pass exists to
+        # remove.
+        reconcile_tally(ledger, args.apply)
     if os.path.exists(abba):
         rotate_abba(abba, archive, args.age, args.apply)
     if os.path.exists(ledger):

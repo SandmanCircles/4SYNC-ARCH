@@ -22,13 +22,30 @@ silently reverting another's ledger edit.
 trustworthy across sessions and surfaces, so more of every window goes to the work.
 More model, same subscription.
 
-## Quickstart — three steps, no installation
+## Prerequisites
 
-1. **Drop this filesystem into your project folder** (or start from it).
-2. **Tell it what your project is** — either fill in `SEED.md` and flip its flag to
+- **Git**
+- **Python 3** (3.8+, standard library only — no pip install, ever)
+- **Claude Code**
+
+See [Python](#python) and [Hardening](#hardening-optional) below for what each one is
+actually used for.
+
+## Quickstart — four steps, no installation
+
+1. **Start in a new, empty folder — genesis makes it permanent.** Create a fresh folder
+   for this project and open your Claude session there. **Not your Downloads or Desktop
+   folder, and not an existing repo** — ARCH wants a folder of its own. Genesis writes
+   that folder's absolute path into the manifest as `instance.root`, and every close
+   resolves from it no matter where a later session is launched. You can move the folder
+   afterwards, but you have to fix `instance.root` and the absolute hook paths in
+   `.claude/settings.json` by hand — and until you do, **closes write to the old location
+   and the guards stop firing.**
+2. **Drop this filesystem into that folder** (or start from it).
+3. **Tell it what your project is** — either fill in `SEED.md` and flip its flag to
    `AUTHORED`, or don't: just open a Claude session in the folder and it will
    interview you through the seed conversationally.
-3. **Open a session.** It reads `CLAUDE.md` → `4SYNC.yaml`, detects the untouched
+4. **Open a session.** It reads `CLAUDE.md` → `4SYNC.yaml`, detects the untouched
    stack, and runs **genesis** — distilling your seed into the config stack and
    archiving the seed verbatim as the project's birth record (locked read-only).
    **Genesis plays back what it understood — project name, root path, purpose,
@@ -102,6 +119,27 @@ Close fires only on the user's explicit signal — a pause is not an ending, and
 paused sessions resume rather than wrap. (An unattended run has no pause: finishing
 its declared task *is* its signal. It journals and deposits, but never overwrites
 STATUS — a nightly job shouldn't rewrite the project's active focus.)
+
+**Genesis renames the stack after your project.** `config/KERNEL.yaml` becomes
+`config/ACMEROBOTICS_KERNEL.yaml`, and `4SYNC.yaml` itself becomes
+`ACMEROBOTICS.yaml` — the prefix is your `instance.name`, uppercased, non-alphanumerics
+dropped. Run two instances on one machine and this is what tells them apart: without
+it every instance has a `config/KERNEL.yaml`, and a wrong-instance read looks exactly
+like a right one in the tool call, the log, and the reasoning trace. Genesis updates
+every reference in the same pass and sets `ARCH_MANIFEST` in `.claude/settings.json`,
+which is what keeps the guards, the boot receipt, the meter and rotation pointed at the
+renamed manifest. `CLAUDE.md` is never renamed — Claude Code finds it by exact name —
+and neither are the root documents; this is provenance for the identity stack, not a
+project-wide rename.
+
+**Genesis also clears our packaging out of your root.** `README.md`, `EXAMPLE.md` and
+`LICENSE` move into `archive/` as `ARCH_README.md`, `ARCH_EXAMPLE.md` and
+`ARCH_LICENSE.md` — still tracked, never ignored. That matters most for the licence:
+left at root, `LICENSE` is what GitHub reads as *your* repo's licence the moment you run
+`git init`, so your work would show up as FSL-licensed under our copyright notice. Moved,
+it still travels with the code it covers, which is what the licence actually asks for.
+`.gitignore` stays at root — its entries are live runtime state, including the
+gitignored session-debt file the protocol depends on.
 
 **Trim to taste.** `session_debt`, `agents`, `naming_check`, `rotate`, `meter`, and
 the `bulletin` step are each optional — delete any block you don't use and the
@@ -241,9 +279,15 @@ noticed — because no code was watching. Wire the `SessionStart` hook and it is
 ```json
 "SessionStart": [
   { "hooks": [ { "type": "command",
-                 "command": "python \"/path/to/hooks/session_start.py\"" } ] }
+                 "command": "\"/full/path/to/python\" \"/path/to/hooks/session_start.py\"" } ] }
 ]
 ```
+
+`wire_hooks.py` does **not** write this block — it wires the PreToolUse guards only, so
+the receipt is hand-wired. Put it at **user level** (`~/.claude/settings.json`), not
+project level: the sessions that skip boot are the ones launched outside the repo, and
+those never read project settings at all. Use the full interpreter path, as above —
+bare `python` on Windows may be the Store stub, which sits on PATH and runs nothing.
 
 Two modes, via `ARCH_BOOT_MODE`:
 

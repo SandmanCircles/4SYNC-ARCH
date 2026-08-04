@@ -55,9 +55,14 @@ bootstrap:
                                # Steps run IN ORDER — the sequence is binding.
                                # All dates from the system clock, never memory.
     - CONFIRM WITH THE USER FIRST — WRITE NOTHING UNTIL THEY SAY GO. Read the
-      seed and play back what you understood — project name, instance.root
-      (absolute), one-line purpose, agents/surfaces, naming rules, and anything
-      RETIRED. Ask them to confirm or correct it, and WAIT for an explicit yes.
+      seed and play back what you understood — project name, one-line purpose,
+      agents/surfaces, naming rules, and anything RETIRED. Show instance.root on
+      its OWN line, the full absolute path, labelled as the project's permanent
+      home, and say plainly that every close resolves from it and that moving the
+      folder later means repairing that path and the hook paths by hand. A user
+      who cloned into Downloads or Desktop should flinch when they read it back —
+      that flinch is the point, and it is the last moment it costs nothing.
+      Ask them to confirm or correct it, and WAIT for an explicit yes.
       Both entry paths land here, so this is the only gate needed. Why it is worth
       one question — the steps below author the whole stack, set a root path, flip
       TEMPLATE markers, make the seed READ-ONLY and delete this block, so a misread
@@ -77,6 +82,27 @@ bootstrap:
       never edited) + CANON_INDEX pointer row
     - add the archived seed to CLAUDE.md's load list, on-demand only —
       "the genesis birth record, read-only"
+    - PREFIX THE STACK — derive <P> from instance.name (uppercase, keep A-Z0-9 only,
+      so "Acme Robotics" becomes ACMEROBOTICS), then rename every config/ stack file
+      to config/<P>_<NAME> and THIS file to <P>.yaml. Two instances on one machine
+      then share no stack filename, so a wrong-instance read is visible in the tool
+      call and the log instead of looking identical to a right one. Update EVERY
+      reference in the same pass — the boot, on_demand and never_load_whole lists
+      here, the CANON_INDEX pointer rows, CLAUDE.md's load list, README. Then merge
+      ARCH_MANIFEST=<P>.yaml into .claude/settings.json's env block (merge into it,
+      never overwrite the file). WITHOUT that variable the rename silently DOWNGRADES
+      the hardening — g5 stops guarding the manifest, the boot receipt and meter can
+      no longer find it, and rotate falls back to a default journal cap instead of the
+      declared one. Re-run the YAML verify afterwards. NOT renamed — CLAUDE.md, which
+      Claude Code finds by exact name, and the root documents. This is provenance for
+      the identity stack, not a project-wide rename
+    - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md and LICENSE to
+      archive/ as ARCH_README.md, ARCH_EXAMPLE.md, ARCH_LICENSE.md. That is the
+      PRODUCT's packaging, not this project's, and at root LICENSE is what GitHub
+      reads as the new repo's own licence the moment the user runs git init — their
+      work would appear FSL-licensed under someone else's copyright. Keep all three
+      TRACKED and never ignore archive/, since the licence must travel with the code
+      it covers and the archived seed is the birth record. .gitignore STAYS at root
     - prepend a genesis journal block to MERGE_PLAN.md
     - LAST — delete this `bootstrap` block; genesis cannot re-run once the TEMPLATE
       markers flip, so it is dead weight every later session reads
@@ -148,11 +174,11 @@ integrity:
     - hooks/pre_tool_use.py              # PreToolUse — six structural guards + debt recorder
     - hooks/session_start.py             # SessionStart — boot receipt; ARCH_BOOT_MODE: announce | inject | off
   manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
-    max_bytes: 10240         # raised from 8192 — deliberately, in the same
-                             # edit that hit it, which is what g5's own message prescribes.
-                             # Two declarations pushed this to 8228 and g5 BLOCKED the write.
-                             # A cap you raise on reflex is not a cap; this one is raised
-                             # because the manifest grew capability, not narrative.
+    max_bytes: 12288         # raised 8192 → 10240 → 12288, each time in the SAME edit
+                             # that hit it, which is what g5's own message prescribes.
+                             # A cap you raise on reflex is not a cap: every raise here
+                             # bought new CAPABILITY (declarations, then the genesis
+                             # prefix step), never narrative. Narrative gets cut instead.
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
 
 # ═══ EOF 4SYNC.yaml ═══

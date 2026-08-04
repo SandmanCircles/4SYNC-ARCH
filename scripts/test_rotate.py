@@ -775,6 +775,188 @@ class TestFindingsReport(unittest.TestCase):
         self.assertEqual(rotate.report_findings(self.root)[1], ["A"])
 
 
+TALLY_LEDGER = """# Ledger
+
+## Session journal (recent)
+
+2026-08-04 [agent] — closed some rows. **Tally:** 999 tasks total — all of them.
+
+---
+
+## Summary table
+
+| ID | Status | Subject | Blocked by | Owner |
+|---|---|---|---|---|
+| 1 | ✅ | done thing | — | — |
+| 2 | ⏳ | open thing | — | — |
+| 3 | ❌ | dropped thing | — | — |
+{extra}
+{tally}
+
+**Some other paragraph.** Leave me alone.
+
+---
+
+*footer*
+"""
+
+
+class TestTallyReconcile(unittest.TestCase):
+    """MP#39. The Tally was rewritten by hand on 2026-08-04 and was wrong within
+    the hour, because the same session closed four more rows afterwards. These
+    lock the two halves of the fix: the count comes from the TABLE, and on
+    --apply the line stops being something a human maintains."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_tally_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, tally="", extra=""):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(TALLY_LEDGER.format(tally=tally, extra=extra))
+
+    def _run(self, apply_=False):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            counts, changed = rotate.reconcile_tally(self.ledger, apply_)
+        return counts, changed, buf.getvalue()
+
+    def _text(self):
+        with open(self.ledger, encoding="utf-8") as fh:
+            return fh.read()
+
+    # ── counting ────────────────────────────────────────────────────────────
+    def test_counts_come_from_the_table(self):
+        self._write(tally="**Tally:** 3 tasks total — 1 completed, 0 in_progress, "
+                          "1 pending, 0 blocked, 1 dropped.")
+        counts, _, _ = self._run()
+        self.assertEqual(counts, {"completed": 1, "in_progress": 0, "pending": 1,
+                                  "blocked": 0, "dropped": 1})
+
+    def test_variation_selector_does_not_split_a_status(self):
+        """⏸️ is U+23F8 U+FE0F but a ledger may write the bare U+23F8. Two
+        renderings of one status must not produce two different counts."""
+        self._write(extra="| 4 | ⏸️ | with selector | — | — |\n"
+                          "| 5 | ⏸ | without selector | — | — |")
+        counts, _, _ = self._run()
+        self.assertEqual(counts["blocked"], 2)
+
+    def test_rendered_sentence_matches_the_shipped_format(self):
+        counts = {"completed": 33, "in_progress": 0, "pending": 4,
+                  "blocked": 0, "dropped": 1}
+        self.assertEqual(
+            rotate.render_tally(counts),
+            "**Tally:** 38 tasks total — 33 completed, 0 in_progress, "
+            "4 pending, 0 blocked, 1 dropped.")
+
+    # ── drift ───────────────────────────────────────────────────────────────
+    def test_drift_is_reported_and_not_written_on_dry_run(self):
+        stale = "**Tally:** 99 tasks total — 99 completed, 0 in_progress, 0 pending, 0 blocked, 0 dropped."
+        self._write(tally=stale)
+        _, changed, out = self._run(apply_=False)
+        self.assertFalse(changed)
+        self.assertIn("disagrees with the table", out)
+        self.assertIn(stale, self._text())          # untouched
+
+    def test_apply_rewrites_the_line(self):
+        self._write(tally="**Tally:** 99 tasks total — 99 completed, 0 in_progress, "
+                          "0 pending, 0 blocked, 0 dropped.")
+        _, changed, out = self._run(apply_=True)
+        self.assertTrue(changed)
+        self.assertIn("**Tally:** 3 tasks total — 1 completed, 0 in_progress, "
+                      "1 pending, 0 blocked, 1 dropped.", self._text())
+        # Scoped to the table section deliberately: the fixture's journal block
+        # says "999 tasks total", which CONTAINS "99 tasks total" as a substring
+        # — a whole-file assertion here passes or fails on the fixture's digits
+        # rather than on the behaviour.
+        self.assertNotIn("99 tasks total", self._text().split("## Summary table")[1])
+
+    def test_apply_changes_nothing_but_the_tally_line(self):
+        """The ledger's other prose is explicitly not this pass's business —
+        MERGE_PLAN.md's own note says 'leave this paragraph alone'."""
+        self._write(tally="**Tally:** 99 tasks total — 99 completed, 0 in_progress, "
+                          "0 pending, 0 blocked, 0 dropped.")
+        before = self._text()
+        self._run(apply_=True)
+        after = self._text()
+        drop = lambda t: [l for l in t.splitlines() if not l.startswith("**Tally:**")]
+        self.assertEqual(drop(before), drop(after))
+
+    def test_a_correct_tally_is_left_alone(self):
+        good = ("**Tally:** 3 tasks total — 1 completed, 0 in_progress, "
+                "1 pending, 0 blocked, 1 dropped.")
+        self._write(tally=good)
+        _, changed, out = self._run(apply_=True)
+        self.assertFalse(changed)
+        self.assertIn("matches the table", out)
+        self.assertEqual(self._text().count(good), 1)
+
+    # ── refusals ────────────────────────────────────────────────────────────
+    def test_unrecognised_status_blocks_the_rewrite(self):
+        """A total that silently omits a row is worse than a stale one: it looks
+        authoritative. Report it and leave the line alone, even on --apply."""
+        stale = "**Tally:** 99 tasks total — 99 completed, 0 in_progress, 0 pending, 0 blocked, 0 dropped."
+        self._write(tally=stale, extra="| 4 | ??? | typo'd status | — | — |")
+        counts, changed, out = self._run(apply_=True)
+        self.assertFalse(changed)
+        self.assertEqual(sum(counts.values()), 3)   # the good rows only
+        self.assertIn("no recognised status mark", out)
+        self.assertIn("row #4", out)
+        self.assertIn(stale, self._text())          # untouched
+
+    def test_a_tally_outside_the_table_section_is_never_touched(self):
+        """The fixture's journal block contains a '**Tally:** 999 …' sentence.
+        Anchoring on the first match in the file would rewrite a past session's
+        journal entry — a verbatim record this project does not edit."""
+        self._write(tally="**Tally:** 99 tasks total — 99 completed, 0 in_progress, "
+                          "0 pending, 0 blocked, 0 dropped.")
+        self._run(apply_=True)
+        self.assertIn("**Tally:** 999 tasks total — all of them.", self._text())
+
+    def test_no_tally_line_invents_nothing(self):
+        self._write(tally="")
+        counts, changed, out = self._run(apply_=True)
+        self.assertIsNotNone(counts)
+        self.assertFalse(changed)
+        self.assertIn("nothing to reconcile", out)
+        self.assertNotIn("**Tally:**", self._text().split("## Summary table")[1])
+
+    def test_missing_summary_table_is_skipped_not_fatal(self):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Ledger\n\nno table here\n")
+        counts, changed, out = self._run(apply_=True)
+        self.assertEqual((counts, changed), (None, False))
+        self.assertIn("skipped", out)
+
+    def test_reports_but_never_raises(self):
+        """Same contract as every other pass here: a session mid-close must
+        never be stopped by a count."""
+        self._write(tally="**Tally:** garbage", extra="| 9 | ⏳ | x | — | — |")
+        rotate.reconcile_tally(self.ledger, False)
+
+
+class TestSummaryTableSpan(unittest.TestCase):
+    """summary_table_section() is now defined in terms of summary_table_span();
+    these lock that the refactor kept the bound identical, since every row scan
+    and the doc-integrity gate depend on it."""
+
+    def test_span_and_section_agree(self):
+        text = TALLY_LEDGER.format(tally="**Tally:** x", extra="")
+        start, end = rotate.summary_table_span(text)
+        self.assertEqual(text[start:end], rotate.summary_table_section(text))
+
+    def test_section_still_ends_at_a_h3(self):
+        text = "# L\n\n## Summary table\n\n| 1 | ✅ | a |\n\n### #001 desc\n\n| 2 | ⏳ | b |\n"
+        self.assertNotIn("| 2 |", rotate.summary_table_section(text))
+
+    def test_absent_table_is_none_both_ways(self):
+        self.assertIsNone(rotate.summary_table_span("# L\n\nnothing\n"))
+        self.assertIsNone(rotate.summary_table_section("# L\n\nnothing\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

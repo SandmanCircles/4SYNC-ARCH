@@ -5,11 +5,19 @@ host-side session only (git is the undo; never run through a sandbox mount).
 
 Does two things, both as verbatim block moves:
 
-1. JOURNAL KEEP-N: if the '## Session journal (recent)' section of the ledger
-   (MERGE_PLAN.md) holds more than N blocks (default 5), move the oldest
-   (bottom) blocks to the TOP of the history file's journal area, newest-first
-   order preserved. The history file is whatever the manifest's
-   close.journal.overflow_to declares, defaulting to JOURNAL_HISTORY.md.
+1. JOURNAL KEEP-N, THEN CAP-BY-SIZE: if the '## Session journal (recent)'
+   section of the ledger (MERGE_PLAN.md) holds more than N blocks (default 5),
+   move the oldest (bottom) blocks to the TOP of the history file's journal
+   area, newest-first order preserved. THEN, if what remains still exceeds
+   close.journal.max_bytes, keep moving the oldest until it fits — because
+   `keep` is a COUNT cap and one block can run several KB, so the count rule
+   alone cannot bound the journal (measured here: 5 blocks obeying KEEP-5
+   exactly, 70% over the byte cap, reported by three reviews and never acted on
+   because the only remedy on offer was a hand-trim). The newest block is NEVER
+   moved — it is the previous session's handoff. Verbatim moves either way:
+   nothing is rewritten, nothing is deleted. The history file is whatever the
+   manifest's close.journal.overflow_to declares, defaulting to
+   JOURNAL_HISTORY.md.
 
 2. TASK DOCS: long-form task documents live OUTSIDE the ledger, one per row, at
    tasks/MP-0NN.md — derived from the row ID, never written down as a pointer.
@@ -41,7 +49,14 @@ Does two things, both as verbatim block moves:
    leaving rows unbounded just relocates the growth one level up. Reports;
    never blocks, and the fix is a task document, not a shorter sentence.
 
-6. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
+6. TABLE-PROSE REPORT: measure the non-row prose in the summary-table section
+   (the running "Tally:" commentary and friends) against the rows it annotates.
+   The third place the growth went: descriptions were capped and moved to
+   tasks/, row cells were capped after them, and the paragraphs AROUND the table
+   were watched by nothing. Prose outweighing rows means the section stopped
+   being a table with a note on it. Reports; never blocks.
+
+7. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
    That file is on-demand and never booted, so it is cheap — but only while
    every entry is greppable and every entry has an exit. An entry nothing can
    grep for never reaches the session that needed it and is counted forever.
@@ -167,27 +182,78 @@ def split_journal(ledger_text):
     return before, blocks, ledger_text[body_end:]
 
 
-def rotate_journal(ledger_path, history_path, keep, apply_):
+def journal_bytes(blocks):
+    """Size of a journal section built from `blocks`.
+
+    Measured exactly as rotate_journal writes it back and as report_sizes reads
+    it — strip()ed and rejoined on a blank line. Three call sites deriving the
+    same number three ways is how a cap starts disagreeing with the file it caps."""
+    return len("\n\n".join(b.strip() for b in blocks).encode("utf-8"))
+
+
+def rotate_journal(ledger_path, history_path, keep, apply_, journal_max=None):
+    """Move journal blocks to history — by COUNT, then by SIZE.
+
+    THE ASYMMETRY THIS CLOSES: `keep` bounds the journal by count and cannot
+    bound it by size, because one session block can run several KB. Measured on
+    this silo the day this was written: 5 blocks (KEEP-5 exactly obeyed, nothing
+    to move by count) totalling 27,764 B against a 16,384 B cap — 70% over,
+    reported over three consecutive external reviews and never acted on, because
+    the only mechanism on offer was a hand-trim.
+
+    A number nobody can act on mechanically gets re-reported until it is
+    ignored. So the size cap now MOVES blocks instead of only counting them, and
+    it moves them the same way the count rule does: verbatim, oldest-first, into
+    the history file the manifest declares. Nothing is rewritten and nothing is
+    deleted — a journal that edits itself clean teaches nothing, which is why
+    trimming prose out of a past block was never the right fix.
+
+    FLOOR OF ONE: the newest block is never moved, whatever the cap says. It is
+    the previous session's handoff, and a cap that can empty the journal would
+    take the last close with it. An instance whose newest block alone exceeds
+    the cap is over-cap by one block and gets told so, which is the honest
+    report — the alternative is a rule that deletes the thing it exists to keep."""
     text = read(ledger_path)
     parts = split_journal(text)
     if not parts:
         print(f"journal: section '{JOURNAL_HEAD}' not found in {ledger_path} — skipped")
         return []
     before, blocks, after = parts
-    if len(blocks) <= keep:
-        print(f"journal: {len(blocks)} blocks (cap {keep}) — nothing to move")
+    kept, moved = blocks[:keep], blocks[keep:]
+    by_count = len(moved)
+
+    if journal_max is not None:
+        # oldest kept block is kept[-1]; it is NEWER than everything already in
+        # `moved`, so it goes to the front to preserve newest-first order.
+        while len(kept) > 1 and journal_bytes(kept) > journal_max:
+            moved.insert(0, kept.pop())
+
+    if not moved:
+        size = journal_bytes(kept)
+        note = "" if journal_max is None else f", {size:,}/{journal_max:,} B"
+        print(f"journal: {len(blocks)} blocks (cap {keep}{note}) — nothing to move")
         return []
-    moved = blocks[keep:]           # oldest are at the bottom (newest-first file)
-    print(f"journal: {len(blocks)} blocks — moving oldest {len(moved)} to history")
+
+    by_size = len(moved) - by_count
+    why = f"oldest {by_count} over the count cap" if by_count else ""
+    if by_size:
+        why += (" plus " if why else "") + f"{by_size} more to get under the {journal_max:,} B size cap"
+    print(f"journal: {len(blocks)} blocks — moving {why} to history")
     for b in moved:
         print("  -", b.strip().splitlines()[0][:100])
+    if journal_max is not None:
+        after_bytes = journal_bytes(kept)
+        print(f"  journal {journal_bytes(blocks):,} B → {after_bytes:,} B "
+              f"(cap {journal_max:,})"
+              + ("" if after_bytes <= journal_max else
+                 " — STILL OVER: the newest block alone exceeds the cap and is never moved"))
     if not apply_:
         return moved
     hist = read(history_path) if os.path.exists(history_path) else (
         "# Session journal — history (newest-first)\n\n" + HIST_SECTION + "\n")
     new_hist = _insert_under_section(hist, HIST_SECTION,
                                      "\n\n".join(b.strip() for b in moved))
-    new_ledger = before + "\n\n".join(b.strip() for b in blocks[:keep]) + "\n\n" + after.lstrip("\n")
+    new_ledger = before + "\n\n".join(b.strip() for b in kept) + "\n\n" + after.lstrip("\n")
     atomic_write(history_path, new_hist)
     atomic_write(ledger_path, new_ledger)
     verify_moves(moved, src=read(ledger_path), dst=read(history_path),
@@ -415,6 +481,51 @@ def report_subjects(ledger_path, subject_max):
     return subjects, over
 
 
+# ── table-prose report ───────────────────────────────────────────────────────
+
+
+def report_table_prose(ledger_path):
+    """Measure the NON-ROW prose sitting in the summary-table section.
+
+    THE THIRD PLACE THE GROWTH WENT. The split capped descriptions and moved
+    them to tasks/; report_subjects then capped the row cells they fled into.
+    Neither watches the prose paragraphs AROUND the table — the running
+    "Tally:" commentary, the "Pickup-ready" note — and that is where it went
+    next. Measured on this silo the day this was written: 7,880 B of Tally
+    against 3,910 B of actual rows, i.e. the annotation had grown to twice the
+    thing it annotates, every byte of it duplicating a tasks/closed/MP-0NN.md
+    that already held the same closure narrative in full.
+
+    That duplication is the tell, and it is why this reports a RATIO rather than
+    a byte cap. A tally is a count; the moment it starts explaining WHY each row
+    closed it has become a second copy of the task documents, and the ledger's
+    own rule — table owns state, document owns substance — is already the
+    argument against it. There is no honest fixed number here (a 200-row ledger
+    legitimately carries more prose than a 20-row one), but prose outweighing
+    rows means the section stopped being a table with a note on it.
+
+    Reports; never blocks. Returns (row_bytes, prose_bytes)."""
+    table = summary_table_section(read(ledger_path))
+    if table is None:
+        print("table-prose: no '## Summary table' found — skipped")
+        return 0, 0
+    rows = prose = 0
+    for line in table.splitlines(keepends=True):
+        n = len(line.encode("utf-8"))
+        if line.lstrip().startswith("|"):
+            rows += n
+        elif line.strip():
+            prose += n
+    total = rows + prose
+    print(f"table: {rows:,} B of rows + {prose:,} B of prose "
+          f"(~{total // 4:,} tok of boot)")
+    if prose > rows:
+        print(f"  ! prose outweighs the rows it annotates ({prose:,} > {rows:,} B). "
+              "A tally is a count; once it explains why each row closed it is a "
+              f"second copy of {TASKS_DIRNAME}/closed/. (Reported, not blocked.)")
+    return rows, prose
+
+
 # ── size report ──────────────────────────────────────────────────────────────
 
 JOURNAL_MAX_DEFAULT = 12288
@@ -497,7 +608,9 @@ def report_sizes(root, ledger_path, journal_max):
           f"journal {jbytes:,} B (~{jbytes // 4:,} tok, {share:.0f}%)")
     if jbytes > journal_max:
         print(f"  ! journal is over its {journal_max:,} B cap by {jbytes - journal_max:,} B — "
-              "trim the oldest blocks or lower --keep. (Reported, not blocked.)")
+              "run with --apply to roll the oldest blocks into history. (Reported, not "
+              "blocked.) If this persists after an --apply, the newest block alone is "
+              "over cap: that one is never moved, and the fix is a shorter close.")
     return total, jbytes
 
 
@@ -600,15 +713,19 @@ def main():
               "Commit first — git is the undo — or pass --allow-dirty.", file=sys.stderr)
         sys.exit(1)
 
+    # Resolved BEFORE the rotate, not after: the size cap is now an input to the
+    # move, not just a line in the report that follows it.
+    jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
+
     missing = []
     if os.path.exists(ledger):
-        rotate_journal(ledger, history, args.keep, args.apply)
+        rotate_journal(ledger, history, args.keep, args.apply, jmax)
         _, missing = rotate_task_docs(d, ledger, args.apply)
     if os.path.exists(abba):
         rotate_abba(abba, archive, args.age, args.apply)
     if os.path.exists(ledger):
-        jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
         report_sizes(d, ledger, jmax)
+        report_table_prose(ledger)
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max)
     report_findings(d)

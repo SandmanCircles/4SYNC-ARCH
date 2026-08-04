@@ -16,6 +16,8 @@ rotate_journal rebuilds the ledger from `before + blocks`.
 """
 
 import builtins
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -434,6 +436,196 @@ class TestJournalOverflowTarget(ManifestEnvCase):
             self.assertIn("2026-07-15", fh.read())          # the oldest block, rotated out
         self.assertFalse(os.path.exists(os.path.join(self.root, "JOURNAL_HISTORY.md")),
                          "rotation created a history file the manifest never declared")
+
+
+def fat_ledger(sizes, comment=True):
+    """A ledger whose journal blocks have controlled byte sizes, newest-first.
+
+    The stock `ledger()` builds uniform tiny blocks, which cannot express the
+    defect this fixture exists for: a journal that obeys KEEP-5 exactly and is
+    still 70% over its byte cap, because the cap and the count measure different
+    things."""
+    body = ""
+    for i, n in enumerate(sizes):
+        head = "2026-07-%02d [agent] — entry %d " % (10 + i, i)
+        body += head + "x" * max(0, n - len(head)) + "\n\n"
+    parts = ["# Ledger\n", "\n## Session journal (recent)\n", "\n"]
+    if comment:
+        parts.append(KEEP_COMMENT + "\n\n")
+    parts.append(body)
+    parts.append("\n---\n\n## Summary table\n")
+    return "".join(parts)
+
+
+class TestJournalSizeCap(unittest.TestCase):
+    """The size cap MOVES blocks; it no longer only counts them.
+
+    Measured on the silo that prompted this: 5 blocks — KEEP-5 exactly obeyed,
+    so the count rule had nothing to move — totalling 27,764 B against a 16,384 B
+    cap. Three consecutive external reviews reported the number and none of them
+    could act on it, because the only remedy on offer was a hand-trim of prose
+    out of past entries. A cap nobody can enforce mechanically is a cap that gets
+    raised; this suite is the argument that it moves instead."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_size_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+        self.history = os.path.join(self.root, "JOURNAL_HISTORY.md")
+        with open(self.history, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# History\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, sizes):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(fat_ledger(sizes))
+
+    def _journal_now(self):
+        with open(self.ledger, encoding="utf-8") as fh:
+            _, blocks, _ = rotate.split_journal(fh.read())
+        return rotate.journal_bytes(blocks)
+
+    def test_under_both_caps_moves_nothing(self):
+        self._write([100, 100, 100])
+        moved = rotate.rotate_journal(self.ledger, self.history, 5, True, 16384)
+        self.assertEqual(moved, [])
+
+    def test_at_count_cap_but_over_size_cap_still_moves(self):
+        """The exact shape of the real defect: nothing to move by count, 70% over
+        by size. Before this, rotate_journal returned 'nothing to move'."""
+        self._write([3000, 3000, 3000, 3000, 3000])
+        moved = rotate.rotate_journal(self.ledger, self.history, 5, True, 8000)
+        self.assertTrue(moved, "count cap satisfied, size cap ignored — the defect")
+        self.assertLessEqual(self._journal_now(), 8000)
+
+    def test_moves_the_oldest_first_and_keeps_the_newest(self):
+        self._write([1000, 1000, 1000, 5000])
+        rotate.rotate_journal(self.ledger, self.history, 5, True, 3000)
+        with open(self.ledger, encoding="utf-8") as fh:
+            kept = fh.read()
+        self.assertIn("entry 0", kept, "newest block must survive")
+        self.assertNotIn("entry 3", kept, "oldest block must go first")
+
+    def test_newest_block_is_never_moved_even_if_it_alone_exceeds_the_cap(self):
+        """The floor. A cap that can empty the journal takes the previous
+        session's handoff with it — the one block a booting session most needs."""
+        self._write([9000, 500, 500])
+        rotate.rotate_journal(self.ledger, self.history, 5, True, 1000)
+        with open(self.ledger, encoding="utf-8") as fh:
+            kept = fh.read()
+        self.assertIn("entry 0", kept)
+        self.assertGreater(self._journal_now(), 1000, "still over — and that is correct")
+
+    def test_over_cap_by_one_block_is_reported_not_silently_accepted(self):
+        self._write([9000, 500])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rotate.rotate_journal(self.ledger, self.history, 5, True, 1000)
+        self.assertIn("STILL OVER", buf.getvalue())
+
+    def test_size_moved_blocks_land_verbatim_and_leave_the_ledger(self):
+        """The write-back bug this refactor could have shipped: rebuilding the
+        ledger from blocks[:keep] instead of the size-trimmed list would leave a
+        moved block in BOTH files."""
+        self._write([1000, 1000, 1000, 1000])
+        rotate.rotate_journal(self.ledger, self.history, 5, True, 2500)
+        led = open(self.ledger, encoding="utf-8").read()
+        hist = open(self.history, encoding="utf-8").read()
+        for tag in ("entry 2", "entry 3"):
+            self.assertIn(tag, hist)
+            self.assertNotIn(tag, led, "block is in history AND still in the ledger")
+
+    def test_size_moved_block_lands_above_the_older_count_moved_ones(self):
+        """Newest-first must survive a move driven by two different rules at once."""
+        self._write([1000, 1000, 1000, 1000, 1000, 1000])
+        rotate.rotate_journal(self.ledger, self.history, 5, True, 2500)
+        hist = open(self.history, encoding="utf-8").read()
+        self.assertLess(hist.index("entry 2"), hist.index("entry 5"))
+
+    def test_no_journal_max_preserves_pure_count_behaviour(self):
+        """Back-compat: every existing caller passes four arguments."""
+        self._write([9000, 9000, 9000])
+        moved = rotate.rotate_journal(self.ledger, self.history, 5, True)
+        self.assertEqual(moved, [])
+
+    def test_dry_run_writes_nothing_when_the_move_is_size_driven(self):
+        self._write([3000, 3000, 3000])
+        text = open(self.ledger, encoding="utf-8").read()
+        moved = rotate.rotate_journal(self.ledger, self.history, 5, False, 4000)
+        self.assertTrue(moved)
+        self.assertEqual(open(self.ledger, encoding="utf-8").read(), text)
+
+
+PROSE_LEDGER = """# Ledger
+
+## Summary table
+
+| ID | Status | Subject |
+|---|---|---|
+| 1 | ✅ | Short label |
+| 2 | ⏳ | Another label |
+
+{prose}
+
+---
+
+*footer*
+"""
+
+
+class TestTableProseReport(unittest.TestCase):
+    """The third place the growth went. Descriptions were capped and moved to
+    tasks/; row cells were capped after them; the paragraphs AROUND the table
+    were watched by nothing, and that is where the next 7,880 B accumulated —
+    every byte duplicating a tasks/closed/ document that already held it."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_prose_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write(self, prose):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(PROSE_LEDGER.format(prose=prose))
+
+    def _run(self, prose):
+        self._write(prose)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rows, pr = rotate.report_table_prose(self.ledger)
+        return rows, pr, buf.getvalue()
+
+    def test_prose_outweighing_rows_is_flagged(self):
+        rows, pr, out = self._run("**Tally:** " + "narrative " * 200)
+        self.assertGreater(pr, rows)
+        self.assertIn("prose outweighs", out)
+
+    def test_a_short_tally_is_clean(self):
+        rows, pr, out = self._run("**Tally:** 2 tasks. 1 completed, 1 pending.")
+        self.assertLess(pr, rows)
+        self.assertNotIn("prose outweighs", out)
+
+    def test_rows_and_prose_are_counted_separately(self):
+        rows, pr, _ = self._run("Short note.")
+        self.assertGreater(rows, 0)
+        self.assertGreater(pr, 0)
+
+    def test_missing_table_is_skipped_not_fatal(self):
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Ledger\n\nno table here\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rows, pr = rotate.report_table_prose(self.ledger)
+        self.assertEqual((rows, pr), (0, 0))
+
+    def test_reports_but_never_raises(self):
+        """Same contract as every other report here: a session mid-write must
+        never be stopped by a measurement."""
+        self._write("**Tally:** " + "narrative " * 500)
+        rotate.report_table_prose(self.ledger)
 
 
 SUBJ_LEDGER = """# Ledger

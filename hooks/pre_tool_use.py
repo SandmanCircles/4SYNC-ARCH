@@ -41,7 +41,7 @@ NOTE ON PORTABILITY (why this differs from an internal deployment):
   twice. It is explicit, it survives an upgrade of this file, and the shared
   machine-wide hook never imports or executes adopter code — which auto-discovery
   would have required, and which is an arbitrary-code-execution surface, not a
-  style question (decision: Michael, 2026-08-03).
+  style question (deliberate decision, 2026-08-03 — not an oversight).
 
 Wire via .claude/settings.json -> hooks.PreToolUse (see hooks/claude-settings.example.json).
 
@@ -309,9 +309,9 @@ def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
     ordinary project, a scratch file, or ~/.claude/plans/… — not our business.
     That is what makes a machine-wide wire safe rather than intrusive.
 
-    QUIET on lobby writes (Michael, 2026-07-31): when the SESSION resolves to no
-    instance, a drill-down from the home folder is the normal working pattern
-    here, not a mistake. It logs one line naming the target and returns None, so
+    QUIET on lobby writes (decided 2026-07-31): when the SESSION resolves to no
+    instance, a drill-down from a home folder is a normal working pattern, not a
+    mistake. It logs one line naming the target and returns None, so
     it never blocks even under enforce. A guard that makes the common case noisy
     is a guard that gets switched off, and then it is not protecting anything."""
     if tool not in WRITE_TOOLS or not ctx:

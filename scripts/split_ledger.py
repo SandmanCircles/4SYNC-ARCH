@@ -15,7 +15,7 @@ WHY THIS REFUSES MORE THAN IT USED TO
 ────────────────────────────────────────────────────────────────────────────────
 The first version bounded its description scan on the `## Task descriptions`
 heading. That held on the ledger it was written against and nowhere else: the
-4CITE/Coworker ledger keeps 23 of its 47 `### #NNN` blocks ABOVE that heading,
+first real adopter ledger keeps 23 of its 47 `### #NNN` blocks ABOVE that heading,
 interleaved in the summary-table section. A run there would have migrated 25,
 orphaned 22, and left a ledger that LOOKS migrated.
 
@@ -40,7 +40,7 @@ same kind of problem:
   REPORT a TERMINAL row with no description           → harmless. A closed task's
          document is never in the boot path, so there is nothing to fix, and
          demanding one would make the migration impossible on any mature ledger
-         (91 of Coworker's 119 rows are terminal and 67 carry no description).
+         (91 of one real ledger's 119 rows are terminal and 67 carry no description).
 
 A bijection in BOTH directions is the intuitive rule and it is wrong — it would
 refuse forever on exactly the ledgers this exists to migrate.
@@ -199,9 +199,9 @@ def main():
     # A one-time irreversible restructure must not run on a file that may already
     # be missing its tail. A ledger that does not end in a newline is the cheap,
     # reliable signature of an interrupted write — and this is not hypothetical:
-    # the 4CITE/Coworker ledger has ended mid-word since 2026-07-07, losing 980 B
-    # off the end of its last description, and every commit since has preserved
-    # the truncation. Migrating that file would have carried the damage into a
+    # a real adopter ledger was found truncated mid-word, having silently lost
+    # ~1 KB off the end of its last description months earlier, with every commit
+    # since preserving the damage. Migrating that file would have carried the damage into a
     # task document and deleted the evidence from the ledger in one step.
     if not ledger.endswith("\n") and not args.allow_no_final_newline:
         sys.exit("FATAL: MERGE_PLAN.md does not end in a newline — it may be "

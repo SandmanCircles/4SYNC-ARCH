@@ -330,7 +330,7 @@ TABLE_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", re.M)
 
 def doc_name(task_id):
     """tasks/MP-027.md for row 27. Zero-padded to three digits so a directory
-    listing sorts in ID order past 99 — Coworker is already at 117 rows, where
+    listing sorts in ID order past 99 — a real adopter ledger hit 117 rows, where
     unpadded names sort 1, 10, 100, 11 and the folder stops being readable."""
     return f"MP-{int(task_id):03d}.md"
 
@@ -340,7 +340,7 @@ def summary_table_section(ledger_text):
 
     The section is bounded by the next `## ` OR `### ` heading — not `## ` alone.
     A ledger that has not been split yet keeps its `### #NNN` description blocks
-    inside this same section (Coworker had 23 of them there), so a `## `-only
+    inside this same section (one real ledger had 23 of them there), so a `## `-only
     bound runs the row scan through tens of KB of prose. It finds no phantom row
     there today, but the moment a description quotes a table whose first column
     is numeric it would invent one — and rotate.py would then fail every close
@@ -437,7 +437,7 @@ def report_subjects(ledger_path, subject_max):
     THE ASYMMETRY THIS CLOSES: the split moved task substance out of the boot
     path and capped nothing about the table it left behind — so after the split
     the TABLE IS THE BOOT COST, and a row may hold any amount of text. Measured
-    on the Coworker ledger the day this was written: 119 rows carrying 24,087 B
+    on a real adopter ledger the day this was written: 119 rows carrying 24,087 B
     of Subject text (~6,000 tok), mean 199 chars, longest 2,426 — a bolded
     multi-clause paragraph carrying defect IDs. That is a description that
     migrated into a table cell. Ship the split without this and the growth

@@ -164,6 +164,19 @@ close:
     on_missing: skip           # a measurement never blocks a close
     # Drop `args` and it only reports. Keep it and the series starts on day one —
     # which is the only day it can start: a run not logged cannot be backfilled.
+  actuals:
+    script: scripts/actuals.py # MEASURED session cost — never blocks
+    args: --log                # one row per session → metrics/actuals_series.jsonl
+    on_missing: skip           # a measurement never blocks a close
+    # The companion to meter:, not a substitute. meter reads FILE SIZES and says
+    # what boot SHOULD cost, per file, before a session runs. This reads Claude
+    # Code's own transcripts and says what sessions DID cost — measured, but
+    # blind to which file, because the API sees one undifferentiated prefix.
+    # Report both, labelled; never merge an estimate with a measurement.
+    # Idempotent on (project, session), so a missed close self-heals — bounded
+    # by transcript retention (cleanupPeriodDays), not by close discipline.
+    # Reads usage integers ONLY, never message content: transcripts hold the
+    # full verbatim conversation including tool results.
   commit:
     trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
     untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount

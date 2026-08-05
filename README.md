@@ -180,7 +180,79 @@ CSV**, because the boot stack itself changes over time — files get added, spli
 deferred, renamed — and fixed columns would break at exactly the moment the
 series became interesting.
 
+## Measuring what it *actually* cost — `scripts/actuals.py`
+
+The meter prices what your manifest **declares**. This prices what your sessions
+**spent** — by reading the transcripts Claude Code already writes for every
+session, whether or not you have ever looked at them.
+
+```bash
+python scripts/actuals.py --dir .
+```
+
+The two are complements and should always be read side by side, labelled:
+
+| | `meter.py` | `actuals.py` |
+|---|---|---|
+| Reads | file sizes on disk | session transcripts |
+| Answers | what boot *should* cost | what a session *did* cost |
+| Nature | estimate (bytes ÷ 4) | measurement |
+| Available | before a session runs | after |
+| Attribution | **per file** | none — the API sees one prefix |
+
+Never merge the two numbers. An estimate and a measurement that get averaged
+together stop being either.
+
+**Run it early, because the data you most want expires first.** Claude Code
+prunes transcripts oldest-first (`cleanupPeriodDays`), so the sessions that
+show what your project cost *before* it adopted a loader stack are exactly the
+ones that disappear soonest. Extracting is cheap and permanent; the source is
+not. On the instance this was built in, 66 sessions reduced to **31 KB** —
+small enough to commit as evidence — against 130 MB of transcripts that can now
+expire without losing anything.
+
+```bash
+python scripts/actuals.py --dir . --all --log
+```
+
+`--log` appends one row per session to `metrics/actuals_series.jsonl`, keyed on
+(project, session) so re-running never duplicates. Add it to your manifest's
+`close:` block. Unlike the meter it is **idempotent and self-healing** — a close
+you skipped is picked up next time — but only inside the retention window.
+
+**It reads usage integers and never message content.** This matters more than it
+sounds: transcripts contain the full verbatim conversation *including tool
+results*, which is where file contents and command output land. The test suite
+plants a marker string in user text, assistant text, and a tool result, then
+asserts it reaches no output. That is why the extract is safe to keep, safe to
+commit, and safe to hand to someone else.
+
+**Calibrate your expectations before you optimise.** On the instance this was
+built in, roughly **53K tokens were already resident before a single boot file
+was read** — system prompt, tool definitions, `CLAUDE.md` — stable within ~2K
+across eleven sessions. That was 2.5× the entire boot stack. Once boot
+completed, about 62% of resident context was harness overhead nobody can touch
+and about 25% was the part the protocol controls. Your numbers will differ, but
+measure them before deciding how much a leaner stack can return: it is the
+ceiling on the whole exercise, and it is the honest denominator for any Return
+on Context claim you make.
+
+Two limits to state plainly. It **cannot tell you which file cost what** — only
+the meter can, because the API is handed one undifferentiated prefix. And it
+depends on the transcript format of the Claude Code version that wrote them; if
+that changes, it reports *"no usable transcripts found"* rather than guessing.
+
 ## Hardening (optional)
+
+> **These guards are a collaboration protocol, not a security control.** They
+> exist so a change to your project's identity documents doesn't happen
+> *quietly* — not so it becomes impossible. The hook runs in the same trust
+> domain as the files it guards: anything an agent can reach, an agent can
+> route around. That is the working assumption, not an unpatched flaw. Git plus
+> review is still the boundary for deliberate change; these exist so nothing
+> reaches that review unannounced. Install them with that expectation and they
+> earn their keep. See **What the guards do and don't cover** for the specifics,
+> including one bypass that is currently wide open.
 
 - **`hooks/pre_tool_use.py`** — six structural guards (KERNEL-write, ABBA-format,
   sandbox-git, STATUS-snapshot, the **boring-guard** that holds the manifest within
@@ -377,6 +449,32 @@ guard or manifest key you add:
 > instance, before you trust warn-mode logs as evidence of anything.**
 
 ### What the guards do and don't cover
+
+**A shell command reaches a guarded file without being evaluated.** The
+path-scoped guards test *which tool* is being used before they look at *which
+file* is being written, and `Bash` is not in that list. So `Edit` on your
+`KERNEL` is blocked and `Set-Content config/KERNEL.yaml 'x'` is not. Verified
+with controls in the same run: the write that blocks through `Edit` succeeds
+through a shell, and the same is true of every path-scoped guard, including the
+cross-instance fence.
+
+This is being fixed — guards will resolve from the target path rather than the
+tool — but read the shape of it now, because it is the collaboration frame at
+the top of this section made concrete. These protect against **drift and
+accident**, not against a determined agent. An agent working in good faith
+cannot reshape your doctrine quietly; an agent that wants to route around them
+can. Design accordingly.
+
+One asymmetry worth knowing even after the fix lands: guards that judge a file's
+*resulting content* — is it clipped, does it still parse — cannot evaluate a
+shell write at all, because what a command will produce is unknowable without
+running it. Those will notice the target and say so, rather than assert a
+verdict they cannot support. A guard that cannot see the truth should stay
+quiet, not guess.
+
+And a limit that no hook can close: these fire on **agent tool calls**. If you
+open `KERNEL.yaml` in your own editor, nothing fires — no log, no prompt, no
+record. Git catches it at commit; nothing catches it before.
 
 Hooks and the session-debt recorder fire on **host-side execution** only. A Cowork
 session running in the cloud makes its tool calls there and delivers the bytes to your

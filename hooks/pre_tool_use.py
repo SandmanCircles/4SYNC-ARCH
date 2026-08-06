@@ -187,6 +187,23 @@ _BASH_WRITE_VERB = re.compile(
 
 _BASH_TOKEN = re.compile(r"""['"]([^'"]+)['"]|(\S+)""")
 
+# A VERB that writes to its arguments, as opposed to a redirect that names its
+# own target. The distinction decides how widely we harvest — see _bash_write_paths.
+_BASH_WRITE_CMD = re.compile(
+    r"\b(set-content|add-content|out-file|write-all(text|lines)|tee|cp|copy|copy-item|"
+    r"mv|move|move-item|rm|del|remove-item|truncate|dd|patch|install)\b|"
+    r"\b(sed|perl)\b[^|]*\s-i\b|"
+    r"""\bopen\s*\([^)]*['"][wa]""",
+    re.IGNORECASE)
+
+# The token a redirect actually writes to: whatever follows `>`/`>>`, with the
+# same `->`/`=>` exclusion the intent regex uses.
+_BASH_REDIRECT_TARGET = re.compile(r"(?<![-=<>|])>>?\s*(['\"][^'\"]+['\"]|\S+)")
+
+# Writes here are guaranteed uninteresting, and `2>/dev/null` is the single most
+# common redirect in a command that is otherwise purely reading.
+_NULL_SINKS = {"/dev/null", "nul", "nul:", "$null", "/dev/stdout", "/dev/stderr"}
+
 _HEREDOC_START = re.compile(r"""<<-?\s*['"]?\w+['"]?""")
 
 
@@ -221,12 +238,37 @@ def _bash_write_paths(cmd):
     cmd = _strip_heredoc_body(cmd)
     if not _BASH_WRITE_VERB.search(cmd):
         return []
+
+    # A REDIRECT NAMES ITS OWN TARGET; A VERB DOES NOT (MP#50). Intent was
+    # detected across the whole command and targets were then harvested across
+    # the whole command too, so ONE redirect anywhere promoted every path the
+    # command merely READ into a write target. Found in live use: a read-only
+    # `md5sum`/`test -f` loop over another instance carrying `2>/dev/null` was
+    # refused as a cross-instance write, and the reported target was the
+    # unexpanded `../Coworker/$f` — the tell that no real destination was ever
+    # resolved. Same family as the `->` false positive (a path MENTIONED is not
+    # a path WRITTEN), different mechanism: that one narrowed which characters
+    # count as a redirect, this narrows which tokens a redirect can claim.
+    #
+    # So: when a write VERB is present, keep the broad harvest — `cp a b`,
+    # `Set-Content -Path p`, `mv x y/` really do write to their arguments, and
+    # narrowing per-verb is a wide surface whose failure mode is a MISSED write.
+    # When the only intent is a redirect, the target is the token after the
+    # operator and nothing else. Deliberately asymmetric: a false negative here
+    # fails QUIET, which is worse than the loud false positive being removed.
+    if _BASH_WRITE_CMD.search(cmd):
+        toks = [(q or b) for q, b in _BASH_TOKEN.findall(cmd)]
+    else:
+        toks = _BASH_REDIRECT_TARGET.findall(cmd)
+
     out = []
-    for quoted, bare in _BASH_TOKEN.findall(cmd):
-        tok = (quoted or bare).strip().strip("(),;`'\"")
+    for tok in toks:
+        tok = tok.strip().strip("(),;`'\"")
         if not tok or tok.startswith("-"):
             continue
         tok = tok.replace("\\", "/")
+        if tok.lower() in _NULL_SINKS:      # nothing guards the bit bucket
+            continue
         if "/" in tok or re.search(r"\.\w{1,6}$", tok):
             out.append(tok)
     return out

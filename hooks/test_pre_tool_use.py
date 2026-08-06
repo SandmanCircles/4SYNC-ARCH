@@ -646,6 +646,57 @@ class TestBashRouting(GuardCase):
         self.assertIsNone(self.run_guards(
             bash_payload(f"echo hi > {inside}"), cwd=self.root))
 
+    # ── MP#50: a redirect names its own target; a verb does not ──────────────
+
+    def _other_instance(self):
+        other = tempfile.mkdtemp(prefix="sync-hooks-other-")
+        self.addCleanup(shutil.rmtree, other, True)
+        os.makedirs(os.path.join(other, "config"))
+        return other
+
+    def test_reading_another_instance_with_a_null_redirect_is_silent(self):
+        """THE REAL FAILING COMMAND. A read-only survey of another instance —
+        md5sum, test -f, no writes — was REFUSED as a cross-instance write
+        because `2>/dev/null` supplied write intent and every path token in the
+        command was then harvested as a target. Reads across the fence are
+        explicitly permitted; this blocked the permitted half of the rule."""
+        other = self._other_instance()
+        cmd = (f'for f in a b; do md5sum {other}/scripts/$f 2>/dev/null; '
+               f'[ -f {other}/hooks/$f ]; done')
+        self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root))
+
+    def test_a_genuine_cross_instance_redirect_still_blocks(self):
+        """The control that bounds the fix — narrowing must not lose the catch."""
+        other = self._other_instance()
+        kind, reason = self.run_verdict(
+            bash_payload(f"echo x > {other}/config/OTHER_STATUS.yaml"), cwd=self.root)
+        self.assertIn("CROSS-INSTANCE", reason or "")
+        self.assertEqual("block", kind)
+
+    def test_a_write_verb_still_harvests_its_arguments(self):
+        """`cp a b` writes to an argument, not to a redirect target. Verb intent
+        keeps the BROAD harvest on purpose: narrowing per-verb is a wide surface
+        whose failure mode is a missed write, and a false negative fails quiet."""
+        other = self._other_instance()
+        kind, reason = self.run_verdict(
+            bash_payload(f"cp notes.md {other}/config/OTHER_STATUS.yaml"), cwd=self.root)
+        self.assertIn("CROSS-INSTANCE", reason or "")
+        self.assertEqual("block", kind)
+
+    def test_a_null_redirect_beside_a_real_one_still_blocks(self):
+        """/dev/null is dropped as a target, not as evidence — a real redirect
+        in the same command must still be found."""
+        other = self._other_instance()
+        kind, _ = self.run_verdict(
+            bash_payload(f"ls 2>/dev/null > {other}/config/OTHER_STATUS.yaml"),
+            cwd=self.root)
+        self.assertEqual("block", kind)
+
+    def test_reading_a_guarded_file_in_this_instance_stays_silent(self):
+        """`grep`/`cat` with a null redirect is still a read, in-instance."""
+        self.assertIsNone(self.run_guards(
+            bash_payload("grep -n x config/KERNEL.yaml 2>/dev/null"), cwd=self.root))
+
 
 class TestVerdictContract(unittest.TestCase):
     """MP#44 — the guard names the finding, the dispatcher picks the consequence."""

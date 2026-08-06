@@ -88,11 +88,16 @@ message DONE. Don't let ABBA become a second task tracker.
 ## Message format
 
 ```
-### [n] To: <Agent> · From: <who> · <YYYY-MM-DD> · Status: OPEN|DONE
-Re: <subject>
-<body — what to do, why, and any pointers>
-Resolution: <filled in when DONE>
+  ### [n] To: <Agent> · From: <who> · <YYYY-MM-DD> · Status: OPEN|DONE
+  Re: <subject>
+  <body — what to do, why, and any pointers>
+  Resolution: <filled in when DONE>
 ```
+
+**The two-space indent in that block is load-bearing — do not "tidy" it away.** The header scan
+counts *lines beginning with* the marker. A real message starts one at column 0; this template must
+not, or an empty board reports one more header than it can parse and every session falls back to a
+full read forever. Real messages below are flush left.
 
 Recipients come from the **Roster** above — but that table is a directory, not a restriction:
 address anyone, declared or not.

@@ -252,7 +252,7 @@ that changes, it reports *"no usable transcripts found"* rather than guessing.
 > review is still the boundary for deliberate change; these exist so nothing
 > reaches that review unannounced. Install them with that expectation and they
 > earn their keep. See **What the guards do and don't cover** for the specifics,
-> including one bypass that is currently wide open.
+> including exactly where the coverage stops and why some of it never closes.
 
 - **`hooks/pre_tool_use.py`** — six structural guards (KERNEL-write, ABBA-format,
   sandbox-git, STATUS-snapshot, the **boring-guard** that holds the manifest within
@@ -450,27 +450,47 @@ guard or manifest key you add:
 
 ### What the guards do and don't cover
 
-**A shell command reaches a guarded file without being evaluated.** The
-path-scoped guards test *which tool* is being used before they look at *which
-file* is being written, and `Bash` is not in that list. So `Edit` on your
-`KERNEL` is blocked and `Set-Content config/KERNEL.yaml 'x'` is not. Verified
-with controls in the same run: the write that blocks through `Edit` succeeds
-through a shell, and the same is true of every path-scoped guard, including the
-cross-instance fence.
+**Shell writes are covered now — loudly, not airtightly.** Guards resolve from
+the *target path*, not from the tool name, so `Set-Content config/KERNEL.yaml`
+trips the same wire as `Edit`. Until 2026-08-05 it did not: the path-scoped
+guards checked *which tool* before looking at *which file*, and `Bash` was not
+on the list, so every one of them — including the cross-instance fence — could
+be walked past with a one-liner.
 
-This is being fixed — guards will resolve from the target path rather than the
-tool — but read the shape of it now, because it is the collaboration frame at
-the top of this section made concrete. These protect against **drift and
-accident**, not against a determined agent. An agent working in good faith
-cannot reshape your doctrine quietly; an agent that wants to route around them
-can. Design accordingly.
+**The bar is loud, not impossible.** A determined caller can obfuscate a path
+past any regex, and that is explicitly not the target. The target is that
+routine tooling, a helpful one-liner, and an agent taking the path of least
+resistance all trip the same wire a direct edit does. These protect against
+**drift and accident**, not against a determined agent. An agent working in good
+faith cannot reshape your doctrine quietly; an agent that wants to route around
+them can. Design accordingly.
 
-One asymmetry worth knowing even after the fix lands: guards that judge a file's
+**An asymmetry that is intended, not a shortfall.** Guards that judge a file's
 *resulting content* — is it clipped, does it still parse — cannot evaluate a
 shell write at all, because what a command will produce is unknowable without
-running it. Those will notice the target and say so, rather than assert a
-verdict they cannot support. A guard that cannot see the truth should stay
-quiet, not guess.
+running it. Reached through `Bash` those guards surface the target and say they
+cannot inspect the result, rather than assert a verdict they cannot support. A
+guard that cannot see the truth should stay quiet, not guess. Guards that are
+pure *path* decisions — the KERNEL guard, the instance fence — reach a full
+verdict either way.
+
+**Some guards ask instead of refusing.** A guard that has found a *decision*
+(editing doctrine) puts the call to you as a permission prompt carrying its own
+reason; a guard that has found a *defect* (a clipped write) still blocks. One
+approval, in session, no restart and no environment variable — which matters
+because the old `CLAUDE_KERNEL_EDIT=1` override had to exist in the environment
+that *launched* Claude Code, something the desktop app, the editor extensions
+and scheduled runs give you no way to do. It still works, deprecated, and now
+logs when it is honoured.
+
+> **`ask` is ergonomics, not an authorisation boundary — measured, not assumed.**
+> It *requests* a prompt. Where no prompt can be shown, the ambient permission
+> decision stands, and it resolves to **allow** under `acceptEdits`,
+> `bypassPermissions`, `--allowedTools`, and a `permissions.allow` entry in
+> `settings.json` — which is itself a file an agent can write. Confirmed working
+> in interactive use; confirmed bypassable in four configurations. If you need a
+> real boundary, this is not it, and no hook in this trust domain could be: the
+> hook runs beside the files it guards, so whatever can edit them can edit it.
 
 And a limit that no hook can close: these fire on **agent tool calls**. If you
 open `KERNEL.yaml` in your own editor, nothing fires — no log, no prompt, no
@@ -512,8 +532,14 @@ used *if present* and every script falls back to a hand-rolled parser without it
 - **A read that doesn't end with its `# ═══ EOF … ═══` sentinel was clipped.** Discard
   it and re-read host-side. Never write on top of a bad read — that is how one session
   silently reverts another's work.
-- **A guard fired on an edit you meant to make.** That's the design. `warn` mode logs
-  and allows; the KERNEL guard takes `CLAUDE_KERNEL_EDIT=1` for deliberate edits.
+- **A guard fired on an edit you meant to make.** That's the design. Under `enforce`,
+  a guard that found a *decision* asks — approve the prompt and the call proceeds, once.
+  A guard that found a *defect* (a clipped or unparseable write) blocks, and the fix is
+  the write, not the guard. `warn` mode logs and allows everything. The legacy
+  `CLAUDE_KERNEL_EDIT=1` override still works and is deprecated; prefer the prompt.
+- **A guard fired on a shell command that was only reading.** It shouldn't — write
+  intent is required, so `cat`/`grep`/`Get-Content` stay silent. If a read did trip
+  one, that's a bug worth reporting rather than a setting to change.
 - **Don't cite `/status`** — it's an interactive terminal panel and isn't available in
   every environment. Probe the hooks empirically instead: make a trivial write and check
   whether `.session_debt.tsv` gained a row.

@@ -137,17 +137,35 @@ class GuardCase(ManifestEnvCase):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
 
-    def run_guards(self, payload):
-        """Drive the same dispatch path main() uses; return the first block reason."""
+    def run_verdict(self, payload, cwd=None):
+        """Drive the same dispatch path main() uses; return (kind, reason).
+
+        Mirrors main() including the 6-arg context branch. It previously stopped
+        at 5 args, so g6 — the only 6-arg guard — could never fire through this
+        helper and its Bash coverage would have tested nothing."""
+        import inspect
         tool, path, text, cmd = hooks._extract(payload)
-        full = hooks._resulting_content(tool, payload["tool_input"])
+        ti = payload.get("tool_input") or {}
+        full = hooks._resulting_content(tool, ti)
+        ctx = {"cwd": cwd or self.root,
+               "raw_path": ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""}
         for guard in hooks.GUARDS:
-            import inspect
             nargs = len(inspect.signature(guard).parameters)
-            reason = guard(tool, path, text, cmd, full) if nargs >= 5 else guard(tool, path, text, cmd)
+            if nargs >= 6:
+                returned = guard(tool, path, text, cmd, full, ctx)
+            elif nargs == 5:
+                returned = guard(tool, path, text, cmd, full)
+            else:
+                returned = guard(tool, path, text, cmd)
+            kind, reason = hooks._verdict(returned)
             if reason:
-                return reason
-        return None
+                return kind, reason
+        return None, None
+
+    def run_guards(self, payload, cwd=None):
+        """The first reason string, kind discarded — the pre-MP#44 shape, kept so
+        every existing assertion reads unchanged."""
+        return self.run_verdict(payload, cwd=cwd)[1]
 
 
 class TestResultingContent(GuardCase):
@@ -280,13 +298,17 @@ class TestUnaffectedGuards(GuardCase):
         instead of the whole suite failing only on machines that set the var."""
         self.assertEqual(os.environ.get("ARCH_MANIFEST"), "4SYNC.yaml")
 
-    def test_kernel_guard_still_blocks(self):
+    def test_kernel_guard_still_fires_and_now_asks(self):
+        """g1 still catches the write; MP#44 changed the CONSEQUENCE, not the catch.
+        Editing doctrine is a decision, so it goes to the human rather than being
+        refused outright."""
         kernel = os.path.join(self.root, "config", "KERNEL.yaml")
         self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
         os.environ.pop("CLAUDE_KERNEL_EDIT", None)
-        reason = self.run_guards(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"))
+        kind, reason = self.run_verdict(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"))
         self.assertIsNotNone(reason)
         self.assertIn("KERNEL", reason)
+        self.assertEqual("ask", kind)
 
     def test_abba_guard_judges_the_fragment_not_the_file(self):
         """A new OPEN message without To: is flagged; the guard must not start
@@ -488,6 +510,250 @@ class TestG6RootFence(unittest.TestCase):
         import inspect
         self.assertGreaterEqual(len(inspect.signature(hooks.g6_root_fence).parameters), 6)
         self.assertIn(hooks.g6_root_fence, hooks.GUARDS)
+
+
+def bash_payload(cmd):
+    return {"tool_name": "Bash", "tool_input": {"command": cmd}}
+
+
+class TestBashRouting(GuardCase):
+    """MP#43 — a path-scoped guard protects a FILE; it used to ask about a TOOL.
+
+    Every guard below tested `tool in WRITE_TOOLS` and returned None before
+    looking at the target, so `Set-Content config/KERNEL.yaml` wrote what `Edit`
+    could not. Verified on all five guards 2026-08-05, with controls.
+
+    PROBE TRAP, for anyone re-testing this BY HAND rather than through this
+    suite: piping a JSON payload to the hook from PowerShell 5.1 prepends a
+    UTF-8 BOM, `json.load` raises, and main() takes its documented "never block
+    on a malformed payload" escape and exits 0 — so EVERY probe reads as
+    "allowed" no matter what the guards would do. Cost one session three false
+    verifications in a day. Write the payload BOM-free and redirect from a file,
+    and always include a known-blocking control: a run where nothing blocks is
+    indistinguishable from a run where nothing was evaluated.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.kernel = os.path.join(self.root, "config", "KERNEL.yaml")
+        self._put(self.kernel, "meta:\n  status: AUTHORITATIVE\n")
+        os.environ.pop("CLAUDE_KERNEL_EDIT", None)
+
+    # ── g1: pure path decision, fully enforceable through Bash ──────────────
+    def test_g1_bash_relative_path(self):
+        kind, reason = self.run_verdict(bash_payload("Set-Content config/KERNEL.yaml 'x'"))
+        self.assertIsNotNone(reason)
+        self.assertEqual("ask", kind)
+
+    def test_g1_bash_absolute_path(self):
+        kind, reason = self.run_verdict(bash_payload(f"Set-Content {self.kernel} 'x'"))
+        self.assertIsNotNone(reason)
+        self.assertEqual("ask", kind)
+
+    def test_g1_bash_basename_only(self):
+        """`cd config; Set-Content KERNEL.yaml` never shows the directory in the
+        token naming the file, so the shell pattern is deliberately looser."""
+        kind, reason = self.run_verdict(bash_payload("Set-Content KERNEL.yaml 'x'"))
+        self.assertIsNotNone(reason)
+        self.assertEqual("ask", kind)
+
+    def test_g1_bash_redirection(self):
+        self.assertIsNotNone(self.run_guards(bash_payload("echo hi > config/KERNEL.yaml")))
+
+    def test_g1_bash_sed_in_place(self):
+        self.assertIsNotNone(self.run_guards(bash_payload("sed -i s/a/b/ config/KERNEL.yaml")))
+
+    # ── reads must stay silent: these are WRITE guards ──────────────────────
+    def test_read_only_commands_do_not_fire(self):
+        for cmd in ("cat config/KERNEL.yaml",
+                    "grep meta config/KERNEL.yaml",
+                    "Get-Content config/KERNEL.yaml",
+                    "head -5 config/STATUS.yaml",
+                    "git diff config/KERNEL.yaml"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.run_guards(bash_payload(cmd)))
+
+    def test_commit_message_mentioning_a_path_does_not_fire(self):
+        """THE FIRST FALSE POSITIVE THIS FILE SHIPPED, caught within minutes of
+        shipping: g6 blocked the very commit that introduced it. The message
+        quoted another instance's path in a courier note, and the `->` arrows in
+        the prose registered as shell redirection.
+
+        Two causes, both fixed: `>` is no longer matched inside `->`/`=>`, and a
+        heredoc BODY is data rather than a list of targets. Mentioning a path is
+        not writing to it — the distinction the whole guard rests on."""
+        cmd = ("git commit -F - <<'EOF'\n"
+               "fix: note that ../Coworker/ABBA.md needs the same change\n"
+               "suite 39 -> 60; loose 10 -> 9\n"
+               "EOF")
+        self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root))
+
+    def test_arrows_alone_are_not_redirection(self):
+        self.assertEqual([], hooks._bash_write_paths("echo 'a -> b' config/KERNEL.yaml"))
+
+    def test_heredoc_target_before_the_body_is_still_caught(self):
+        """Dropping the body must not drop real coverage: the redirection target
+        is named on the command line, before the `<<`."""
+        paths = hooks._bash_write_paths("cat > config/KERNEL.yaml <<'EOF'\nx\nEOF")
+        self.assertTrue(any("kernel.yaml" in p.lower() for p in paths))
+
+    def test_unguarded_bash_is_silent(self):
+        for cmd in ("echo hello > notes.txt", "ls -la", "py -m pytest"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.run_guards(bash_payload(cmd)))
+
+    # ── g2/g4/g5: CONTENT guards. Via Bash the result is unknowable, so they
+    #    must NOT assert a content verdict — they ask, and say why.
+    def test_g4_status_via_bash_asks_without_a_content_verdict(self):
+        kind, reason = self.run_verdict(bash_payload("Set-Content config/STATUS.yaml 'junk'"))
+        self.assertEqual("ask", kind)
+        self.assertIn("cannot inspect", reason)
+        # the regression that would creep in the first time someone "improves" it:
+        self.assertNotIn("does not parse", reason)
+        self.assertNotIn("looks clipped", reason)
+
+    def test_g5_manifest_via_bash_asks_without_a_content_verdict(self):
+        kind, reason = self.run_verdict(bash_payload("Set-Content 4SYNC.yaml 'junk'"))
+        self.assertEqual("ask", kind)
+        self.assertIn("cannot inspect", reason)
+        self.assertNotIn("over its own declared", reason)
+
+    def test_g2_abba_via_bash_asks_without_a_content_verdict(self):
+        kind, reason = self.run_verdict(bash_payload("Set-Content ABBA.md 'junk'"))
+        self.assertEqual("ask", kind)
+        self.assertIn("cannot inspect", reason)
+        self.assertNotIn("lacks a 'To:'", reason)
+
+    # ── g6: the row that mattered most. MP#36 made the fence permanent
+    #    doctrine, and it was enforced against four tools and not a shell.
+    def test_g6_cross_instance_via_bash_blocks(self):
+        """Doubles as an ORDERING assertion: the target is deliberately named
+        *STATUS.yaml, so g4 also matches it. g4 can only `ask` (it cannot see
+        what a shell command produces) while g6 blocks on doctrine — so if a
+        content guard is ever ordered ahead of the fence, this fails."""
+        other = tempfile.mkdtemp(prefix="sync-hooks-other-")
+        self.addCleanup(shutil.rmtree, other, True)
+        os.makedirs(os.path.join(other, "config"))
+        target = os.path.join(other, "config", "OTHER_STATUS.yaml")
+        kind, reason = self.run_verdict(
+            bash_payload(f"Set-Content {target} 'x'"), cwd=self.root)
+        self.assertIsNotNone(reason)
+        self.assertIn("CROSS-INSTANCE", reason)
+        self.assertEqual("block", kind, "the fence is doctrine, not a per-call judgement")
+
+    def test_g6_same_instance_via_bash_is_silent(self):
+        inside = os.path.join(self.root, "notes.md")
+        self.assertIsNone(self.run_guards(
+            bash_payload(f"echo hi > {inside}"), cwd=self.root))
+
+
+class TestVerdictContract(unittest.TestCase):
+    """MP#44 — the guard names the finding, the dispatcher picks the consequence."""
+
+    def test_bare_string_still_blocks(self):
+        """An adopter's existing 4-arg guard returns a plain string and must keep
+        blocking exactly as before — same opt-in discipline as the arity dispatch."""
+        self.assertEqual(("block", "nope"), hooks._verdict("nope"))
+
+    def test_explicit_kinds(self):
+        self.assertEqual(("ask", "r"), hooks._verdict(("ask", "r")))
+        self.assertEqual(("block", "r"), hooks._verdict(("block", "r")))
+
+    def test_unknown_kind_degrades_to_block(self):
+        """If a guard says something is wrong and we can't tell how strongly,
+        the safe reading is the strict one."""
+        self.assertEqual(("block", "r"), hooks._verdict(("whatever", "r")))
+
+    def test_none_and_empty_allow(self):
+        self.assertEqual(("block", None), hooks._verdict(None))
+        self.assertEqual(("block", None), hooks._verdict(("ask", "")))
+
+
+class TestDispatcherEndToEnd(GuardCase):
+    """Exercises main() as a subprocess: exit codes and the ask JSON.
+
+    subprocess with text input is BOM-free, which is exactly what the hand-probe
+    trap documented in TestBashRouting gets wrong."""
+
+    def _run(self, payload, mode):
+        import json as _json
+        import subprocess
+        # Carry `cwd` as a real payload does. Without it main() falls back to the
+        # hook PROCESS's cwd — the repo the suite runs from — and g6 correctly
+        # reports every fixture write as cross-instance, masking the guard under
+        # test. The fixture was wrong, not the fence.
+        payload = dict(payload, cwd=self.root)
+        env = dict(os.environ, ARCH_HOOKS_MODE=mode, ARCH_MANIFEST="4SYNC.yaml",
+                   ARCH_DEBT="0", ARCH_HOOKS_LOG=os.path.join(self.root, "hooks.log"))
+        hook = os.path.join(os.path.dirname(os.path.abspath(hooks.__file__)), "pre_tool_use.py")
+        return subprocess.run([sys.executable, hook], input=_json.dumps(payload),
+                              capture_output=True, text=True, env=env)
+
+    def test_askable_guard_asks_under_enforce(self):
+        import json as _json
+        kernel = os.path.join(self.root, "config", "KERNEL.yaml")
+        self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
+        env_backup = os.environ.pop("CLAUDE_KERNEL_EDIT", None)
+        if env_backup is not None:
+            self.addCleanup(os.environ.__setitem__, "CLAUDE_KERNEL_EDIT", env_backup)
+        r = self._run(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"), "enforce")
+        self.assertEqual(0, r.returncode, r.stderr)
+        out = _json.loads(r.stdout)
+        self.assertEqual("ask", out["hookSpecificOutput"]["permissionDecision"])
+        self.assertEqual("PreToolUse", out["hookSpecificOutput"]["hookEventName"])
+        self.assertIn("KERNEL", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_non_askable_guard_still_exits_2(self):
+        clipped = "meta:\n  status: X\n"          # no EOF sentinel
+        r = self._run(write_payload(self.status, clipped), "enforce")
+        self.assertEqual(2, r.returncode)
+        self.assertIn("clipped", r.stderr)
+        self.assertEqual("", r.stdout.strip(), "a block must not also emit ask JSON")
+
+    def test_warn_mode_is_unchanged_for_askable_guards(self):
+        """MP#44 changes what `enforce` does. `warn` must be byte-identical, which
+        is what makes this safe to ship mid-adoption."""
+        kernel = os.path.join(self.root, "config", "KERNEL.yaml")
+        self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
+        r = self._run(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"), "warn")
+        self.assertEqual(0, r.returncode)
+        self.assertEqual("", r.stdout.strip(), "warn must not emit ask JSON")
+
+    def test_malformed_payload_stays_silent(self):
+        import subprocess
+        env = dict(os.environ, ARCH_HOOKS_MODE="enforce", ARCH_DEBT="0")
+        hook = os.path.join(os.path.dirname(os.path.abspath(hooks.__file__)), "pre_tool_use.py")
+        r = subprocess.run([sys.executable, hook], input="not json at all",
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(0, r.returncode)
+
+
+class TestDeprecatedOverride(GuardCase):
+    """CLAUDE_KERNEL_EDIT=1 keeps working for at least one minor version — it is
+    documented and may be in an adopter runbook — but it now LOGS when honoured,
+    so remaining use is visible rather than assumed dead. Before this it wrote
+    nothing anywhere (verified 2026-08-05: log unchanged, 0 bytes)."""
+
+    def test_override_allows_and_logs(self):
+        logpath = os.path.join(self.root, "hooks.log")
+        prev_log = os.environ.get("ARCH_HOOKS_LOG")
+        prev_edit = os.environ.get("CLAUDE_KERNEL_EDIT")
+        os.environ["ARCH_HOOKS_LOG"] = logpath
+        os.environ["CLAUDE_KERNEL_EDIT"] = "1"
+
+        def restore():
+            for k, v in (("ARCH_HOOKS_LOG", prev_log), ("CLAUDE_KERNEL_EDIT", prev_edit)):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
+
+        kernel = os.path.join(self.root, "config", "KERNEL.yaml")
+        self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
+        self.assertIsNone(self.run_guards(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE")))
+        with open(logpath, encoding="utf-8") as fh:
+            self.assertIn("DEPRECATED override honoured", fh.read())
 
 
 if __name__ == "__main__":

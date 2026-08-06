@@ -49,12 +49,29 @@ Protocol (Claude Code PreToolUse):
   stdin  : JSON {"tool_name": "...", "tool_input": {...}, ...}
   exit 0 : allow
   exit 2 : BLOCK (stderr is shown to the agent as the reason)
+  exit 0 + {"hookSpecificOutput": {... "permissionDecision": "ask" ...}}
+         : put the call to the human as a permission prompt
 
 Modes (env ARCH_HOOKS_MODE):
   "warn"    (DEFAULT) : violations are logged, action is ALLOWED. Rollout mode —
                         observe automated runs for false positives before enforcing.
-  "enforce"           : violations BLOCK with exit 2.
+  "enforce"           : violations BLOCK with exit 2, or ASK for guards that
+                        classify their finding as a decision rather than a defect.
   "off"               : dispatcher exits 0 immediately.
+
+WHAT THESE GUARDS ARE, AND ARE NOT (read before relying on them):
+  They protect against DRIFT AND ACCIDENT — a stray edit, a helpful one-liner,
+  an agent taking the path of least resistance. They are NOT a security
+  boundary. The hook runs in the same trust domain as the files it guards, so
+  anything that can edit those files can edit this one.
+
+  `ask` is ergonomics with teeth, NOT an authorisation boundary. Verified
+  2026-08-05: `ask` requests a prompt, and where no prompt can be shown the
+  ambient permission decision stands — it resolves to ALLOW under acceptEdits,
+  bypassPermissions, `--allowedTools`, and a settings.json `permissions.allow`
+  entry, which is itself a file an agent can write. Bash coverage likewise
+  converts a SILENT bypass into a LOUD one; it does not close it. Both are
+  worth having and neither is a lock. Say so in your own docs too.
 
 Configuration (env):
   ARCH_HOOKS_MODE  : warn | enforce | off        (default: warn)
@@ -135,7 +152,141 @@ def _resulting_content(tool, ti):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Guards. Each returns a reason string when it wants to block, else None.
+# Bash targeting (MP#43). A path-scoped guard protects a FILE; testing
+# `tool in WRITE_TOOLS` asks about a TOOL. `Bash` reaches this dispatcher and
+# every path guard used to return None before looking at the target, so
+# `Set-Content config/KERNEL.yaml` wrote what `Edit` could not — verified on
+# all five guards, 2026-08-05.
+#
+# THE BAR IS LOUD, NOT AIRTIGHT. A determined caller can obfuscate a path past
+# any regex (base64, a variable, a heredoc) and that is explicitly not the
+# target. The target is that routine tooling, a helpful one-liner, and an agent
+# taking the path of least resistance all trip the same wire a direct edit does.
+#
+# CONTENT IS UNKNOWABLE FOR A SHELL CALL. You cannot know what a command
+# produces without running it, so `_resulting_content()` returns None and the
+# content guards (g2/g4/g5) must NOT assert a verdict — they have noticed a
+# risk, not detected a defect. They downgrade to `ask` and say why.
+# ─────────────────────────────────────────────────────────────────────────────
+
+BASH_TOOL = "Bash"
+
+# Write intent. Requiring one of these is what keeps `cat`/`grep`/`Get-Content`
+# silent: a read names the file too, and an allowlist of read commands would
+# miss `cat a > b` in the other direction. Verb-based, so reads stay quiet by
+# construction rather than by enumeration.
+_BASH_WRITE_VERB = re.compile(
+    # `>` but NOT the `>` in `->`, `=>`, `>>=` etc. Prose and code are full of
+    # arrows, and a command that merely CONTAINS an arrow is not redirecting.
+    r"((?<![-=<>|])>>?|"
+    r"\b(set-content|add-content|out-file|write-all(text|lines)|tee|cp|copy|copy-item|"
+    r"mv|move|move-item|rm|del|remove-item|truncate|dd|patch|install)\b|"
+    r"\b(sed|perl)\b[^|]*\s-i\b|"
+    r"""\bopen\s*\([^)]*['"][wa]""" r")",
+    re.IGNORECASE)
+
+_BASH_TOKEN = re.compile(r"""['"]([^'"]+)['"]|(\S+)""")
+
+_HEREDOC_START = re.compile(r"""<<-?\s*['"]?\w+['"]?""")
+
+
+def _strip_heredoc_body(cmd):
+    """Keep the command line, drop the heredoc body it feeds.
+
+    The body is DATA — a commit message, a file's contents, a SQL script. Paths
+    named inside it are being talked about, not written to. The redirection
+    target, if any, is on the command line before the `<<`."""
+    m = _HEREDOC_START.search(cmd)
+    if not m:
+        return cmd
+    nl = cmd.find("\n", m.end())
+    return cmd[:nl] if nl != -1 else cmd[:m.end()]
+
+
+def _bash_write_paths(cmd):
+    """Path-ish tokens from a Bash command that shows write intent.
+
+    Returns raw tokens with separators normalised to '/' but CASE PRESERVED —
+    g6 resolves these against the filesystem, and lowercasing is correct only on
+    Windows. Empty list when the command shows no write intent at all.
+
+    HEREDOC BODIES ARE NOT TARGETS. `git commit -F - <<'EOF' … EOF` carries a
+    commit message; a message that MENTIONS a path is not a write to it. Any
+    real redirection target is named on the command line BEFORE the body, so
+    dropping the body loses no coverage and removes a whole false-positive
+    class. Found the hard way: this guard blocked the very commit that shipped
+    it, because the message quoted another instance's path in a courier note."""
+    if not cmd:
+        return []
+    cmd = _strip_heredoc_body(cmd)
+    if not _BASH_WRITE_VERB.search(cmd):
+        return []
+    out = []
+    for quoted, bare in _BASH_TOKEN.findall(cmd):
+        tok = (quoted or bare).strip().strip("(),;`'\"")
+        if not tok or tok.startswith("-"):
+            continue
+        tok = tok.replace("\\", "/")
+        if "/" in tok or re.search(r"\.\w{1,6}$", tok):
+            out.append(tok)
+    return out
+
+
+def _targeted(tool, path, cmd, rx=None, basename=None, rx_bash=None):
+    """Does this call target a guarded file?
+
+    Returns (hit, knowable):
+      hit       — the matched target string, or None
+      knowable  — True when the resulting content can be inspected (a write
+                  tool), False when it cannot (Bash). Guards that judge CONTENT
+                  must downgrade their consequence when knowable is False.
+
+    `rx_bash` lets a guard match a looser pattern on a shell token than on a
+    tool path — a shell call may name the file by basename with the directory
+    supplied by an earlier `cd`, which no single token can show."""
+    if tool in WRITE_TOOLS:
+        if basename is not None:
+            return (path if os.path.basename(path) == basename else None), True
+        return (path if rx and rx.search(path) else None), True
+    if tool == BASH_TOOL:
+        for tok in _bash_write_paths(cmd):
+            low = tok.lower()
+            if basename is not None:
+                if os.path.basename(low) == basename:
+                    return tok, False
+            elif (rx_bash or rx) and (rx_bash or rx).search(low):
+                return tok, False
+    return None, True
+
+
+_RX_KERNEL = re.compile(rf"(^|/){re.escape(CONFIG_DIR)}/[^/]*kernel[^/]*\.ya?ml$")
+_RX_STATUS = re.compile(rf"(^|/){re.escape(CONFIG_DIR)}/[^/]*status[^/]*\.ya?ml$")
+# Looser for shell tokens: `cd config; Set-Content KERNEL.yaml` never shows the
+# directory in the token that names the file. Costs a false positive on an
+# unrelated *kernel*.yaml — which is an `ask`, i.e. one prompt, not a refusal.
+_RX_KERNEL_BASH = re.compile(r"(^|/)[^/]*kernel[^/]*\.ya?ml$")
+_RX_STATUS_BASH = re.compile(r"(^|/)[^/]*status[^/]*\.ya?ml$")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Guards. Each returns None to allow, or a reason for the dispatcher to act on.
+#
+# RETURN CONTRACT (MP#44). A guard returns one of:
+#   None                — allow
+#   "reason"            — block  (the historical form; an adopter's existing
+#                         guard keeps working unchanged and still blocks)
+#   ("block", "reason") — block, stated explicitly
+#   ("ask",   "reason") — put it to the human as a permission prompt
+#
+# THE GUARD NAMES THE FINDING; THE DISPATCHER CHOOSES THE CONSEQUENCE. Do not
+# call sys.exit() or print JSON from a guard — the seam is what keeps `ask` a
+# small change rather than a rewrite, and what keeps `warn` byte-identical.
+#
+# Which kind: is the guard detecting a DEFECT or a DECISION? A defect blocks —
+# no human input improves a clipped write. A decision asks — only a human
+# supplies deliberateness about doctrine. A content guard reached through Bash
+# has detected NEITHER yet: it cannot see the content, so it asks.
+#
 # Signature: (tool, path, text, cmd[, full]) where
 #   tool = tool name, path = target file (lowercased), text = written content
 #          (for Edit/MultiEdit this is the replacement FRAGMENT, not the file),
@@ -148,13 +299,41 @@ def _resulting_content(tool, ti):
 def g1_kernel_write_guard(tool, path, text, cmd):
     """Protect the KERNEL (identity + operating contract) from casual/automated edits.
     The KERNEL is edit-in-place and rare; unintended changes to it silently
-    reshape every session's orientation. Owner override: CLAUDE_KERNEL_EDIT=1."""
-    if tool in WRITE_TOOLS and re.search(rf"(^|/){re.escape(CONFIG_DIR)}/[^/]*kernel[^/]*\.ya?ml$", path):
-        if os.environ.get("CLAUDE_KERNEL_EDIT") != "1":
-            return ("KERNEL write guard: writes to the KERNEL config are blocked unless "
-                    "CLAUDE_KERNEL_EDIT=1 is set. The KERNEL is identity/doctrine — "
-                    "edit it deliberately, not as a side effect.")
-    return None
+    reshape every session's orientation.
+
+    A PURE PATH DECISION — the target settles it, so this guard is fully
+    enforceable through Bash as well as the write tools (MP#43).
+
+    ASKS rather than refuses (MP#44). Editing doctrine is a decision, not a
+    defect, and a human is the only thing that supplies deliberateness. The
+    prompt also fixes the trap the old override left: CLAUDE_KERNEL_EDIT=1 has
+    to exist in the environment that LAUNCHED Claude Code, which the desktop
+    app, the VSCode extension and scheduled runs offer no way to do — so the
+    documented door was a wall for most surfaces, and the one workaround
+    (putting it in settings.json) does not authorise once, it disarms the guard
+    permanently.
+
+    KNOWN CEILING, verified 2026-08-05 — `ask` is NOT an authorisation
+    boundary. It requests a prompt; where no prompt can be shown the ambient
+    permission decision stands, and it resolves to ALLOW under acceptEdits,
+    bypassPermissions, `--allowedTools Write`, and a settings.json
+    `permissions.allow` entry. That last one is a file the agent can write.
+    Treat this as ergonomics with teeth, not a lock (tasks/MP-044.md).
+
+    Legacy override CLAUDE_KERNEL_EDIT=1 still works and is DEPRECATED; it now
+    logs when honoured, so remaining use is visible rather than assumed dead."""
+    hit, _ = _targeted(tool, path, cmd, rx=_RX_KERNEL, rx_bash=_RX_KERNEL_BASH)
+    if not hit:
+        return None
+    if os.environ.get("CLAUDE_KERNEL_EDIT") == "1":
+        _log(f"[g1_kernel_write_guard] DEPRECATED override honoured "
+             f"(CLAUDE_KERNEL_EDIT=1) tool={tool} path={hit}")
+        return None
+    via = " via a shell command" if tool == BASH_TOOL else ""
+    return ("ask",
+            f"KERNEL write guard: this call edits identity/doctrine ({hit}){via}. "
+            "The KERNEL shapes every session's orientation and is edit-in-place, "
+            "rare. Approve only if this change is intended.")
 
 
 def g2_abba_format_guard(tool, path, text, cmd):
@@ -164,13 +343,26 @@ def g2_abba_format_guard(tool, path, text, cmd):
     Scoped to the message HEADER line. The board's documented format carries `To:`
     INLINE — `### [n] To: <Agent> · From: <who> · <date> · Status: OPEN` — so a
     block-scoped check anchored to line-start can never be satisfied by a correctly
-    formatted message, and at `enforce` makes the board unwritable."""
-    if tool in WRITE_TOOLS and os.path.basename(path) == "abba.md":
-        for line in (text or "").splitlines():
-            if re.match(r"^###\s*\[\d+\]", line) and "status: open" in line.lower():
-                if not re.search(r"\bto:\s*\S", line, re.IGNORECASE):
-                    return ("ABBA format guard: a new 'Status: OPEN' message lacks a 'To:' "
-                            "field. Address every open bulletin to a named recipient.")
+    formatted message, and at `enforce` makes the board unwritable.
+
+    A CONTENT decision, so it BLOCKS when it can read the content — a malformed
+    message is wrong, not unauthorised, and no human input improves it. Reached
+    through Bash the content is unknowable, so it downgrades to `ask` and says
+    so rather than guessing (MP#43)."""
+    hit, knowable = _targeted(tool, path, cmd, basename="abba.md")
+    if not hit:
+        return None
+    if not knowable:
+        return ("ask",
+                f"ABBA format guard: a shell command is writing the bulletin board "
+                f"({hit}) and this guard cannot inspect what it will produce. Every "
+                "'Status: OPEN' message needs a 'To:' field or nobody owns it. "
+                "Approve if you know the write is well-formed.")
+    for line in (text or "").splitlines():
+        if re.match(r"^###\s*\[\d+\]", line) and "status: open" in line.lower():
+            if not re.search(r"\bto:\s*\S", line, re.IGNORECASE):
+                return ("ABBA format guard: a new 'Status: OPEN' message lacks a 'To:' "
+                        "field. Address every open bulletin to a named recipient.")
     return None
 
 
@@ -194,9 +386,21 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
 
     All three checks describe the RESULTING file, so they run against `full`. When
     the result can't be determined the guard stays silent — an anchored Edit is the
-    documented close-protocol write mode and must never be blocked on a blind read."""
-    if tool not in WRITE_TOOLS or not re.search(rf"(^|/){re.escape(CONFIG_DIR)}/[^/]*status[^/]*\.ya?ml$", path):
+    documented close-protocol write mode and must never be blocked on a blind read.
+
+    Through Bash the target is visible but the result is not, so the guard
+    surfaces the write as an `ask` instead of asserting a content verdict it has
+    no basis for (MP#43). Blocking there would ship this file's first
+    false-positive class."""
+    hit, knowable = _targeted(tool, path, cmd, rx=_RX_STATUS, rx_bash=_RX_STATUS_BASH)
+    if not hit:
         return None
+    if not knowable:
+        return ("ask",
+                f"STATUS write guard: a shell command is writing STATUS ({hit}) and "
+                "this guard cannot inspect the result. STATUS must stay parseable, "
+                "un-clipped and snapshot-shaped. Approve if you know what the "
+                "command produces.")
     if full is None:
         return None
     content = full
@@ -240,10 +444,20 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
     `declaration_only` is set, no journal-style calendar date leaks in — the
     manifest takes dates from the clock at runtime and records history in the task
     ledger, so a literal YYYY-MM-DD is state/narrative creep. Manifest filename via
-    ARCH_MANIFEST (default '4sync.yaml')."""
+    ARCH_MANIFEST (default '4sync.yaml').
+
+    Content decision: blocks when it can read the result, asks when reached
+    through Bash where it cannot (MP#43)."""
     manifest = os.environ.get("ARCH_MANIFEST", "4sync.yaml").strip().lower()
-    if tool not in WRITE_TOOLS or os.path.basename(path) != manifest:
+    hit, knowable = _targeted(tool, path, cmd, basename=manifest)
+    if not hit:
         return None
+    if not knowable:
+        return ("ask",
+                f"boring-guard: a shell command is writing the instance manifest "
+                f"({hit}) and this guard cannot inspect the result. The manifest is "
+                "pure declaration, bounded by its own max_bytes. Approve if the "
+                "write keeps it that way.")
     if full is None:
         return None
     content = full
@@ -313,37 +527,73 @@ def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
     instance, a drill-down from a home folder is a normal working pattern, not a
     mistake. It logs one line naming the target and returns None, so
     it never blocks even under enforce. A guard that makes the common case noisy
-    is a guard that gets switched off, and then it is not protecting anything."""
-    if tool not in WRITE_TOOLS or not ctx:
+    is a guard that gets switched off, and then it is not protecting anything.
+
+    A PURE PATH DECISION, so Bash is covered too (MP#43) — and this was the row
+    that mattered most: MP#36 made "the human is the courier" a permanent
+    KERNEL invariant, and until now it was enforced against four tools and not
+    against `Set-Content`.
+
+    STILL BLOCKS, deliberately, where g1 asks (MP#44 open question, resolved
+    here toward block). The fence is permanent doctrine, not a per-call
+    judgement, and asking would train the reflex to approve — which is how
+    prompt fatigue starts and how a permanent rule quietly becomes a
+    negotiable one."""
+    if not ctx:
         return None
-    raw = ctx.get("raw_path") or ""
-    if not raw:
+    if tool in WRITE_TOOLS:
+        targets = [ctx.get("raw_path") or ""]
+    elif tool == BASH_TOOL:
+        targets = _bash_write_paths(cmd)
+    else:
         return None
-    target_root = _instance_root(os.path.dirname(os.path.abspath(raw)), strict=True)
-    if target_root is None:
-        return None                      # not an ARCH instance — silent
-    session_root = _instance_root(ctx.get("cwd") or ".", strict=True)
-    if session_root is None:
-        _log(f"[g6_root_fence] QUIET tool={tool} path={raw} :: write into ARCH "
-             f"instance {os.path.basename(target_root)} from a session not booted "
-             f"in any instance (lobby drill-down — allowed, recorded)")
-        return None
-    if _same_tree(session_root, target_root):
-        return None
-    return (f"CROSS-INSTANCE WRITE: this session is booted in "
-            f"{os.path.basename(session_root)} but the target is inside "
-            f"{os.path.basename(target_root)} ({raw}). That instance has its own "
-            f"ledger, numbering and invariants, none of which this session loaded "
-            f"— write from a session booted there, or leave it a message.")
+
+    session_cwd = ctx.get("cwd") or os.getcwd()
+    session_root = _instance_root(session_cwd, strict=True)
+    for raw in targets:
+        if not raw:
+            continue
+        # Resolve against the SESSION's cwd, not the hook process's. A shell
+        # command names files relative to where the session is; the hook runs
+        # wherever it was launched. Using os.path.abspath() alone resolved a
+        # bare `notes.txt` against the hook's own directory and flagged an
+        # ordinary local write as cross-instance — caught by the "unguarded
+        # Bash is silent" test, which is exactly the false-positive class this
+        # guard must not ship.
+        target = raw if os.path.isabs(raw) else os.path.join(session_cwd, raw)
+        target_root = _instance_root(os.path.dirname(os.path.abspath(target)), strict=True)
+        if target_root is None:
+            continue                     # not an ARCH instance — silent
+        if session_root is None:
+            _log(f"[g6_root_fence] QUIET tool={tool} path={raw} :: write into ARCH "
+                 f"instance {os.path.basename(target_root)} from a session not booted "
+                 f"in any instance (lobby drill-down — allowed, recorded)")
+            continue
+        if _same_tree(session_root, target_root):
+            continue
+        via = " (via a shell command)" if tool == BASH_TOOL else ""
+        return (f"CROSS-INSTANCE WRITE{via}: this session is booted in "
+                f"{os.path.basename(session_root)} but the target is inside "
+                f"{os.path.basename(target_root)} ({raw}). That instance has its own "
+                f"ledger, numbering and invariants, none of which this session loaded "
+                f"— write from a session booted there, or leave it a message.")
+    return None
 
 
+# ORDER IS LOAD-BEARING (MP#44). The first guard to return a reason decides the
+# consequence, so a guard that ASKS must never pre-empt one that would BLOCK.
+# g6 runs first because the instance fence is permanent doctrine (MP#36): a
+# cross-instance write to another instance's STATUS was reaching g4 first and
+# being downgraded from block to ask — the content guard has no verdict there
+# anyway, and the fence does. Ordering only became load-bearing when `ask`
+# arrived; before that every guard blocked and the order merely picked a message.
 GUARDS = [
+    g6_root_fence,
     g1_kernel_write_guard,
     g2_abba_format_guard,
     g3_sandbox_git_guard,
     g4_status_write_guard,
     g5_boring_guard,
-    g6_root_fence,
 ]
 
 
@@ -462,6 +712,26 @@ def _record_debt(payload):
             pass
 
 
+def _verdict(returned):
+    """Normalise a guard's return into (kind, reason).
+
+    Accepts the historical bare string so an adopter's existing guard keeps
+    blocking exactly as before — arity dispatch made the 5th/6th parameters
+    opt-in, and this does the same for the consequence. An unrecognised kind
+    degrades to "block": if a guard says something is wrong and this function
+    cannot tell how strongly, the safe reading is the strict one."""
+    if not returned:
+        return "block", None
+    if isinstance(returned, str):
+        return "block", returned
+    if isinstance(returned, (tuple, list)) and len(returned) == 2:
+        kind, reason = returned
+        if not isinstance(reason, str) or not reason:
+            return "block", None
+        return ("ask" if str(kind).lower() == "ask" else "block"), reason
+    return "block", str(returned)
+
+
 def main():
     mode = os.environ.get("ARCH_HOOKS_MODE", "warn").lower()
     if mode == "off":
@@ -508,11 +778,21 @@ def main():
                 reason = guard(tool, path, text, cmd)
         except Exception:  # noqa: BLE001 — a buggy guard must never break the tool call
             continue
+        kind, reason = _verdict(reason)
         if reason:
             if mode == "enforce":
+                if kind == "ask":
+                    _log(f"[{guard.__name__}] ASK tool={tool} path={path or cmd} :: {reason}")
+                    json.dump({"hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": reason,
+                    }}, sys.stdout)
+                    sys.stdout.write("\n")
+                    sys.exit(0)
                 sys.stderr.write(reason + "\n")
                 sys.exit(2)
-            else:  # warn
+            else:  # warn — byte-identical to pre-MP#44 behaviour, ask included
                 _log(f"[{guard.__name__}] tool={tool} path={path} :: {reason}")
                 sys.exit(0)
 

@@ -266,8 +266,30 @@ that changes, it reports *"no usable transcripts found"* rather than guessing.
   which instance this is, the ordered boot stack with its measured cost, any
   missing EOF sentinel, and the session-debt reading (sessions live *right now*
   vs. sessions holding undeposited state). See **Making boot non-optional** below.
-- **`scripts/rotate.py`** — ledger rotation: journal keep-N overflow to history,
-  aged bulletin messages to archive. Run at close from a git-capable session.
+- **`scripts/rotate.py`** — ledger rotation *and* the close's arithmetic check.
+  It **moves** (journal keep-N and size overflow to history, closed tasks' docs to
+  `tasks/closed/`, aged bulletin messages to archive) and **derives** one line (the
+  ledger `Tally`, computed from the rows rather than typed). Everything else it
+  only **measures and reports, never blocking a close**: ledger and journal size,
+  over-long Subject cells, prose outweighing rows, trigger-less findings, the
+  "Pickup-ready" list against the ⏳ rows, and the hand-copied numbers in your
+  STATUS file — manifest caps, byte counts attributed to a named path, test-suite
+  counts, commit SHAs, boot cost — each checked against the thing it claims to
+  describe. Run at close from a git-capable session.
+
+  **Why one pass rewrites and the rest report.** A `Tally` is a count of rows
+  sitting right there and needs no judgement, so it is derived. A STATUS number sits
+  *inside* prose that carries the reasoning around it; rewriting the number would
+  mangle the argument. So those are reported and you fix the sentence.
+
+  **A claim must identify itself to be checked.** A byte figure needs a real path
+  beside it, a suite count needs a real `test_<name>.py`, a short commit hash needs
+  something nearby saying it is one. Anything that does not identify itself is
+  treated as prose and passes in silence. That costs some coverage on purpose: a
+  report that flags prose is a report people learn to ignore, and an ignored report
+  is worth less than none. It also gives your STATUS file a house style — phrase a
+  fact so the check can reach it. Claims about a file's *contents* are out of scope
+  and always will be.
 
 ### Installing the hooks
 

@@ -957,6 +957,408 @@ class TestSummaryTableSpan(unittest.TestCase):
         self.assertIsNone(rotate.summary_table_section("# L\n\nnothing\n"))
 
 
+STATUS_MANIFEST = """\
+sync_version: "1.0"
+
+boot:
+  - MERGE_PLAN.md
+  - {status}
+
+close:
+  meter:
+    script: scripts/meter.py
+
+integrity:
+  manifest_rules:
+    max_bytes: {cap}
+"""
+
+
+def _capture(fn, *a, **kw):
+    """Run fn, return (result, printed output). Every pass in rotate.py reports
+    through stdout, so the output IS the interface these tests are locking."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = fn(*a, **kw)
+    return result, buf.getvalue()
+
+
+class StatusFactsCase(ManifestEnvCase):
+    """A minimal instance root: a manifest declaring where STATUS lives, and a
+    STATUS file whose text each test supplies."""
+
+    CAP = 16384
+
+    def setUp(self):
+        super().setUp()
+        self.root = tempfile.mkdtemp(prefix="arch_status_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
+
+    def write(self, status_text, status_rel="config/STATUS.yaml", cap=None):
+        with open(os.path.join(self.root, self.MANIFEST_NAME), "w", encoding="utf-8") as f:
+            f.write(STATUS_MANIFEST.format(status=status_rel,
+                                           cap=self.CAP if cap is None else cap))
+        p = os.path.join(self.root, status_rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(status_text)
+        return p
+
+    def run_facts(self, status_text, **kw):
+        self.write(status_text, **kw)
+        (_, findings, notes), out = _capture(rotate.report_status_facts,
+                                             self.root, run_meter=False)
+        return findings, notes, out
+
+    def manifest_size(self):
+        return os.path.getsize(os.path.join(self.root, self.MANIFEST_NAME))
+
+
+class TestStatusFactsPlumbing(StatusFactsCase):
+    def test_status_file_comes_from_the_boot_declaration(self):
+        """Genesis prefixes the loader stack, so a hardcoded config/STATUS.yaml
+        checks NOTHING on every instance past its own genesis — and reports clean
+        while doing it, which is the worst failure a report-only pass can have."""
+        p = self.write("x: 1\n", status_rel="config/DEMO_STATUS.yaml")
+        self.assertEqual(rotate.find_status_file(self.root), p)
+
+    def test_missing_status_is_skipped_not_fatal(self):
+        with open(os.path.join(self.root, self.MANIFEST_NAME), "w", encoding="utf-8") as f:
+            f.write(STATUS_MANIFEST.format(status="config/STATUS.yaml", cap=self.CAP))
+        (path, findings, _), out = _capture(rotate.report_status_facts,
+                                            self.root, run_meter=False)
+        self.assertIsNone(path)
+        self.assertEqual(findings, [])
+        self.assertIn("skipped", out)
+
+    def test_no_checkable_claims_is_silent(self):
+        """Prose with no self-identifying claim in it must produce no findings —
+        the whole design rests on silence being the default."""
+        findings, notes, out = self.run_facts(
+            'active_focus: "Going public is the next event; the copy reads well '
+            'and nobody has objected to the pricing."\n')
+        self.assertEqual(findings, [])
+        self.assertNotIn("!", out)
+
+    def test_never_raises_on_a_hostile_file(self):
+        findings, _, _ = self.run_facts("\x00 12,345 B / / / #### ''' aaaaaaa\n")
+        self.assertIsInstance(findings, list)
+
+
+class TestStatusSizeClaims(StatusFactsCase):
+    def test_matching_size_claim_is_silent(self):
+        with open(os.path.join(self.root, "MERGE_PLAN.md"), "w", encoding="utf-8") as f:
+            f.write("x" * 4242)
+        findings, _, _ = self.run_facts('s: "MERGE_PLAN.md is 4,242 B of boot."\n')
+        self.assertEqual(findings, [])
+
+    def test_drifting_size_claim_reports_line_claimed_and_measured(self):
+        with open(os.path.join(self.root, "MERGE_PLAN.md"), "w", encoding="utf-8") as f:
+            f.write("x" * 4242)
+        findings, _, out = self.run_facts('a: 1\nb: 2\ns: "MERGE_PLAN.md is 9,999 B."\n')
+        self.assertEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual((f["line"], f["kind"], f["subject"]), (3, "size", "MERGE_PLAN.md"))
+        self.assertEqual((f["claimed"], f["measured"]), ("9,999 B", "4,242 B"))
+        self.assertIn("line 3", out)
+
+    def test_claim_naming_a_missing_file_is_reported_not_crashed(self):
+        findings, _, _ = self.run_facts('s: "docs/gone.md is 1,000 B."\n')
+        self.assertEqual([(f["kind"], f["subject"], f["measured"]) for f in findings],
+                         [("size", "docs/gone.md", "no such file")])
+
+    def test_an_unattributed_byte_figure_is_prose(self):
+        """'4,955 B vs 0' names nothing. A checker that guessed at its subject
+        would be inventing claims in order to fail them."""
+        findings, _, _ = self.run_facts('s: "bootstrap costs 4,955 B vs 0 elsewhere."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_yaml_key_with_a_dot_is_not_a_path(self):
+        findings, _, _ = self.run_facts(
+            's: "against manifest_rules.max_bytes there are 4,231 B free."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_quoted_size_claim_is_a_citation(self):
+        findings, _, _ = self.run_facts(
+            "s: \"the previous entry said 'MERGE_PLAN.md is 9,999 B' and was wrong.\"\n")
+        self.assertEqual(findings, [])
+
+
+class TestStatusCapClaims(StatusFactsCase):
+    def test_a_correct_cap_pair_is_silent(self):
+        self.write("placeholder\n")
+        findings, _, _ = self.run_facts(
+            's: "manifest %s / %d (free)."\n' % (f"{self.manifest_size():,}", self.CAP))
+        self.assertEqual(findings, [])
+
+    def test_a_wrong_size_against_a_real_cap_is_reported(self):
+        findings, _, _ = self.run_facts('s: "manifest 9,999 / %d."\n' % self.CAP)
+        self.assertEqual([(f["kind"], f["claimed"]) for f in findings],
+                         [("cap", "9,999 B")])
+
+    def test_regression_2026_08_05_the_cap_itself_was_the_wrong_number(self):
+        """The observed defect: STATUS read 'AT 99% OF ITS CAP (12,153 / 12,288)'
+        and warned the next genesis edit would hit g5 mid-file. The byte count was
+        right and the CAP was invented, so the wall it described did not exist —
+        which is why a check of the size alone could never have seen it, and why
+        the word 'cap' beside a ratio is enough to make it a claim."""
+        self.write("placeholder\n")
+        findings, _, out = self.run_facts(
+            's: "the manifest is AT 99%% OF ITS CAP (%s / 12,288)."\n'
+            % f"{self.manifest_size():,}")
+        self.assertEqual([f["claimed"] for f in findings], ["cap 12,288"])
+        self.assertIn("no manifest declares that cap", out)
+
+    def test_a_manifest_over_its_own_declared_cap_is_reported(self):
+        """Needs no STATUS claim at all: the manifest and its cap are both on disk,
+        and g5 blocks edits to a manifest already past it."""
+        findings, _, _ = self.run_facts("s: 1\n", cap=10)
+        self.assertEqual([(f["line"], f["kind"]) for f in findings], [(None, "manifest")])
+
+    def test_a_quoted_cap_claim_is_a_citation_not_an_assertion(self):
+        """STATUS quotes superseded figures on purpose, to record why they were
+        wrong. Flagging those would fire every close forever on a sentence doing
+        its job."""
+        findings, _, _ = self.run_facts(
+            "s: \"the entry said '99%% OF ITS CAP (12,153 / 12,288)' and the cap was wrong.\"\n")
+        self.assertEqual(findings, [])
+
+    def test_an_apostrophe_does_not_open_a_citation(self):
+        """`the silo's cap` must not swallow the rest of the line as quoted text."""
+        findings, _, _ = self.run_facts(
+            's: "the silo\'s cap moved; the product\'s did not: 9,999 / %d."\n' % self.CAP)
+        self.assertEqual(len(findings), 1)
+
+    def test_a_bare_ratio_with_no_cue_and_no_known_cap_is_prose(self):
+        findings, _, _ = self.run_facts('s: "we shipped 3 / 4 of the rows."\n')
+        self.assertEqual(findings, [])
+
+
+class TestStatusSuiteClaims(StatusFactsCase):
+    def _suite(self, name, n):
+        d = os.path.join(self.root, "scripts")
+        os.makedirs(d, exist_ok=True)
+        body = "import unittest\n\n\nclass T(unittest.TestCase):\n" + "".join(
+            "    def test_%d(self):\n        pass\n\n" % i for i in range(n))
+        with open(os.path.join(d, "test_%s.py" % name), "w", encoding="utf-8") as f:
+            f.write(body)
+
+    def test_a_matching_suite_count_is_silent(self):
+        self._suite("widget", 7)
+        findings, _, _ = self.run_facts('s: "Suites 7 widget, green."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_drifting_suite_count_is_reported(self):
+        self._suite("widget", 7)
+        findings, _, _ = self.run_facts('s: "Suites 4 widget / 4 widget."\n')
+        self.assertEqual([(f["subject"], f["claimed"], f["measured"]) for f in findings],
+                         [("widget", "4", "7"), ("widget", "4", "7")])
+
+    def test_an_unresolvable_suite_name_is_a_note_not_a_finding(self):
+        """'hooks' names a directory holding two suites, not a file. Guessing which
+        one it meant is how a report starts manufacturing drift; saying so out loud
+        is how the claim gets rephrased into something checkable."""
+        findings, notes, out = self.run_facts('s: "Suites 60 hooks."\n')
+        self.assertEqual(findings, [])
+        self.assertTrue(any("hooks" in n for n in notes))
+        self.assertNotIn("!", out)
+
+    def test_a_hand_rolled_harness_is_not_guessed_at(self):
+        """The real one runs 35 assertions from 32 call sites, so the obvious static
+        count is wrong by three — and a previous session's parser made the same class
+        of error the other way, reporting 75 for a suite of 35."""
+        d = os.path.join(self.root, "scripts")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "test_legacy.py"), "w", encoding="utf-8") as f:
+            f.write("def check(n, c):\n    pass\n\n\ndef main():\n"
+                    "    for i in range(3):\n        check('x', True)\n")
+        findings, notes, _ = self.run_facts('s: "Suites 35 legacy."\n')
+        self.assertEqual(findings, [])
+        self.assertTrue(any("not statically countable" in n for n in notes))
+
+    def test_identical_copies_of_one_suite_are_one_answer_not_an_ambiguity(self):
+        self._suite("widget", 7)
+        os.makedirs(os.path.join(self.root, "nested", "scripts"), exist_ok=True)
+        shutil.copy(os.path.join(self.root, "scripts", "test_widget.py"),
+                    os.path.join(self.root, "nested", "scripts", "test_widget.py"))
+        findings, notes, _ = self.run_facts('s: "Suites 7 widget."\n')
+        self.assertEqual((findings, notes), ([], []))
+
+    def test_an_ordinary_sentence_does_not_invent_a_suite(self):
+        """'the suite shipped … MP#42 to stop that' contains the pair '42 to'."""
+        findings, notes, _ = self.run_facts(
+            's: "the suite shipped late, which is what MP#42 to stop that was for"\n')
+        self.assertEqual((findings, notes), ([], []))
+
+
+class TestStatusShaClaims(StatusFactsCase):
+    def test_a_fabricated_long_sha_is_reported_without_any_cue(self):
+        """A session here once wrote a 40-char SHA invented from a short hash. A
+        pin that looks authoritative and points at nothing is the worst thing this
+        file can carry, so length alone makes it a claim."""
+        findings, _, _ = self.run_facts('s: "pairs with %s forever."\n' % ("a1" * 20))
+        self.assertEqual([(f["kind"], f["subject"]) for f in findings],
+                         [("sha", "a1" * 20)])
+
+    def test_short_hex_with_no_commit_cue_is_not_a_claim(self):
+        """'the week-old 03721ead row' is a session id in prose. It asserts no
+        commit, so there is nothing to resolve and nothing to report."""
+        findings, _, _ = self.run_facts('s: "the week-old 03721ead row was fine."\n')
+        self.assertEqual(findings, [])
+
+    def test_short_hex_beside_a_commit_cue_is_checked(self):
+        findings, _, _ = self.run_facts('s: "in sync with origin/main at 03721ead."\n')
+        self.assertEqual([f["subject"] for f in findings], ["03721ead"])
+
+    def test_hex_letters_with_no_digit_are_a_word_not_a_hash(self):
+        findings, _, _ = self.run_facts('s: "the commit defaced the baseline."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_real_commit_in_a_real_repo_resolves(self):
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
+
+        def g(*a):
+            return subprocess.run(["git"] + list(a), cwd=self.root, env=env,
+                                  capture_output=True, text=True)
+        if g("init", "-q").returncode != 0:
+            self.skipTest("git unavailable")
+        with open(os.path.join(self.root, "seed.txt"), "w") as f:
+            f.write("x")
+        g("add", "seed.txt")
+        g("commit", "-qm", "seed")
+        sha = g("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(sha)
+        findings, _, _ = self.run_facts('s: "pushed at %s."\n' % sha[:7])
+        self.assertEqual(findings, [])
+
+
+class TestStatusBootClaims(StatusFactsCase):
+    def test_a_drifting_boot_figure_is_reported_in_both_units(self):
+        text = 's: "BOOT COST 20,539 tokens / 82,170 B — measured."\n'
+        findings = []
+        rotate._check_boot(text, [], (21784, 87149), findings)
+        self.assertEqual([(f["subject"], f["claimed"], f["measured"]) for f in findings],
+                         [("tokens", "20,539", "21,784"), ("bytes", "82,170 B", "87,149 B")])
+
+    def test_a_matching_boot_figure_is_silent(self):
+        findings = []
+        rotate._check_boot('s: "boot cost 21,784 tokens / 87,149 B"\n', [],
+                           (21784, 87149), findings)
+        self.assertEqual(findings, [])
+
+    def test_no_meter_means_no_boot_check_and_no_subprocess(self):
+        with mock.patch.object(subprocess, "run",
+                               side_effect=AssertionError("should not spawn")):
+            findings, _, _ = self.run_facts('s: "BOOT COST 1 tokens."\n')
+        self.assertEqual(findings, [])
+
+    def test_the_meter_is_read_from_the_declaration(self):
+        self.write("x\n")
+        self.assertEqual(rotate.manifest_meter_script(self.root), "scripts/meter.py")
+
+    def test_an_absent_meter_is_a_skip_not_a_failure(self):
+        self.write("x\n")
+        self.assertIsNone(rotate._meter_boot(self.root, "scripts/meter.py"))
+
+
+class TestStatusFieldContradiction(StatusFactsCase):
+    def test_regression_2026_08_04_a_field_contradicted_by_its_neighbour(self):
+        """The other observed shape: one field asserting something the field beside
+        it already disproves. Both were written by hand, months apart in attention,
+        and neither announced the disagreement.
+
+        The half of that case this pass CANNOT reach is stated here on purpose: the
+        2026-08-04 original was a claim about a web page's COPY, and prose about
+        file contents is out of scope by design — a checker that flags prose is a
+        checker nobody reads. What it does reach is the same shape wherever the two
+        fields carry numbers, which is where it kept recurring."""
+        with open(os.path.join(self.root, "MERGE_PLAN.md"), "w", encoding="utf-8") as f:
+            f.write("x" * 4242)
+        findings, _, _ = self.run_facts(
+            'a: "MERGE_PLAN.md is 4,242 B."\n'
+            'b: "MERGE_PLAN.md is 9,999 B and growing."\n')
+        self.assertEqual([(f["line"], f["claimed"]) for f in findings],
+                         [(2, "9,999 B")])
+
+
+PICKUP_LEDGER = """\
+# Ledger
+
+## Summary table
+
+| ID | Status | Subject | Blocked by | Owner |
+|---|---|---|---|---|
+| 5 | ⏳ | open one | — | — |
+| 6 | ✅ | done one | — | — |
+| 7 | ⏳ | open two | — | — |
+
+**Tally:** 3 tasks total.
+
+{pickup}
+"""
+
+
+class TestPickupReady(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="arch_pickup_")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.ledger = os.path.join(self.dir, "MERGE_PLAN.md")
+
+    def _write(self, pickup):
+        with open(self.ledger, "w", encoding="utf-8") as f:
+            f.write(PICKUP_LEDGER.format(pickup=pickup))
+
+    def test_a_list_matching_the_table_is_clean(self):
+        self._write("**Pickup-ready right now:** **#5** then **#7**, neither blocked.")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([], []))
+        self.assertIn("✓", out)
+
+    def test_an_omitted_pending_row_is_reported(self):
+        self._write("**Pickup-ready right now:** just **#5**.")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([7], []))
+        self.assertIn("#7", out)
+
+    def test_a_row_named_after_it_closed_is_reported(self):
+        """Observed on the real ledger: the paragraph named a row for a day after
+        that row went ✅, and omitted another for the same day."""
+        self._write("**Pickup-ready right now:** **#5**, **#6** and **#7**.")
+        missing, extra = rotate.report_pickup_ready(self.ledger)
+        self.assertEqual((missing, extra), ([], [6]))
+
+    def test_an_mp_cross_reference_is_not_a_list_entry(self):
+        """`MP#39` names a task inside an argument; `#39` would name a row in the
+        list. Letting the two collide made a closed row read as pickup-ready."""
+        self._write("**Pickup-ready right now:** **#5** and **#7** — the same "
+                    "disease MP#39 cured for the Tally.")
+        missing, extra = rotate.report_pickup_ready(self.ledger)
+        self.assertEqual((missing, extra), ([], []))
+
+    def test_an_unfilled_template_placeholder_is_not_a_stale_list(self):
+        """The product ships this line as a bracketed placeholder. Greeting every
+        new adopter with a day-one defect is how a report-only check loses its
+        audience before it has one — the same shape as the template rows that
+        exited 1 on a fresh install."""
+        self._write("**Pickup-ready right now (no blockers):** "
+                    "[List the pending task IDs and a one-line note on each.]")
+        self.assertEqual(rotate.report_pickup_ready(self.ledger), (None, None))
+
+    def test_a_markdown_link_is_not_a_placeholder(self):
+        self._write("**Pickup-ready right now:** **#5**, **#7** — see [the plan](x.md).")
+        self.assertEqual(rotate.report_pickup_ready(self.ledger), ([], []))
+
+    def test_a_ledger_without_the_paragraph_is_skipped(self):
+        self._write("no such list here")
+        self.assertEqual(rotate.report_pickup_ready(self.ledger), (None, None))
+
+    def test_reports_but_never_raises(self):
+        self._write("**Pickup-ready right now:** #999 and #0.")
+        rotate.report_pickup_ready(self.ledger)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -65,7 +65,20 @@ Three passes MOVE or REWRITE (1-3, all verbatim or derived, all gated on
    were watched by nothing. Prose outweighing rows means the section stopped
    being a table with a note on it. Reports; never blocks.
 
-8. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
+8. STATUS-FACTS REPORT: check the hand-copied numbers in the STATUS file the
+   manifest declares — manifest caps, byte counts attributed to a named path,
+   suite counts, commit SHAs, boot cost — against what they claim to describe.
+   Seven of them went stale here in two days, every one caught by eye. Reports
+   and never rewrites: unlike the Tally these numbers sit INSIDE prose carrying
+   the reasoning around them. A claim must self-identify to be checked at all,
+   because a report that flags prose is a report nobody reads.
+
+9. PICKUP-READY REPORT: the ledger's hand-maintained "Pickup-ready right now"
+   list against the ⏳ rows in the table. It has drifted in both directions —
+   naming a row after it closed, omitting one that was open. Same reason it
+   reports rather than rewrites: the list carries an argument per row.
+
+10. FINDINGS REPORT: measure FINDINGS.md and flag entries with no `Trigger:`.
    That file is on-demand and never booted, so it is cheap — but only while
    every entry is greppable and every entry has an exit. An entry nothing can
    grep for never reaches the session that needed it and is counted forever.
@@ -85,6 +98,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -755,6 +769,521 @@ def report_sizes(root, ledger_path, journal_max):
     return total, jbytes
 
 
+# ── STATUS-facts report ──────────────────────────────────────────────────────
+#
+# STATUS is dense with numbers a human copied in by hand — manifest caps, byte
+# counts, boot-token figures, suite counts, commit SHAs — and NOTHING recomputed
+# any of them. Written once by whichever session happened to measure something,
+# they go stale in silence, because STATUS is overwrite-mode and carries no diff
+# between "this was true when written" and "this is true now". Measured on this
+# silo: SEVEN stale facts in two days, every one caught by eye. A catch rate that
+# depends on who happened to look is not a mechanism.
+#
+# THIS REPORTS AND NEVER REWRITES, and that is the deliberate half. reconcile_tally
+# writes because a tally is a bare count with a line of its own. These numbers sit
+# INSIDE prose that carries the reasoning around them — rewriting one would mangle
+# the argument it is embedded in. Same distinction, opposite side: a check that
+# needs no judgement rewrites, a check whose subject needs judgement reports.
+#
+# THE ENEMY IS NOISE, not coverage. A checker that flags prose gets ignored, and
+# an ignored report is worth less than no report. So every claim below must
+# SELF-IDENTIFY before it is checked — a byte figure needs a real path beside it,
+# a suite count needs a real test file, a short SHA needs a commit cue. Anything
+# that does not identify itself is prose and passes in silence. The cost is real
+# claims missed; the benefit is that a `!` line here always means something. That
+# trade also gives STATUS a house style: phrase a fact so this can check it.
+
+STATUS_SUFFIX = "status.yaml"
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+
+# A number quoted in single quotes is CITED, not asserted. STATUS deliberately
+# quotes superseded figures to record why they were wrong ("the previous entry
+# said '99% OF ITS CAP (12,153 / 12,288)'"), and flagging those would fire every
+# close forever on a sentence that is doing its job. The lookarounds keep
+# apostrophes out of it — in "the silo's cap" the quote sits between two word
+# characters and opens nothing.
+QUOTED_RE = re.compile(r"(?<!\w)'([^'\n]{1,400})'(?!\w)")
+
+PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-/]+")
+CLAIM_EXTS = (".yaml", ".yml", ".md", ".py", ".json", ".jsonl", ".tsv",
+              ".html", ".txt", ".toml", ".cfg", ".sh", ".ps1")
+SIZE_CLAIM_RE = re.compile(r"(\d[\d,]*)\s*B\b")
+SIZE_WINDOW = 40          # chars a path may sit before its byte figure
+
+# Both ends are bounded so a ratio cannot be cut out of a longer token: a short
+# hash pair (`937b6c2/6e15382`) must not read as `2 / 6`, and a date (`2026/08/05`)
+# must not read as `2026 / 08`. The trailing bound admits a full stop — a cap claim
+# routinely ends a sentence — but not a dot followed by a digit, which is the date.
+CAP_PAIR_RE = re.compile(
+    r"(?<![0-9A-Za-z,./])(\d[\d,]*)\s*/\s*(\d[\d,]*)(?![0-9A-Za-z,]|[./]\d)")
+CAP_CUE_RE = re.compile(r"\b(cap|max_bytes)\b", re.I)
+CAP_CUE_WINDOW = 60
+
+# 7-40 hex with at least one DIGIT: a run of pure [a-f] letters is an English
+# word far more often than a commit ("defaced"), and a real short hash without a
+# digit is a 1-in-1000 accident.
+SHA_RE = re.compile(r"(?<![0-9A-Za-z])((?=[0-9a-f]*\d)[0-9a-f]{7,40})(?![0-9A-Za-z])")
+SHA_CUES = ("commit", "sha", "origin", "head", "pushed", "push", "pin",
+            "pairing", "branch", "main", "revision", "rev-parse", "@")
+SHA_WINDOW = 60
+
+SUITES_RE = re.compile(r"\bsuites?\b([^.\n]{0,300})", re.I)
+# A suite claim is a RUN of `N name` items directly after the word, not any such
+# pair loose in the sentence. "the suite shipped … MP#42 to stop that" contains
+# the pair "42 to" and means nothing by it; anchoring the run at the word keeps
+# an ordinary sentence from manufacturing a suite called `to`.
+SUITE_LIST_RE = re.compile(r"^[\s:=]*((?:\d+\s+[A-Za-z][A-Za-z0-9_]*(?:\s*[/,]\s*)?)+)")
+SUITE_PAIR_RE = re.compile(r"(\d+)\s+([A-Za-z][A-Za-z0-9_]*)")
+TEST_METHOD_RE = re.compile(r"^[ \t]+def (test\w*)\s*\(", re.M)
+
+BOOT_CLAIM_RE = re.compile(r"\bboot\s+cost\b\D{0,24}?(\d[\d,]*)\s*tokens?"
+                           r"(?:\s*/\s*(\d[\d,]*)\s*B\b)?", re.I)
+
+
+def _n(s):
+    return int(str(s).replace(",", ""))
+
+
+def _line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def _finding(line, kind, subject, claimed, measured, note=""):
+    return {"line": line, "kind": kind, "subject": subject,
+            "claimed": claimed, "measured": measured, "note": note}
+
+
+def _quoted_spans(text):
+    return [(m.start(), m.end()) for m in QUOTED_RE.finditer(text)]
+
+
+def _is_quoted(pos, spans):
+    return any(a <= pos < b for a, b in spans)
+
+
+def _path_shaped(tok):
+    """Is this token a PATH, or just a word with a dot in it?
+
+    `manifest_rules.max_bytes` is a YAML key, not a file — it has a dot and must
+    not be resolved as one. Requiring a known extension or a slash separates them,
+    and the absolute forms (drive letters, leading slash) are dropped because a
+    claim about a path outside the instance is not this instance's to measure."""
+    if tok.startswith(("http:", "https:", "/")) or ":" in tok:
+        return False
+    return tok.lower().endswith(CLAIM_EXTS) or "/" in tok
+
+
+def find_status_file(root, manifest_name=None):
+    """The STATUS file this instance DECLARES in its manifest `boot:` list.
+
+    Read from the declaration, never hardcoded: genesis prefixes the loader stack
+    to config/<PROJECT>_STATUS.yaml, so a hardcoded config/STATUS.yaml silently
+    checks nothing on every instance past its own genesis — a checker that reports
+    clean because it found no file is the worst possible failure for this pass."""
+    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
+    rels = []
+    p = os.path.join(root, name)
+    if os.path.exists(p):
+        m = re.search(r"(?ms)^boot:[^\n]*\n(.*?)(?=^\S|\Z)", read(p))
+        if m:
+            rels = [x.group(1) for x in re.finditer(r"^\s*-\s*([^\s#]+)", m.group(1), re.M)]
+    rels = [r for r in rels if os.path.basename(r).lower().endswith(STATUS_SUFFIX)]
+    for r in rels + ["config/STATUS.yaml"]:
+        q = os.path.join(root, r.replace("/", os.sep))
+        if os.path.exists(q):
+            return q
+    return None
+
+
+def manifest_max_bytes(path):
+    """integrity.manifest_rules.max_bytes — the cap g5 enforces on that manifest.
+
+    Scoped to the manifest_rules block and returning None when it is absent: an
+    unscoped `max_bytes:` search finds close.journal.max_bytes first, which is a
+    different cap on a different file, and the two happen to be equal in this silo
+    — the exact coincidence that would make a wrong reading look right."""
+    try:
+        text = read(path)
+    except OSError:
+        return None
+    try:
+        import yaml  # type: ignore
+        rules = ((yaml.safe_load(text) or {}).get("integrity") or {}).get("manifest_rules") or {}
+        if isinstance(rules.get("max_bytes"), int):
+            return rules["max_bytes"]
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    m = re.search(r"(?ms)^\s*manifest_rules:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", text)
+    if not m:
+        return None
+    mb = re.search(r"^\s*max_bytes:\s*(\d+)", m.group(1), re.M)
+    return int(mb.group(1)) if mb else None
+
+
+def discover_manifests(root, manifest_name=None):
+    """Every ARCH manifest reachable from root: this instance's, plus any nested
+    repo shipping one (the product repo does). [(relpath, bytes, max_bytes|None)]."""
+    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
+    rels = [name]
+    try:
+        rels += [d + "/" + name for d in sorted(os.listdir(root))
+                 if d not in SKIP_DIRS and os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        pass
+    out = []
+    for rel in rels:
+        p = os.path.join(root, rel.replace("/", os.sep))
+        if os.path.exists(p):
+            out.append((rel, os.path.getsize(p), manifest_max_bytes(p)))
+    return out
+
+
+def _git_roots(root):
+    out = []
+    if os.path.isdir(os.path.join(root, ".git")):
+        out.append((os.path.basename(root.rstrip("/\\")) or ".", root))
+    try:
+        for d in sorted(os.listdir(root)):
+            p = os.path.join(root, d)
+            if d not in SKIP_DIRS and os.path.isdir(os.path.join(p, ".git")):
+                out.append((d, p))
+    except OSError:
+        pass
+    return out
+
+
+def resolve_shas(repos, shas):
+    """{sha: [repo names it resolves in]}.
+
+    ONE `git cat-file --batch-check` per repo rather than one per SHA: a close
+    should not pay thirty process spawns to check eight pins. Output is one line
+    per input line, so the answers zip back onto the inputs; a length mismatch
+    means git said something unexpected and that repo's answers are discarded
+    rather than shifted by one, which would blame the wrong SHA."""
+    found = {s: [] for s in shas}
+    if not shas:
+        return found
+    payload = "".join(s + "^{commit}\n" for s in shas)
+    for name, path in repos:
+        try:
+            out = subprocess.run(["git", "cat-file", "--batch-check"], cwd=path,
+                                 input=payload, capture_output=True, text=True, timeout=30)
+        except Exception:  # noqa: BLE001 — no git, or a repo we cannot read
+            continue
+        lines = out.stdout.splitlines()
+        if len(lines) != len(shas):
+            continue
+        for sha, line in zip(shas, lines):
+            if " missing" not in line and "ambiguous" not in line and line.strip():
+                found[sha].append(name)
+    return found
+
+
+def _test_file_index(root):
+    idx = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("test_") and fn.endswith(".py"):
+                idx.setdefault(fn, []).append(os.path.join(dirpath, fn))
+    return idx
+
+
+def count_test_methods(path):
+    """unittest test methods in a file. None when the file has none.
+
+    STATICALLY counted, and NOT extended to guess at hand-rolled harnesses. The
+    one in this repo runs 35 assertions from 32 `check(` call sites — some sit in
+    loops — so the obvious static count is wrong by three, and a checker reporting
+    32 against a correct 35 manufactures drift where there is none. A previous
+    session's suite-count parser made exactly this class of error in the other
+    direction (75 for a suite of 35). None means 'not statically countable', which
+    is reported as a note and never as a finding."""
+    try:
+        n = len(TEST_METHOD_RE.findall(read(path)))
+    except OSError:
+        return None
+    return n or None
+
+
+def _check_caps(text, spans, manifests, findings, notes):
+    """Manifest cap claims: `N / M`, where M is a byte cap and N a manifest size.
+
+    A pair qualifies as a cap claim only if M is a cap SOME manifest declares, or
+    the words `cap`/`max_bytes` sit just before it. Both gates matter and both are
+    drawn from observed defects: the live claims here carry no cue and are found
+    by M, while the 2026-08-05 defect — '99% OF ITS CAP (12,153 / 12,288)' — was
+    wrong PRECISELY IN M, so a cap-matching gate alone could never have seen it.
+    The byte count was right; the cap was invented; the wall it warned about did
+    not exist."""
+    caps = {}
+    for rel, size, mx in manifests:
+        if mx is None:
+            continue
+        caps.setdefault(mx, []).append((rel, size))
+        if size > mx:
+            findings.append(_finding(
+                None, "manifest", rel, f"cap {mx:,} B", f"{size:,} B",
+                "over its own declared manifest_rules.max_bytes — g5 blocks edits to it"))
+    for m in CAP_PAIR_RE.finditer(text):
+        if _is_quoted(m.start(), spans):
+            continue
+        claimed, cap = _n(m.group(1)), _n(m.group(2))
+        cued = bool(CAP_CUE_RE.search(text[max(0, m.start() - CAP_CUE_WINDOW):m.start()]))
+        if cap not in caps and not cued:
+            continue                                    # not a cap claim — prose
+        line = _line_of(text, m.start())
+        if cap not in caps:
+            known = ", ".join(f"{c:,}" for c in sorted(caps)) or "none declared"
+            findings.append(_finding(
+                line, "cap", m.group(0), f"cap {cap:,}", f"declared caps: {known}",
+                "no manifest declares that cap — the CAP is the wrong number, "
+                "which no check of the size alone can see"))
+            continue
+        if any(size == claimed for _, size in caps[cap]):
+            continue
+        measured = ", ".join(f"{rel} {size:,}" for rel, size in caps[cap])
+        findings.append(_finding(line, "cap", f"against cap {cap:,}",
+                                 f"{claimed:,} B", measured))
+
+
+def _check_sizes(root, text, spans, findings):
+    """`<path> … N B` — a byte figure with a real path in front of it.
+
+    The path is the whole gate. STATUS is full of unattributed byte figures
+    ('4,955 B vs 0'), and a checker that tried to guess their subject would be
+    inventing claims to fail. A figure nothing names is prose."""
+    for m in SIZE_CLAIM_RE.finditer(text):
+        if _is_quoted(m.start(), spans):
+            continue
+        window = text[max(0, m.start() - SIZE_WINDOW):m.start()]
+        cands = [t for t in PATH_TOKEN_RE.findall(window) if _path_shaped(t)]
+        if not cands:
+            continue
+        rel = cands[-1].rstrip(".,;:)")
+        line, claimed = _line_of(text, m.start()), _n(m.group(1))
+        p = os.path.join(root, rel.replace("/", os.sep))
+        if not os.path.exists(p):
+            findings.append(_finding(line, "size", rel, f"{claimed:,} B", "no such file",
+                                     "the claim names a path that is not there"))
+            continue
+        actual = os.path.getsize(p)
+        if actual != claimed:
+            findings.append(_finding(line, "size", rel, f"{claimed:,} B", f"{actual:,} B"))
+
+
+def _check_shas(text, spans, repos, findings):
+    """Commit SHAs quoted in STATUS resolve in some repo under this root.
+
+    A 40-char hex string is a pin and is checked unconditionally — a session here
+    once wrote a FABRICATED 40-char SHA into PAIRING.yaml, invented from a short
+    hash rather than asked of git, which is the worst error this file can carry:
+    authoritative-looking and pointing at nothing. A SHORT hash is only a pin when
+    something nearby says so (a repo name, `origin`, `pushed`, `pins`, `@`).
+    Without a cue it is not asserting a commit at all — a session id in prose
+    ('the week-old 03721ead row') is 8 hex characters and is not a claim."""
+    cues = tuple(SHA_CUES) + tuple(n.lower() for n, _ in repos)
+    todo = []
+    for m in SHA_RE.finditer(text):
+        if _is_quoted(m.start(), spans):
+            continue
+        if len(m.group(1)) < 40:
+            window = text[max(0, m.start() - SHA_WINDOW):m.end() + SHA_WINDOW].lower()
+            if not any(c in window for c in cues):
+                continue
+        todo.append((m.start(), m.group(1)))
+    resolved = resolve_shas(repos, sorted({s for _, s in todo}))
+    for pos, sha in todo:
+        if not resolved.get(sha):
+            findings.append(_finding(
+                _line_of(text, pos), "sha", sha, "a commit", "resolves in no repo",
+                "repos searched: " + (", ".join(n for n, _ in repos) or "none")))
+
+
+def _check_suites(root, text, spans, findings, notes):
+    """`Suites N name / N name / …` against each suite's test-method count.
+
+    A pair is a claim only when test_<name>.py exists; anything else in that
+    sentence is prose. Two named suites can point at the same file (the silo and
+    the product carry byte-identical copies, which check_sync enforces) — equal
+    counts are one answer, not an ambiguity, and only genuinely disagreeing copies
+    are refused."""
+    idx = None
+    for s in SUITES_RE.finditer(text):
+        if _is_quoted(s.start(), spans):
+            continue
+        run = SUITE_LIST_RE.match(s.group(1))
+        if not run:
+            continue
+        if idx is None:                 # one walk, and only if a claim exists
+            idx = _test_file_index(root)
+        base = s.start(1) + run.start(1)
+        for m in SUITE_PAIR_RE.finditer(run.group(1)):
+            claimed, name = int(m.group(1)), m.group(2)
+            paths = idx.get("test_%s.py" % name)
+            if not paths:
+                notes.append("suite '%s' — no test_%s.py under this root, not checkable"
+                             % (name, name))
+                continue
+            counts = {count_test_methods(p) for p in paths}
+            if counts == {None}:
+                notes.append("suite '%s' — no unittest test methods (hand-rolled harness), "
+                             "not statically countable" % name)
+                continue
+            counts.discard(None)
+            if len(counts) > 1:
+                notes.append("suite '%s' — copies disagree (%s), not checkable"
+                             % (name, ", ".join(str(c) for c in sorted(counts))))
+                continue
+            actual = counts.pop()
+            if actual != claimed:
+                findings.append(_finding(
+                    _line_of(text, base + m.start()), "suite", name,
+                    str(claimed), str(actual), "test methods in " + paths[0]))
+
+
+def manifest_meter_script(root, manifest_name=None):
+    """close.meter.script — the boot meter this instance declares."""
+    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
+    p = os.path.join(root, name)
+    if not os.path.exists(p):
+        return None
+    m = re.search(r"(?ms)^\s{2}meter:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", read(p))
+    if not m:
+        return None
+    s = re.search(r"^\s*script:\s*([^\s#]+)", m.group(1), re.M)
+    return s.group(1) if s else None
+
+
+def _meter_boot(root, script_rel):
+    """(tokens, bytes) from the declared meter's --json, or None.
+
+    The meter is DECLARED, not discovered: close.meter.script is where this
+    instance says its meter lives, and in this silo that is the product's copy,
+    one directory down. Any failure is a skip — the manifest's own posture for
+    this step is on_missing: skip, and a measurement never blocks a close."""
+    if not script_rel:
+        return None
+    p = os.path.join(root, script_rel.replace("/", os.sep))
+    if not os.path.exists(p):
+        return None
+    try:
+        out = subprocess.run([sys.executable, p, "--dir", root, "--json"],
+                             capture_output=True, text=True, timeout=120)
+        d = json.loads(out.stdout)
+        return d.get("boot_total_tokens"), d.get("boot_total_bytes")
+    except Exception:  # noqa: BLE001 — no meter, no --json, bad output: skip
+        return None
+
+
+def _check_boot(text, spans, boot, findings):
+    if not boot or boot[0] is None:
+        return
+    tokens, nbytes = boot
+    for m in BOOT_CLAIM_RE.finditer(text):
+        if _is_quoted(m.start(), spans):
+            continue
+        line = _line_of(text, m.start())
+        if _n(m.group(1)) != tokens:
+            findings.append(_finding(line, "boot", "tokens", f"{_n(m.group(1)):,}",
+                                     f"{tokens:,}", "measured by the declared meter"))
+        if m.group(2) and nbytes is not None and _n(m.group(2)) != nbytes:
+            findings.append(_finding(line, "boot", "bytes", f"{_n(m.group(2)):,} B",
+                                     f"{nbytes:,} B", "measured by the declared meter"))
+
+
+def report_status_facts(root, manifest_name=None, run_meter=True):
+    """Check STATUS's hand-copied numbers against what they claim to describe.
+
+    Reports; NEVER rewrites, never blocks. Returns (status_path, findings, notes)."""
+    status = find_status_file(root, manifest_name)
+    if status is None:
+        print("status: no STATUS file declared in boot: — skipped")
+        return None, [], []
+    text = read(status)
+    rel = os.path.relpath(status, root).replace(os.sep, "/")
+    spans = _quoted_spans(text)
+    findings, notes = [], []
+
+    _check_caps(text, spans, discover_manifests(root, manifest_name), findings, notes)
+    _check_sizes(root, text, spans, findings)
+    _check_shas(text, spans, _git_roots(root), findings)
+    _check_suites(root, text, spans, findings, notes)
+    if run_meter:
+        _check_boot(text, spans, _meter_boot(root, manifest_meter_script(root, manifest_name)),
+                    findings)
+
+    print(f"status: {rel} — {len(findings)} claim(s) disagree with what they describe")
+    for f in findings[:12]:
+        where = f"line {f['line']}" if f["line"] else "measured"
+        print(f"  ! {where} · {f['kind']} {f['subject']} — "
+              f"claimed {f['claimed']}, measured {f['measured']}")
+        if f["note"]:
+            print(f"      {f['note']}")
+    if len(findings) > 12:
+        print(f"  … and {len(findings) - 12} more")
+    for n in notes[:6]:
+        print(f"  · {n}")
+    if findings:
+        print("  A stale fact here costs a future session either wasted work or a wrong "
+              "decision made confidently, and both look correct at the time. Fix the "
+              "sentence, not the checker. (Reported, not blocked — these numbers sit "
+              "inside prose that carries the reasoning, so nothing here rewrites them.)")
+    return status, findings, notes
+
+
+# ── pickup-ready report ──────────────────────────────────────────────────────
+
+PICKUP_RE = re.compile(r"^\*\*Pickup-ready[^\n]*$", re.M)
+# `#NN`, but never `MP#NN`. A ledger cross-reference names a task in an argument
+# ("the same disease MP#39 cured"); a bare `#NN` names a row in the list. Letting
+# the two collide made a closed row look like a pickup candidate on the real file.
+ROW_REF_RE = re.compile(r"(?<![A-Za-z])#(\d+)")
+# An unfilled template placeholder — the product ships this line as
+# "[List the ⏳ task IDs …]". Reporting every pending row as missing from a
+# placeholder would greet each new adopter with a defect on the first close,
+# which is how a report-only check loses its audience before it has one.
+PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{3,}\](?!\()")
+
+
+def report_pickup_ready(ledger_path):
+    """The ledger's hand-maintained "Pickup-ready right now" list vs the table.
+
+    Same disease as STATUS in the ledger's own file: the paragraph names the rows
+    a session should pick up, nothing derives it, and it has already drifted in
+    both directions — it named a row for a day after that row closed, and omitted
+    another for the same day. The set IS derivable; the prose around each ID is
+    not, which is why this reports rather than rewrites.
+
+    IDs are matched as `#NN`. A historical mention inside this paragraph should be
+    written 'row NN' so it does not read as a pickup candidate — the paragraph is
+    a list with commentary, and the commentary must not enter the list."""
+    text = read(ledger_path)
+    m = PICKUP_RE.search(text)
+    if not m or PLACEHOLDER_RE.search(m.group(0)):
+        return None, None
+    table = summary_table_section(text)
+    if table is None:
+        print("pickup: no '## Summary table' found — skipped")
+        return None, None
+    pending = {int(r.group(1)) for r in TABLE_ROW_RE.finditer(table)
+               if "⏳" in r.group(2)}
+    named = {int(x) for x in ROW_REF_RE.findall(m.group(0))}
+    missing, extra = sorted(pending - named), sorted(named - pending)
+    line = _line_of(text, m.start())
+    if not missing and not extra:
+        print(f"pickup: {len(pending)} pending row(s), all named in the list ✓")
+        return missing, extra
+    print(f"pickup: line {line} — the 'Pickup-ready' list disagrees with the table")
+    if missing:
+        print("  ! pending but not named: " + ", ".join(f"#{t}" for t in missing))
+    if extra:
+        print("  ! named but not pending: " + ", ".join(f"#{t}" for t in extra))
+    print("  The list is prose with an argument in it, so this reports rather than "
+          "rewrites. (Reported, not blocked.)")
+    return missing, extra
+
+
 # ── findings report ──────────────────────────────────────────────────────────
 
 FINDINGS_FILENAME = "FINDINGS.md"
@@ -831,6 +1360,8 @@ def main():
                     help="override the manifest's close.journal.max_bytes")
     ap.add_argument("--subject-max", type=int, default=SUBJECT_MAX_DEFAULT,
                     help="summary-table Subject length to report over (0 disables)")
+    ap.add_argument("--no-meter", action="store_true",
+                    help="skip the boot-cost claim check (does not run the declared meter)")
     args = ap.parse_args()
 
     d = os.path.abspath(args.dir)
@@ -875,6 +1406,8 @@ def main():
         report_table_prose(ledger)
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max)
+        report_pickup_ready(ledger)
+    report_status_facts(d, run_meter=not args.no_meter)
     report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 

@@ -187,11 +187,19 @@ integrity:
     - hooks/pre_tool_use.py              # PreToolUse — six structural guards + debt recorder
     - hooks/session_start.py             # SessionStart — boot receipt; ARCH_BOOT_MODE: announce | inject | off
   manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
-    max_bytes: 12288         # raised 8192 → 10240 → 12288, each time in the SAME edit
-                             # that hit it, which is what g5's own message prescribes.
-                             # A cap you raise on reflex is not a cap: every raise here
-                             # bought new CAPABILITY (declarations, then the genesis
-                             # prefix step), never narrative. Narrative gets cut instead.
+    max_bytes: 16384         # raised 8192 → 10240 → 12288 → 16384, each time in the
+                             # SAME edit that hit it, which is what g5's own message
+                             # prescribes. A cap you raise on reflex is not a cap: every
+                             # raise bought new CAPABILITY (declarations, the genesis
+                             # prefix step, then meter/actuals), never narrative.
+                             # Narrative gets cut instead. The 16384 step is different
+                             # and is recorded as such: the file had ALREADY passed 12288
+                             # unnoticed, so this raise buys nothing — it aligns the two
+                             # repos on one number (Michael, 2026-08-05, restated 08-05
+                             # after the first raise landed in the silo only). What made
+                             # the overrun invisible is the real lesson: g5 measures a
+                             # write, so nothing was watching the file at rest.
+                             # rotate.py's status pass now is.
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
 
 # ═══ EOF 4SYNC.yaml ═══

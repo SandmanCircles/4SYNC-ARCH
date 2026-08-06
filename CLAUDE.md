@@ -9,14 +9,16 @@
 
 At the start of every session, load (in this order):
 
-1. **`MERGE_PLAN.md`** — persistent task ledger. **Operational state.** The session task tool is session-local and does NOT survive between sessions; this file is the source of truth for task state. Populate the task tool from this file at session start; mirror changes back at session close. See the "Session protocol" section at the top of the file. *(This file holds the summary table + journal ONLY — it is always canonical for task state. Each task's long form lives at `tasks/MP-0NN.md`, path derived from the row ID, loaded **on demand** and never at boot; closed tasks' docs move to `tasks/closed/`. Older session history is in `JOURNAL_HISTORY.md`.)* **Open only the task doc you are about to work** — reading them all defeats the split.
+**Identity before state before ledger.** The ledger loads LAST of the four, changed 2026-08-06: KERNEL declares itself FIRST ACTION, so loading the task ledger ahead of it meant every session met the journal before the operating contract — and the ledger is the biggest, most volatile file in the stack. If you are tempted to put `MERGE_PLAN.md` back at the top because it reads like the natural starting point, that is exactly the move this note exists to stop.
 
-2. **The `config/` loader stack** — **Identity state.** Read these three in order; they are small by design:
+1. **The `config/` loader stack** — **Identity state.** Read these three in order; they are small by design:
    - a. **`config/KERNEL.yaml`** — identity + front-loaded `agent_directives` + invariants + naming quickref (the always-on operating contract).
    - b. **`config/STATUS.yaml`** — current live state (overwrite snapshot: deploy versions, active focus, blockers).
    - c. **`config/CANON_INDEX.yaml`** — the map of where every deeper detail lives.
    - Pull **`config/REFERENCE.yaml`** (deep canon) **on demand** — never at session start. Never load **`config/HISTORY.md`** (frozen archive) whole.
    - **These filenames carry a project prefix after genesis.** Genesis renames the stack to `config/<PROJECT>_KERNEL.yaml`, `config/<PROJECT>_STATUS.yaml` and so on, and the manifest to `<PROJECT>.yaml`, so two instances on one machine never share a stack filename and a wrong-instance read is visible rather than invisible. The names above are the pre-genesis ones — **the manifest's `boot:` list is always current, so read that, not this.**
+
+2. **`MERGE_PLAN.md`** — persistent task ledger. **Operational state.** The session task tool is session-local and does NOT survive between sessions; this file is the source of truth for task state. Populate the task tool from this file at session start; mirror changes back at session close. See the "Session protocol" section at the top of the file. *(This file holds the summary table + journal ONLY — it is always canonical for task state. Each task's long form lives at `tasks/MP-0NN.md`, path derived from the row ID, loaded **on demand** and never at boot; closed tasks' docs move to `tasks/closed/`. Older session history is in `JOURNAL_HISTORY.md`.)* **Open only the task doc you are about to work** — reading them all defeats the split.
 
 3. **`NAMING_CONVENTIONS.md`** — brand marks, internal taxonomies, retired terms, the reasoning behind each. **Vocabulary state.** Load on demand before generating reports, documents, web assets, or external communications.
 

@@ -21,10 +21,16 @@ boot:
   # Ordered, read whole in a single pass. Verify each loader YAML ends with
   # its `# ═══ EOF <filename> ═══` sentinel as the last received line; a
   # missing sentinel = clipped read → discard and re-read host-side.
-  - MERGE_PLAN.md            # operational state: task ledger + session journal
+  # IDENTITY BEFORE STATE BEFORE LEDGER. The ledger moved from first to last
+  # 2026-08-06: KERNEL declares itself FIRST ACTION, so loading the task ledger
+  # ahead of it meant every session met the journal before the contract — the
+  # ledger is also the biggest and most volatile file in the stack.
+  # (A prompt-cache argument for the same order is on record and UNVERIFIED.
+  #  That is not why this changed; do not cite it as settled.)
   - config/KERNEL.yaml       # identity contract — if meta.status: TEMPLATE → bootstrap
   - config/STATUS.yaml       # live state (overwrite-mode snapshot)
   - config/CANON_INDEX.yaml  # map of where deeper detail lives
+  - MERGE_PLAN.md            # operational state: task ledger + session journal
 
 on_demand:
   - config/REFERENCE.yaml    # deep canon — pull subtrees via CANON_INDEX, never at boot

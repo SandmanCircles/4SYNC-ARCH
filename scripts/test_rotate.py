@@ -1269,6 +1269,55 @@ class TestStatusShaClaims(StatusFactsCase):
         findings, _, _ = self.run_facts('s: "commit 64305da8 is pinned."\n')
         self.assertEqual([f["subject"] for f in findings], ["64305da8"])
 
+    # ── MP#51: cues are words, not substrings ────────────────────────────────
+
+    def test_a_cue_inside_a_longer_word_is_not_a_cue(self):
+        """THE REAL LINE from a second instance. `pin` matched inside "repins",
+        so a hex string in prose about a rollback was reported as a commit that
+        resolves nowhere — and MP#49 was opened, and shipped, blaming the
+        `sha256:` digest next to it."""
+        findings, _, _ = self.run_facts(
+            's: "one further back 3ee8019 — rollback repins the digest."\n')
+        self.assertEqual(findings, [])
+
+    def test_the_other_real_collisions_are_silent(self):
+        """Every one of these words is already present in some STATUS file in
+        this project. Only the absence of a nearby hex kept them quiet."""
+        for word in ("domain", "beachhead", "original", "uncommitted",
+                     "headline", "remaining"):
+            with self.subTest(word=word):
+                findings, _, _ = self.run_facts('s: "%s 1234abc here."\n' % word)
+                self.assertEqual(findings, [], word)
+
+    def test_the_same_cues_as_whole_words_still_promote(self):
+        """The control, and the direction that matters most: over-withdrawal
+        fails QUIET. A cue that stops matching means a fabricated pin stops
+        being reported and nothing announces it."""
+        for phrase in ("pushed at 1234abc", "origin/main at 1234abc",
+                       "commit 1234abc", "the pin 1234abc", "HEAD 1234abc"):
+            with self.subTest(phrase=phrase):
+                findings, _, _ = self.run_facts('s: "%s."\n' % phrase)
+                self.assertEqual([f["subject"] for f in findings], ["1234abc"], phrase)
+
+    def test_a_long_sha_needs_no_cue_at_all(self):
+        """Length alone is still a claim — word boundaries must not touch the
+        unconditional 40-char rule that catches a fabricated pin."""
+        findings, _, _ = self.run_facts('s: "domain %s ordinary prose."\n' % ("a1" * 20))
+        self.assertEqual([f["subject"] for f in findings], ["a1" * 20])
+
+    def test_a_repo_name_cue_still_works_as_a_word(self):
+        """A repo name is only a cue when that repo is actually discovered — the
+        first version of this test asserted the finding without creating the
+        repo, and passed for no reason once boundaries were added."""
+        os.makedirs(os.path.join(self.root, "4SYNC-ARCH", ".git"), exist_ok=True)
+        findings, _, _ = self.run_facts('s: "pairs with 4SYNC-ARCH at 1234abc."\n')
+        self.assertEqual([f["subject"] for f in findings], ["1234abc"])
+
+    def test_non_alphabetic_cues_keep_matching_literally(self):
+        """`@` has no word character to bound, so it must stay a bare literal."""
+        findings, _, _ = self.run_facts('s: "tagged @ 1234abc in the log."\n')
+        self.assertEqual([f["subject"] for f in findings], ["1234abc"])
+
     def test_hex_letters_with_no_digit_are_a_word_not_a_hash(self):
         findings, _, _ = self.run_facts('s: "the commit defaced the baseline."\n')
         self.assertEqual(findings, [])

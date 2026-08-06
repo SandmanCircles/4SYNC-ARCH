@@ -911,6 +911,44 @@ SHA_WINDOW = 60
 DIGEST_TOKEN_RE = re.compile(r"(?:sha\d+|md5|blake2[bs])\s*:\s*[0-9a-f]{7,64}", re.I)
 
 
+def _cue_matcher(cues):
+    """Compile the cue list into one regex that respects WORD BOUNDARIES.
+
+    THE DEFECT THIS FIXES (MP#51, found on a second instance 2026-08-06): cues
+    were tested with plain substring containment, so every one of them also
+    fired inside ordinary English. `pin` matched in "re**pin**s", `main` in
+    "do**main**", `head` in "beach**head**", `origin` in "**origin**al",
+    `commit` in "un**commit**ted". Any bare hex within SHA_WINDOW of one of
+    those words was promoted to a commit claim and then reported as resolving
+    nowhere. The observed case was `3ee8019` convicted by "rollback **repins**
+    the digest" — and MP#49 was opened, and shipped, believing the neighbouring
+    `sha256:` digest was the culprit. It was not.
+
+    THIS SILO NEVER SAW IT AND WAS NEVER IMMUNE: its own STATUS already carries
+    "domain", "original" and "headline"; no hex happens to sit near them. The
+    hazard is also WIDER since MP#47/D2 taught repo discovery to descend, because
+    discovered repo names join this list — `web` here, `4cite` there — so the
+    same code is differently dangerous depending on what the folders are called.
+
+    Boundaries are applied per-END, not blindly: `\\b` only means anything next
+    to a word character, so `@` stays a bare literal while `rev-parse` — letters
+    at both ends — gets both. Non-alphanumeric cues are unchanged by design.
+
+    NOT fixed here, deliberately: whether repo BASENAMES belong in the cue list
+    at all. `web` is a weak cue even as a whole word. That is a judgement call,
+    and bundling it with a mechanical fix is how the mechanical part stops being
+    reviewable — see the row."""
+    parts = []
+    for c in cues:
+        c = (c or "").strip().lower()
+        if not c:
+            continue
+        parts.append((r"\b" if c[0].isalnum() else "")
+                     + re.escape(c)
+                     + (r"\b" if c[-1].isalnum() else ""))
+    return re.compile("|".join(parts)) if parts else re.compile(r"(?!)")
+
+
 def _mask_digests(text):
     """Blank every `<algo>:<hex>` token, preserving offsets.
 
@@ -1235,6 +1273,7 @@ def _check_shas(text, spans, repos, findings):
     Without a cue it is not asserting a commit at all — a session id in prose
     ('the week-old 03721ead row') is 8 hex characters and is not a claim."""
     cues = tuple(SHA_CUES) + tuple(n.lower() for n, _ in repos)
+    cue_re = _cue_matcher(cues)
     # ONE mechanism does both jobs: a masked token is neither a candidate itself
     # (D1) nor a cue for its neighbours (MP#49). Two separate checks is what let
     # the second half survive the first fix.
@@ -1247,7 +1286,7 @@ def _check_shas(text, spans, repos, findings):
             continue                    # inside `sha256:…` — a digest, not a pin
         if len(m.group(1)) < 40:
             window = cue_text[max(0, m.start() - SHA_WINDOW):m.end() + SHA_WINDOW].lower()
-            if not any(c in window for c in cues):
+            if not cue_re.search(window):
                 continue
         todo.append((m.start(), m.group(1)))
     resolved = resolve_shas(repos, sorted({s for _, s in todo}))

@@ -541,6 +541,24 @@ ledger rotation (do it by hand — the close steps describe it), and the boot-co
 When you do have it: **3.8+**, standard library only. No pip install, ever. PyYAML is
 used *if present* and every script falls back to a hand-rolled parser without it.
 
+**Running the suites.** All six are `unittest`, standard library, no test runner to
+install. Two commands cover everything:
+
+```bash
+python -m unittest discover -s scripts -t scripts -p "test_*.py"
+```
+
+```bash
+python -m unittest discover -s hooks -t hooks -p "test_*.py"
+```
+
+Any single suite also runs on its own — `python scripts/test_rotate.py`. If you prefer
+`pytest` it collects all six, but nothing here needs it, and a green run under plain
+`unittest` is the supported answer. *(Until 2026-08-05 `test_split_ledger.py` was a
+hand-rolled harness rather than a `unittest` suite, so `pytest` collected 0 tests from
+it and exited 5 — a passing suite that reported as a failure to anyone running one
+command across all six. Converted; see MP#47/D6.)*
+
 <details>
 <summary><b>Troubleshooting</b> — the failures that actually happen</summary>
 

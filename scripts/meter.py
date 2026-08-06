@@ -66,6 +66,10 @@ LIST_KEYS = ("boot", "on_demand", "never_load_whole")
 # the model's BPE vocabulary. Kept deliberately simple and dependency-free.
 BYTES_PER_TOKEN = 4
 
+# Skipped when summing a directory entry. Same set rotate.py uses — a deferred
+# folder's weight is its documents, never a vendored dependency tree.
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pure functions — no disk, no globals mutated. The test suite hits these directly.
@@ -223,14 +227,41 @@ def parse_load_lists(manifest_text):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def measure_file(root, relpath):
-    """Return the size in bytes of root/relpath, or 0 if the file is missing.
-    Never raises on a missing/unreadable file (skeleton or template repos vary) —
-    a missing file simply measures 0 and is flagged by file_exists() at the report
-    layer so it can carry a note."""
+    """Return the size in bytes of root/relpath, or 0 if it is missing.
+
+    Never raises on a missing/unreadable path (skeleton or template repos vary) —
+    a missing entry measures 0 and is flagged by path_exists() at the report layer
+    so it can carry a note.
+
+    A DIRECTORY is summed, not zeroed (MP#47/D4). A manifest may legitimately defer
+    a whole folder — `tasks/` on a second instance holds 98 documents — and this
+    reported it as `(missing — counted as 0)`, which to an adopter reads as a broken
+    install rather than as 98 files correctly kept off the boot path. getsize() on a
+    directory returns the directory ENTRY's size, which is not the answer either."""
+    p = os.path.join(root, relpath)
+    if os.path.isdir(p):
+        return measure_dir(p)
     try:
-        return os.path.getsize(os.path.join(root, relpath))
+        return os.path.getsize(p)
     except OSError:
         return 0
+
+
+def measure_dir(path):
+    """Total bytes of every file under `path`, honouring SKIP_DIRS.
+
+    Recursive because the split puts real weight one level down — `tasks/` holds
+    `tasks/closed/`, and a top-level-only sum would under-report a deferred folder
+    by most of its contents."""
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                continue
+    return total
 
 
 # One agent's own OPEN mail, allowed for on top of the header index. Measured:
@@ -265,7 +296,14 @@ def measure_bulletin_scan(root, relpath, allowance=BULLETIN_BODY_ALLOWANCE):
 
 
 def file_exists(root, relpath):
-    return os.path.isfile(os.path.join(root, relpath))
+    """True if the manifest entry resolves to something measurable.
+
+    Accepts a DIRECTORY as well as a file (MP#47/D4). The isfile() test that used
+    to live here is what made a deferred `tasks/` folder of 98 documents report as
+    missing. Kept under the old name because it answers the same question the
+    report layer asks — 'is there anything here?'"""
+    p = os.path.join(root, relpath)
+    return os.path.isfile(p) or os.path.isdir(p)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -281,6 +319,8 @@ def _row(root, relpath, tag=None, scanned=False):
         "tokens": estimate_tokens(nbytes),
         "missing": not file_exists(root, relpath),
     }
+    if os.path.isdir(os.path.join(root, relpath)):
+        row["dir"] = True
     if scanned:
         row["scanned"] = True
     if tag is not None:
@@ -368,6 +408,13 @@ def build_report(root, lists, manifest=None):
             s += f"  {note}"
         return s
 
+    def _row_note(r):
+        if r["missing"]:
+            return "(missing — counted as 0)"
+        if r.get("dir"):
+            return "(directory — contents summed)"
+        return ""
+
     out = []
     out.append("4SYNC ARCH — boot-cost meter")
     out.append(f"repo: {root}")
@@ -376,7 +423,7 @@ def build_report(root, lists, manifest=None):
     out.append(line("BOOT STACK", "bytes", "~tokens"))
     out.append("  " + "-" * (path_w + byte_w + tok_w + 4))
     for r in data["boot"]:
-        note = "(missing — counted as 0)" if r["missing"] else ""
+        note = _row_note(r)
         out.append(line(r["path"], _fmt_int(r["bytes"]), _fmt_int(r["tokens"]), note=note))
     out.append(line("BOOT TOTAL",
                     _fmt_int(data["boot_total_bytes"]),
@@ -386,7 +433,7 @@ def build_report(root, lists, manifest=None):
     out.append("  " + "-" * (path_w + byte_w + tok_w + 4))
     if data["deferred"]:
         for r in data["deferred"]:
-            note = "(missing — counted as 0)" if r["missing"] else ""
+            note = _row_note(r)
             tag = f"[{r.get('tag', '')}]"
             out.append(line(r["path"], _fmt_int(r["bytes"]), _fmt_int(r["tokens"]),
                             tag=tag, note=note))

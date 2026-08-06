@@ -796,6 +796,9 @@ def report_sizes(root, ledger_path, journal_max):
 STATUS_SUFFIX = "status.yaml"
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
 
+# How far under the instance root to look for sibling git repos. See _git_roots.
+MAX_REPO_DEPTH = 3
+
 # A number quoted in single quotes is CITED, not asserted. STATUS deliberately
 # quotes superseded figures to record why they were wrong ("the previous entry
 # said '99% OF ITS CAP (12,153 / 12,288)'"), and flagging those would fire every
@@ -826,6 +829,19 @@ SHA_RE = re.compile(r"(?<![0-9A-Za-z])((?=[0-9a-f]*\d)[0-9a-f]{7,40})(?![0-9A-Za
 SHA_CUES = ("commit", "sha", "origin", "head", "pushed", "push", "pin",
             "pairing", "branch", "main", "revision", "rev-parse", "@")
 SHA_WINDOW = 60
+
+# `sha256:64305da8` is a CONTENT DIGEST, not a commit — and the literal "sha256"
+# contains the cue "sha", so the one token in the sentence that says *this is not
+# a git commit* was the token promoting it to one. The strongest available
+# disambiguator, read backwards. Found 2026-08-05 against a second instance whose
+# STATUS carries live ECR image digests (MP#47/D1); three false positives there.
+#
+# Checked BEFORE the unconditional 40-char rule, not after: a sha1 digest is
+# itself 40 hex characters, so a suffix-only fix would still fire on one. Only
+# algorithm prefixes are suppressed — `commit:`/`origin:` stay cues, because
+# "commit: 7760f30" is exactly the pin this check exists to verify.
+DIGEST_PREFIX_RE = re.compile(r"(?:sha\d+|md5|blake2[bs])\s*:\s*$", re.I)
+DIGEST_PREFIX_WINDOW = 16
 
 SUITES_RE = re.compile(r"\bsuites?\b([^.\n]{0,300})", re.I)
 # A suite claim is a RUN of `N name` items directly after the word, not any such
@@ -938,17 +954,50 @@ def discover_manifests(root, manifest_name=None):
     return out
 
 
-def _git_roots(root):
+def _git_roots(root, max_depth=MAX_REPO_DEPTH):
+    """[(name, path)] for every git repo at or under `root`, to a bounded depth.
+
+    THE DEFECT THIS FIXES (MP#47/D2, 2026-08-05): this scanned the root plus one
+    level of children, and held only because THIS instance is the shallow case —
+    `4SYNC-ARCH/` and `web/` are immediate children. A second instance kept its
+    repos one level further down (`4CITE/web/`, `4CITE/mcp/`), so every true SHA
+    in them was reported as resolving in no repo. That is the worst way for this
+    file to fail: flagging CORRECT facts teaches its reader to ignore the report,
+    and an ignored report is worth less than none — the exact failure mode the
+    status checker was built to avoid, arriving from the side nothing guarded.
+
+    Bounded, never unbounded. `SKIP_DIRS` already drops `node_modules` and friends,
+    but a close should not pay for a full-tree walk either; three levels reaches a
+    nested-instance layout and stops. Descent continues THROUGH a repo, because a
+    repo inside a repo is the normal shape here (`4SYNC/4SYNC-ARCH/`).
+
+    Nested repos are named by their path relative to the root (`4CITE/web`) rather
+    than by basename. Two instances can both hold a `web/`, and the name is also
+    fed to the SHA cue list — a bare `web` is short enough to fire on ordinary
+    prose, where `4cite/web` is not."""
     out = []
     if os.path.isdir(os.path.join(root, ".git")):
         out.append((os.path.basename(root.rstrip("/\\")) or ".", root))
-    try:
-        for d in sorted(os.listdir(root)):
-            p = os.path.join(root, d)
-            if d not in SKIP_DIRS and os.path.isdir(os.path.join(p, ".git")):
-                out.append((d, p))
-    except OSError:
-        pass
+
+    def walk(path, depth, prefix):
+        if depth > max_depth:
+            return
+        try:
+            entries = sorted(os.listdir(path))
+        except OSError:
+            return
+        for d in entries:
+            if d in SKIP_DIRS:
+                continue
+            p = os.path.join(path, d)
+            if not os.path.isdir(p):
+                continue
+            rel = prefix + d
+            if os.path.isdir(os.path.join(p, ".git")):
+                out.append((d if depth == 1 else rel, p))
+            walk(p, depth + 1, rel + "/")
+
+    walk(root, 1, "")
     return out
 
 
@@ -1064,6 +1113,17 @@ def _check_sizes(root, text, spans, findings):
         line, claimed = _line_of(text, m.start()), _n(m.group(1))
         p = os.path.join(root, rel.replace("/", os.sep))
         if not os.path.exists(p):
+            # A token qualifies as path-shaped on a known extension OR a bare
+            # slash. The slash alone is too weak to carry a MISSING-file finding:
+            # a second instance's sentence "template 80,592B > 51,200B inline
+            # limit" put `--template-url/S3` in the window and produced two
+            # findings about a file nobody ever claimed existed (MP#47/D3).
+            # Requiring a real extension keeps the catch that matters — a claim
+            # still naming `config/OLD_NAME.yaml` after a rename — and drops the
+            # noise, which is this checker's standing trade: cover less, on
+            # purpose, so that what it does say keeps being worth reading.
+            if not rel.lower().endswith(CLAIM_EXTS):
+                continue
             findings.append(_finding(line, "size", rel, f"{claimed:,} B", "no such file",
                                      "the claim names a path that is not there"))
             continue
@@ -1087,6 +1147,8 @@ def _check_shas(text, spans, repos, findings):
     for m in SHA_RE.finditer(text):
         if _is_quoted(m.start(), spans):
             continue
+        if DIGEST_PREFIX_RE.search(text[max(0, m.start() - DIGEST_PREFIX_WINDOW):m.start()]):
+            continue                    # `sha256:…` — a content digest, not a pin
         if len(m.group(1)) < 40:
             window = text[max(0, m.start() - SHA_WINDOW):m.end() + SHA_WINDOW].lower()
             if not any(c in window for c in cues):
@@ -1355,6 +1417,12 @@ def main():
     ap.add_argument("--keep", type=int, default=5)
     ap.add_argument("--age", type=int, default=10)
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
+    # Explicit no-op. The usage block above has always documented `--dry-run`, and
+    # argparse rejected it as unknown — so the first flag a cautious adopter reaches
+    # for was the one guaranteed to fail (MP#47/D5). Registering it is the honest
+    # fix; deleting the help line would have left them right and the tool wrong.
+    ap.add_argument("--dry-run", action="store_true",
+                    help="explicit no-op — dry-run is the default; pass --apply to write")
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument("--journal-max-bytes", type=int, default=None,
                     help="override the manifest's close.journal.max_bytes")

@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
-"""Stdlib-only suite for scripts/split_ledger.py — the one-time ledger migration.
+"""
+Stdlib unittest suite for scripts/split_ledger.py — the one-time ledger migration.
 
-Run:  python scripts/test_split_ledger.py
+Follows test_meter.py / test_actuals.py's pattern: no network, no third-party
+deps, imports the module from the same scripts/ directory. Run either way:
 
-The cases that matter are the REFUSALS. This script restructures a whole ledger
+  python -m unittest test_split_ledger     # from the scripts/ dir
+  python scripts/test_split_ledger.py      # from the repo root
+
+CONVERTED FROM A HAND-ROLLED HARNESS 2026-08-05 (MP#47/D6). It was the only one
+of the six suites that was not unittest-based, so `pytest` collected 0 tests and
+exited 5 — which reads as a failure — while its five siblings collected normally.
+An adopter running one command across all six got a red result from the suite
+that was passing. Two things fall out of the conversion, both wanted: the checks
+are now statically countable, so rotate.py's suite check can verify the claim
+instead of reporting `not statically countable` (the 35-assertions-from-32-call-
+sites special case is gone — the four heading forms that shared a loop are four
+methods now), and the count stays 35, so no published figure moves.
+
+THE CASES THAT MATTER ARE THE REFUSALS. This script restructures a whole ledger
 once, irreversibly; a bug that drops content has no second run to catch it. So
 the suite spends most of its weight proving the script declines to run on the
 shapes that would produce a silent partial migration — above all the real one it
@@ -17,21 +32,10 @@ import shutil
 import sys
 import tempfile
 import contextlib
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import split_ledger as S  # noqa: E402
-
-PASS = FAIL = 0
-
-
-def check(name, cond, detail=""):
-    global PASS, FAIL
-    if cond:
-        PASS += 1
-        print(f"  ✓ {name}")
-    else:
-        FAIL += 1
-        print(f"  ✗ {name}   {detail}")
 
 
 def run(root, *argv):
@@ -75,6 +79,8 @@ Body of two.
 *Pattern from 4SYNC ARCH — this silo is patient zero.*
 """
 
+PLAIN = LEDGER.format(extra="", extra_rows="")
+
 
 def make(tmp, extra="", extra_rows="", ledger=None):
     root = tempfile.mkdtemp(dir=tmp)
@@ -84,124 +90,212 @@ def make(tmp, extra="", extra_rows="", ledger=None):
     return root
 
 
-def main():
-    S._utf8_stdout()
-    tmp = tempfile.mkdtemp()
-    try:
-        print("collect_descriptions — the defect this was rewritten for")
-        # blocks ABOVE '## Task descriptions' must still be collected
-        interleaved = (
-            "# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n|---|---|---|---|\n"
-            "| 1 | ✅ | a | — |\n| 2 | ✅ | b | — |\n\n"
-            "### #1 — a ✅\n\nabove the heading.\n\n"
-            "## Task descriptions\n\n### #2 — b ✅\n\nbelow the heading.\n")
-        got = S.collect_descriptions(interleaved)
-        check("collects blocks ABOVE the '## Task descriptions' heading",
-              sorted(t for t, *_ in got) == [1, 2], f"got {[t for t, *_ in got]}")
-        check("body captured for the above-heading block",
-              any(t == 1 and "above the heading." in b for t, _s, b, *_ in got))
+class TempRoot(unittest.TestCase):
+    """Base: a scratch dir torn down after each test."""
 
-        check("heading with no dash still parses",
-              [t for t, *_ in S.collect_descriptions("### #7 Subject here\n\nbody\n")] == [7])
-        check("trailing status mark stripped from subject",
-              S.collect_descriptions("### #7 — Subject ✅\n\nb\n")[0][1] == "Subject")
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-        # The id had no word boundary after it, so a SUB-SECTION heading parsed as a
-        # second description for the same task — and the refusal that followed named
-        # a duplicate the ledger did not contain, in a file the operator never
-        # suspected. Unfixable by inspection: `grep '^### #32'` returns one hit.
-        check("sub-section heading is NOT parsed as a description",
-              S.collect_descriptions("### #32-original-design-context (historical)\n\nb\n") == [],
-              str(S.collect_descriptions("### #32-original-design-context (historical)\n\nb\n")))
-        check("  … nor an underscored one",
-              S.collect_descriptions("### #32_notes\n\nb\n") == [])
-        for form, label in (("### #32 — Subject ✅", "em-dash"), ("### #32: Subject", "colon"),
-                            ("### #32 Subject", "bare space"), ("### #32 -- Subject", "double dash")):
-            check(f"  … while the {label} form still parses",
-                  [t for t, *_ in S.collect_descriptions(form + "\n\nb\n")] == [32], form)
 
-        # the blast radius: one sub-section heading refused a whole migration
-        with tempfile.TemporaryDirectory() as td:
-            root = make(td, extra="\n### #2-original-design-context (historical)\n\nold notes.\n")
-            code, out = run(root, "--dir", root)
-            check("a sub-section heading no longer forges a duplicate",
-                  code == 0 and "TWO descriptions" not in out, out[:160])
+INTERLEAVED = (
+    "# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n|---|---|---|---|\n"
+    "| 1 | ✅ | a | — |\n| 2 | ✅ | b | — |\n\n"
+    "### #1 — a ✅\n\nabove the heading.\n\n"
+    "## Task descriptions\n\n### #2 — b ✅\n\nbelow the heading.\n")
 
-        print("\nparse_table")
-        t = S.parse_table(LEDGER.format(extra="", extra_rows=""))
-        check("statuses read from the table, not the heading emoji",
-              t == {1: "completed", 2: "pending"}, str(t))
-        check("no summary table → None", S.parse_table("# nothing\n") is None)
+SUBSECTION = "### #32-original-design-context (historical)\n\nb\n"
 
-        print("\nrefusals (each must exit non-zero and write nothing)")
-        root = make(tmp, extra="\n### #2 — dupe ⏳\n\nsecond body.\n")
+
+class TestCollectDescriptions(unittest.TestCase):
+    """The defect this script was rewritten for."""
+
+    def test_collects_blocks_above_the_heading(self):
+        got = S.collect_descriptions(INTERLEAVED)
+        self.assertEqual(sorted(t for t, *_ in got), [1, 2])
+
+    def test_body_captured_for_the_above_heading_block(self):
+        got = S.collect_descriptions(INTERLEAVED)
+        self.assertTrue(any(t == 1 and "above the heading." in b for t, _s, b, *_ in got))
+
+    def test_heading_with_no_dash_still_parses(self):
+        got = S.collect_descriptions("### #7 Subject here\n\nbody\n")
+        self.assertEqual([t for t, *_ in got], [7])
+
+    def test_trailing_status_mark_stripped_from_subject(self):
+        self.assertEqual(S.collect_descriptions("### #7 — Subject ✅\n\nb\n")[0][1], "Subject")
+
+    # The id had no word boundary after it, so a SUB-SECTION heading parsed as a
+    # second description for the same task — and the refusal that followed named a
+    # duplicate the ledger did not contain, in a file the operator never suspected.
+    # Unfixable by inspection: `grep '^### #32'` returns one hit.
+    def test_sub_section_heading_is_not_a_description(self):
+        self.assertEqual(S.collect_descriptions(SUBSECTION), [])
+
+    def test_underscored_sub_section_is_not_a_description(self):
+        self.assertEqual(S.collect_descriptions("### #32_notes\n\nb\n"), [])
+
+    def _form(self, form):
+        self.assertEqual([t for t, *_ in S.collect_descriptions(form + "\n\nb\n")], [32], form)
+
+    def test_em_dash_form_still_parses(self):
+        self._form("### #32 — Subject ✅")
+
+    def test_colon_form_still_parses(self):
+        self._form("### #32: Subject")
+
+    def test_bare_space_form_still_parses(self):
+        self._form("### #32 Subject")
+
+    def test_double_dash_form_still_parses(self):
+        self._form("### #32 -- Subject")
+
+
+class TestSubSectionBlastRadius(TempRoot):
+    """One sub-section heading used to refuse a whole migration."""
+
+    def test_sub_section_heading_no_longer_forges_a_duplicate(self):
+        root = make(self.tmp, extra="\n### #2-original-design-context (historical)\n\nold notes.\n")
+        code, out = run(root, "--dir", root)
+        self.assertEqual(code, 0, out[:160])
+        self.assertNotIn("TWO descriptions", out)
+
+
+class TestParseTable(unittest.TestCase):
+
+    def test_statuses_read_from_the_table_not_the_heading_emoji(self):
+        self.assertEqual(S.parse_table(PLAIN), {1: "completed", 2: "pending"})
+
+    def test_no_summary_table_returns_none(self):
+        self.assertIsNone(S.parse_table("# nothing\n"))
+
+
+class TestRefusals(TempRoot):
+    """Each must exit non-zero and write nothing."""
+
+    def test_duplicate_description_id_is_fatal(self):
+        root = make(self.tmp, extra="\n### #2 — dupe ⏳\n\nsecond body.\n")
         code, out = run(root, "--apply")
-        check("duplicate description id is FATAL", code != 0 and "TWO descriptions" in out, out[:120])
-        check("  … and no tasks/ dir was created", not os.path.exists(os.path.join(root, "tasks")))
+        self.assertNotEqual(code, 0)
+        self.assertIn("TWO descriptions", out)
 
-        root = make(tmp, extra="\n### #9 — orphan ⏳\n\nno row for this.\n")
+    def test_duplicate_creates_no_tasks_dir(self):
+        root = make(self.tmp, extra="\n### #2 — dupe ⏳\n\nsecond body.\n")
+        run(root, "--apply")
+        self.assertFalse(os.path.exists(os.path.join(root, "tasks")))
+
+    def test_description_with_no_table_row_is_fatal(self):
+        root = make(self.tmp, extra="\n### #9 — orphan ⏳\n\nno row for this.\n")
         code, out = run(root, "--apply")
-        check("description with no table row is FATAL", code != 0 and "NO table row" in out, out[:120])
+        self.assertNotEqual(code, 0)
+        self.assertIn("NO table row", out)
 
-        root = make(tmp, extra_rows="| 3 | ⏳ | Undocumented open row | — |\n")
+    def test_open_row_with_no_description_is_fatal(self):
+        root = make(self.tmp, extra_rows="| 3 | ⏳ | Undocumented open row | — |\n")
         code, out = run(root, "--apply")
-        check("OPEN row with no description is FATAL", code != 0 and "OPEN row" in out, out[:120])
+        self.assertNotEqual(code, 0)
+        self.assertIn("OPEN row", out)
 
-        root = make(tmp, extra_rows="| 4 | ✅ | Closed, never documented | — |\n")
+    def test_terminal_row_with_no_description_is_not_fatal(self):
+        root = make(self.tmp, extra_rows="| 4 | ✅ | Closed, never documented | — |\n")
         code, out = run(root)
-        check("TERMINAL row with no description is NOT fatal",
-              code == 0 and "terminal rows with no description: 1" in out, out[:200])
+        self.assertEqual(code, 0, out[:200])
+        self.assertIn("terminal rows with no description: 1", out)
 
-        no_nl = LEDGER.format(extra="", extra_rows="").rstrip("\n")
-        root = make(tmp, ledger=no_nl)
+    def test_ledger_with_no_final_newline_is_fatal(self):
+        root = make(self.tmp, ledger=PLAIN.rstrip("\n"))
         code, out = run(root, "--apply")
-        check("ledger with no final newline is FATAL (truncation signature)",
-              code != 0 and "TRUNCATED" in out, out[:120])
+        self.assertNotEqual(code, 0)
+        self.assertIn("TRUNCATED", out)
+
+    def test_no_final_newline_override_lets_it_through(self):
+        root = make(self.tmp, ledger=PLAIN.rstrip("\n"))
         code, out = run(root, "--apply", "--allow-no-final-newline")
-        check("  … and the override lets it through", code == 0, out[:160])
+        self.assertEqual(code, 0, out[:160])
 
-        print("\ndry run writes nothing")
-        root = make(tmp)
-        code, out = run(root)
-        check("dry run exits 0", code == 0, out[:160])
-        check("dry run creates no tasks/", not os.path.exists(os.path.join(root, "tasks")))
-        check("dry run leaves the ledger byte-identical",
-              S.read(os.path.join(root, "MERGE_PLAN.md")) == LEDGER.format(extra="", extra_rows=""))
 
-        print("\napply")
-        root = make(tmp)
-        code, out = run(root, "--apply")
-        live = os.path.join(root, "tasks", "MP-002.md")
-        closed = os.path.join(root, "tasks", "closed", "MP-001.md")
-        check("apply exits 0", code == 0, out[:200])
-        check("terminal row's doc → tasks/closed/", os.path.exists(closed))
-        check("open row's doc → tasks/", os.path.exists(live))
-        check("doc carries the body", "Body of two." in S.read(live))
-        check("doc header names the row", S.read(live).startswith("# MP#2 — Open thing"))
-        new = S.read(os.path.join(root, "MERGE_PLAN.md"))
-        check("descriptions removed from the ledger", "Body of two." not in new)
-        check("summary table survives", "| 2 | ⏳ | Open thing" in new)
-        check("footer survives and is last",
-              new.rstrip().endswith("*Pattern from 4SYNC ARCH — this silo is patient zero.*"),
-              repr(new[-80:]))
-        check("no '## Task descriptions' heading left dangling", "## Task descriptions" not in new)
-        check("ledger got smaller", len(new) < len(LEDGER.format(extra="", extra_rows="")))
+class TestDryRun(TempRoot):
 
-        print("\nempty '## Task descriptions' heading is dropped")
-        led = ("# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n|---|---|---|---|\n"
-               "| 1 | ✅ | a | — |\n\n---\n\n## Task descriptions\n\n### #1 — a ✅\n\nbody.\n")
-        root = make(tmp, ledger=led)
-        code, out = run(root, "--apply")
-        new = S.read(os.path.join(root, "MERGE_PLAN.md"))
-        check("heading removed once emptied", code == 0 and "## Task descriptions" not in new, new)
-        check("table still intact", "| 1 | ✅ | a | — |" in new)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    def setUp(self):
+        super().setUp()
+        self.root = make(self.tmp)
+        self.code, self.out = run(self.root)
 
-    print(f"\n{PASS} passed, {FAIL} failed")
-    sys.exit(1 if FAIL else 0)
+    def test_dry_run_exits_zero(self):
+        self.assertEqual(self.code, 0, self.out[:160])
+
+    def test_dry_run_creates_no_tasks_dir(self):
+        self.assertFalse(os.path.exists(os.path.join(self.root, "tasks")))
+
+    def test_dry_run_leaves_the_ledger_byte_identical(self):
+        self.assertEqual(S.read(os.path.join(self.root, "MERGE_PLAN.md")), PLAIN)
+
+
+class TestApply(TempRoot):
+
+    def setUp(self):
+        super().setUp()
+        self.root = make(self.tmp)
+        self.code, self.out = run(self.root, "--apply")
+        self.live = os.path.join(self.root, "tasks", "MP-002.md")
+        self.closed = os.path.join(self.root, "tasks", "closed", "MP-001.md")
+        self.new = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
+
+    def test_apply_exits_zero(self):
+        self.assertEqual(self.code, 0, self.out[:200])
+
+    def test_terminal_rows_doc_goes_to_closed(self):
+        self.assertTrue(os.path.exists(self.closed))
+
+    def test_open_rows_doc_goes_to_tasks(self):
+        self.assertTrue(os.path.exists(self.live))
+
+    def test_doc_carries_the_body(self):
+        self.assertIn("Body of two.", S.read(self.live))
+
+    def test_doc_header_names_the_row(self):
+        self.assertTrue(S.read(self.live).startswith("# MP#2 — Open thing"))
+
+    def test_descriptions_removed_from_the_ledger(self):
+        self.assertNotIn("Body of two.", self.new)
+
+    def test_summary_table_survives(self):
+        self.assertIn("| 2 | ⏳ | Open thing", self.new)
+
+    def test_footer_survives_and_is_last(self):
+        self.assertTrue(
+            self.new.rstrip().endswith("*Pattern from 4SYNC ARCH — this silo is patient zero.*"),
+            repr(self.new[-80:]))
+
+    def test_no_dangling_task_descriptions_heading(self):
+        self.assertNotIn("## Task descriptions", self.new)
+
+    def test_ledger_got_smaller(self):
+        self.assertLess(len(self.new), len(PLAIN))
+
+
+EMPTIED = ("# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n|---|---|---|---|\n"
+           "| 1 | ✅ | a | — |\n\n---\n\n## Task descriptions\n\n### #1 — a ✅\n\nbody.\n")
+
+
+class TestEmptiedHeading(TempRoot):
+    """An emptied '## Task descriptions' heading is dropped, not left dangling."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make(self.tmp, ledger=EMPTIED)
+        self.code, self.out = run(self.root, "--apply")
+        self.new = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
+
+    def test_heading_removed_once_emptied(self):
+        self.assertEqual(self.code, 0, self.out[:200])
+        self.assertNotIn("## Task descriptions", self.new)
+
+    def test_table_still_intact(self):
+        self.assertIn("| 1 | ✅ | a | — |", self.new)
 
 
 if __name__ == "__main__":
-    main()
+    S._utf8_stdout()
+    unittest.main(verbosity=2)
 # ═══ EOF test_split_ledger.py ═══

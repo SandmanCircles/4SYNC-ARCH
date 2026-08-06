@@ -200,6 +200,48 @@ class TestBuildReport(ManifestEnvCase):
         self.assertEqual(kernel["bytes"], 0)
         self.assertTrue(kernel["missing"])
 
+    def test_directory_entry_is_summed_not_reported_missing(self):
+        """MP#47/D4. A manifest may defer a whole folder — `tasks/` on a second
+        instance holds 98 documents — and this reported `(missing — counted as 0)`,
+        which to an adopter reads as a broken install rather than as 98 files
+        correctly kept off the boot path."""
+        d = os.path.join(self.root, "tasks")
+        os.makedirs(d, exist_ok=True)
+        for name, size in (("MP-001.md", 300), ("MP-002.md", 700)):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                f.write("x" * size)
+        row = meter._row(self.root, "tasks")
+        self.assertFalse(row["missing"])
+        self.assertEqual(row["bytes"], 1000)
+        self.assertTrue(row["dir"])
+
+    def test_directory_sum_is_recursive(self):
+        """`tasks/` holds `tasks/closed/`; a top-level-only sum would under-report
+        a deferred folder by most of its contents."""
+        nested = os.path.join(self.root, "tasks", "closed")
+        os.makedirs(nested, exist_ok=True)
+        with open(os.path.join(self.root, "tasks", "live.md"), "w") as f:
+            f.write("x" * 100)
+        with open(os.path.join(nested, "done.md"), "w") as f:
+            f.write("x" * 400)
+        self.assertEqual(meter._row(self.root, "tasks")["bytes"], 500)
+
+    def test_directory_sum_skips_vendored_trees(self):
+        d = os.path.join(self.root, "site", "node_modules", "pkg")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "huge.js"), "w") as f:
+            f.write("x" * 9999)
+        with open(os.path.join(self.root, "site", "index.md"), "w") as f:
+            f.write("x" * 50)
+        self.assertEqual(meter._row(self.root, "site")["bytes"], 50)
+
+    def test_a_genuinely_absent_entry_is_still_missing(self):
+        """The control — the missing-file flag must survive the directory fix."""
+        row = meter._row(self.root, "no_such_dir")
+        self.assertTrue(row["missing"])
+        self.assertEqual(row["bytes"], 0)
+        self.assertNotIn("dir", row)
+
     def test_text_report_renders(self):
         report = meter.build_report(self.root, self.lists)
         self.assertIn("4SYNC ARCH", report)

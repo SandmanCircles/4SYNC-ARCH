@@ -1068,6 +1068,18 @@ class TestStatusSizeClaims(StatusFactsCase):
         self.assertEqual([(f["kind"], f["subject"], f["measured"]) for f in findings],
                          [("size", "docs/gone.md", "no such file")])
 
+    def test_slash_shaped_prose_is_not_a_missing_file_claim(self):
+        """MP#47/D3, from a second instance's real STATUS sentence.
+
+        `--template-url/S3` has a slash, so it passed the path-shape gate, so a
+        sentence about a CloudFormation inline-template limit produced two findings
+        about a file nobody claimed existed. A slash alone is too weak to carry a
+        MISSING-file finding; the extension test above still catches a renamed
+        file, which is the case worth keeping."""
+        findings, _, _ = self.run_facts(
+            's: "CFN --template-url/S3 template 80,592B > 51,200B inline limit."\n')
+        self.assertEqual(findings, [])
+
     def test_an_unattributed_byte_figure_is_prose(self):
         """'4,955 B vs 0' names nothing. A checker that guessed at its subject
         would be inventing claims in order to fail them."""
@@ -1210,6 +1222,26 @@ class TestStatusShaClaims(StatusFactsCase):
     def test_short_hex_beside_a_commit_cue_is_checked(self):
         findings, _, _ = self.run_facts('s: "in sync with origin/main at 03721ead."\n')
         self.assertEqual([f["subject"] for f in findings], ["03721ead"])
+
+    def test_a_content_digest_is_not_a_commit_claim(self):
+        """MP#47/D1. `sha256:64305da8` is an image digest, and the literal
+        "sha256" contains the cue "sha" — so the one token saying *this is not a
+        commit* was what promoted it to one. Three false positives on a second
+        instance carrying live ECR digests."""
+        findings, _, _ = self.run_facts('s: "live_digest sha256:64305da8 on ECR."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_sha1_length_digest_is_also_suppressed(self):
+        """The prefix is checked BEFORE the unconditional 40-char rule: a sha1
+        digest is itself 40 hex characters, so a suffix-only fix still fires."""
+        findings, _, _ = self.run_facts('s: "blob sha1:%s here."\n' % ("b3" * 20))
+        self.assertEqual(findings, [])
+
+    def test_the_same_hex_without_an_algo_prefix_is_still_checked(self):
+        """The control. Suppression is scoped to `<algo>:` — `commit: 7760f30`
+        stays exactly the pin this check exists to verify."""
+        findings, _, _ = self.run_facts('s: "commit 64305da8 is pinned."\n')
+        self.assertEqual([f["subject"] for f in findings], ["64305da8"])
 
     def test_hex_letters_with_no_digit_are_a_word_not_a_hash(self):
         findings, _, _ = self.run_facts('s: "the commit defaced the baseline."\n')
@@ -1357,6 +1389,95 @@ class TestPickupReady(unittest.TestCase):
     def test_reports_but_never_raises(self):
         self._write("**Pickup-ready right now:** #999 and #0.")
         rotate.report_pickup_ready(self.ledger)
+
+
+class TestRepoDiscovery(unittest.TestCase):
+    """MP#47/D2 — sibling-repo discovery was depth-1.
+
+    It held here only because THIS instance is the shallow case: `4SYNC-ARCH/`
+    and `web/` are immediate children. A second instance kept its repos one level
+    deeper and every true SHA in them was reported as resolving in no repo —
+    the checker flagging CORRECT facts, which is how a report earns being ignored.
+    `.git` directories are created bare because _git_roots only tests isdir()."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="arch_repos_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _mkrepo(self, *parts):
+        p = os.path.join(self.root, *parts)
+        os.makedirs(os.path.join(p, ".git"), exist_ok=True)
+        return p
+
+    def test_depth_one_repo_is_found_by_bare_name(self):
+        self._mkrepo("product")
+        self.assertIn("product", dict(rotate._git_roots(self.root)))
+
+    def test_nested_repo_one_level_deeper_is_found(self):
+        self._mkrepo("instance")
+        self._mkrepo("instance", "web")
+        self.assertIn("instance/web", dict(rotate._git_roots(self.root)))
+
+    def test_nested_repo_is_named_by_relative_path(self):
+        """Two instances can each hold a `web/`. The name is also fed to the SHA
+        cue list, where a bare `web` is short enough to fire on ordinary prose."""
+        self._mkrepo("a", "web")
+        self._mkrepo("b", "web")
+        names = dict(rotate._git_roots(self.root))
+        self.assertEqual(sorted(n for n in names if n.endswith("web")),
+                         ["a/web", "b/web"])
+
+    def test_discovery_is_depth_bounded(self):
+        self._mkrepo("l1", "l2", "l3", "l4")
+        names = dict(rotate._git_roots(self.root, max_depth=3))
+        self.assertNotIn("l1/l2/l3/l4", names)
+
+    def test_descent_continues_through_a_repo(self):
+        """A repo inside a repo is the normal shape here (`4SYNC/4SYNC-ARCH/`)."""
+        self._mkrepo("outer")
+        self._mkrepo("outer", "inner")
+        names = dict(rotate._git_roots(self.root))
+        self.assertIn("outer", names)
+        self.assertIn("outer/inner", names)
+
+    def test_skip_dirs_are_not_descended(self):
+        self._mkrepo("node_modules", "pkg")
+        self.assertEqual([n for n in dict(rotate._git_roots(self.root)) if "pkg" in n], [])
+
+
+class TestShaInNestedRepo(StatusFactsCase):
+    """The end-to-end half of D2: a real commit in a real depth-2 repo."""
+
+    def test_a_commit_in_a_nested_repo_resolves(self):
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
+        nested = os.path.join(self.root, "instance", "web")
+        os.makedirs(nested, exist_ok=True)
+
+        def g(*a):
+            return subprocess.run(["git"] + list(a), cwd=nested, env=env,
+                                  capture_output=True, text=True)
+        if g("init", "-q").returncode != 0:
+            self.skipTest("git unavailable")
+        with open(os.path.join(nested, "seed.txt"), "w") as f:
+            f.write("x")
+        g("add", "seed.txt")
+        g("commit", "-qm", "seed")
+        sha = g("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(sha)
+        findings, _, _ = self.run_facts('s: "pushed at %s."\n' % sha[:7])
+        self.assertEqual(findings, [], "a true SHA in a nested repo was called stale")
+
+
+class TestCliFlags(unittest.TestCase):
+    def test_dry_run_is_a_registered_flag(self):
+        """MP#47/D5. The usage block documented `--dry-run` and argparse rejected
+        it, so the first flag a cautious adopter reaches for was the one certain
+        to fail. argparse lists only registered options in --help."""
+        out = subprocess.run([sys.executable, rotate.__file__, "--help"],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[:200])
+        self.assertIn("--dry-run", out.stdout)
 
 
 if __name__ == "__main__":

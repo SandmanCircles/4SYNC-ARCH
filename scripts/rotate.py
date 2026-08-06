@@ -681,6 +681,71 @@ def report_table_prose(ledger_path):
     return rows, prose
 
 
+# ── STATUS size report ───────────────────────────────────────────────────────
+
+# Soft threshold, not a cap: nothing is refused, and no session should raise this
+# number instead of trimming. It sits above a healthy file and below the size the
+# real one reached before anyone counted it.
+STATUS_SOFT_MAX = 20480
+STATUS_SOFT_MAX_ENV = "ARCH_STATUS_MAX"
+
+
+def report_status_size(root, soft_max=None):
+    """Measure the DECLARED STATUS file per top-level field.
+
+    THE FOURTH PLACE THE GROWTH WENT (MP#48). The split capped descriptions;
+    report_subjects capped the row cells they fled into; report_table_prose
+    caught the paragraphs around the table. None of them watch the OTHER boot
+    file that grows. `config/STATUS.yaml` reached 29,253 B — second only to the
+    ledger, about a third of everything a session pays before doing any work —
+    while its own header declared overwrite mode and said the log of how state
+    got here belongs in the task ledger. Roughly twenty `in_flight:` entries had
+    become closure narratives already held in full by tasks/closed/: a THIRD copy
+    of state, drifting from both and announcing nothing when it did.
+
+    Per-FIELD, not just a total, for the reason the meter reports per-file — the
+    question later is never "did it grow" but WHICH field grew, and the answer is
+    almost always the one holding a list.
+
+    A soft threshold rather than a ratio, because unlike the summary table there
+    is no companion quantity to weigh narrative against; a snapshot has no rows.
+    The honest signal is absolute size plus the field breakdown that says where
+    to look. **The fix is always to cut, never to raise the number** — the
+    manifest's own doctrine, that a cap you raise on reflex is not a cap.
+
+    Reports; never blocks. Returns (total_bytes, [(field, bytes), …])."""
+    path = find_status_file(root)
+    if not path or not os.path.isfile(path):
+        print("status-size: no STATUS file declared or found — skipped")
+        return 0, []
+    if soft_max is None:
+        try:
+            soft_max = int(os.environ.get(STATUS_SOFT_MAX_ENV) or STATUS_SOFT_MAX)
+        except ValueError:                  # a junk env value must not break a close
+            soft_max = STATUS_SOFT_MAX
+    text = read(path)
+    fields, cur = [], None
+    for line in text.splitlines(keepends=True):
+        n = len(line.encode("utf-8"))
+        m = re.match(r"^([A-Za-z_][\w-]*):", line)
+        if m:
+            cur = [m.group(1), 0]
+            fields.append(cur)
+        if cur is not None:
+            cur[1] += n
+    total = len(text.encode("utf-8"))
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    print(f"status-size: {rel} {total:,} B (~{total // 4:,} tok of boot)")
+    for name, n in sorted(fields, key=lambda f: -f[1])[:3]:
+        print(f"    {name}: {n:,} B")
+    if total > soft_max:
+        print(f"  ! over the {soft_max:,} B soft threshold. STATUS is a SNAPSHOT — "
+              "check whether a field has become a log of closed work that "
+              f"{TASKS_DIRNAME}/closed/ already holds. Cut it; do not raise this "
+              "number. (Reported, not blocked.)")
+    return total, [(n, b) for n, b in fields]
+
+
 # ── size report ──────────────────────────────────────────────────────────────
 
 JOURNAL_MAX_DEFAULT = 12288
@@ -840,8 +905,35 @@ SHA_WINDOW = 60
 # itself 40 hex characters, so a suffix-only fix would still fire on one. Only
 # algorithm prefixes are suppressed — `commit:`/`origin:` stay cues, because
 # "commit: 7760f30" is exactly the pin this check exists to verify.
-DIGEST_PREFIX_RE = re.compile(r"(?:sha\d+|md5|blake2[bs])\s*:\s*$", re.I)
-DIGEST_PREFIX_WINDOW = 16
+# Matches the WHOLE `<algo>:<hex>` token, not just its prefix, because the token
+# has to be removed from the cue text as a unit — see _mask_digests and MP#49.
+# 7-64 hex covers a short form through a full sha256.
+DIGEST_TOKEN_RE = re.compile(r"(?:sha\d+|md5|blake2[bs])\s*:\s*[0-9a-f]{7,64}", re.I)
+
+
+def _mask_digests(text):
+    """Blank every `<algo>:<hex>` token, preserving offsets.
+
+    THE DEFECT THIS FIXES (MP#49, found on a second instance 2026-08-05):
+    suppressing a digest removed it from the FINDINGS but left its text in the
+    line, so its `sha` substring stayed in the cue window and promoted the next
+    bare hex on the same line. `3ee8019` — prose about an image, not a pin — was
+    convicted by the `sha256:d32dfac2` sitting beside it, the very token that had
+    just been ruled out. Suppression has to withdraw the cue, not only the match.
+
+    Length-preserving on purpose: every offset in this module is computed against
+    the original text (quote spans, line numbers, windows), so the masked copy has
+    to stay in lockstep with it. Replacing with spaces is what guarantees that.
+
+    Scoped to `<algo>:` forms only. `commit:` and `origin:` stay cues — over-
+    withdrawal would silently stop checking real pins, which fails quiet and is
+    worse than the loud false positive this removes."""
+    if not DIGEST_TOKEN_RE.search(text):
+        return text
+    out = list(text)
+    for m in DIGEST_TOKEN_RE.finditer(text):
+        out[m.start():m.end()] = " " * (m.end() - m.start())
+    return "".join(out)
 
 SUITES_RE = re.compile(r"\bsuites?\b([^.\n]{0,300})", re.I)
 # A suite claim is a RUN of `N name` items directly after the word, not any such
@@ -1143,14 +1235,18 @@ def _check_shas(text, spans, repos, findings):
     Without a cue it is not asserting a commit at all — a session id in prose
     ('the week-old 03721ead row') is 8 hex characters and is not a claim."""
     cues = tuple(SHA_CUES) + tuple(n.lower() for n, _ in repos)
+    # ONE mechanism does both jobs: a masked token is neither a candidate itself
+    # (D1) nor a cue for its neighbours (MP#49). Two separate checks is what let
+    # the second half survive the first fix.
+    cue_text = _mask_digests(text)
     todo = []
     for m in SHA_RE.finditer(text):
         if _is_quoted(m.start(), spans):
             continue
-        if DIGEST_PREFIX_RE.search(text[max(0, m.start() - DIGEST_PREFIX_WINDOW):m.start()]):
-            continue                    # `sha256:…` — a content digest, not a pin
+        if cue_text[m.start()] == " " != text[m.start()]:
+            continue                    # inside `sha256:…` — a digest, not a pin
         if len(m.group(1)) < 40:
-            window = text[max(0, m.start() - SHA_WINDOW):m.end() + SHA_WINDOW].lower()
+            window = cue_text[max(0, m.start() - SHA_WINDOW):m.end() + SHA_WINDOW].lower()
             if not any(c in window for c in cues):
                 continue
         todo.append((m.start(), m.group(1)))
@@ -1475,6 +1571,7 @@ def main():
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max)
         report_pickup_ready(ledger)
+    report_status_size(d)
     report_status_facts(d, run_meter=not args.no_meter)
     report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")

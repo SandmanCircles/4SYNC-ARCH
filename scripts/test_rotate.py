@@ -1237,6 +1237,32 @@ class TestStatusShaClaims(StatusFactsCase):
         findings, _, _ = self.run_facts('s: "blob sha1:%s here."\n' % ("b3" * 20))
         self.assertEqual(findings, [])
 
+    def test_a_suppressed_digest_does_not_donate_its_cue(self):
+        """MP#49, the real line shape from a second instance. `3ee8019` is prose
+        about an image, and the only `sha` on the line belongs to the digest that
+        was just suppressed — so the ruled-out token convicted its neighbour.
+        Suppression has to withdraw the cue, not only the match."""
+        findings, _, _ = self.run_facts(
+            's: "live sha256:d32dfac2, one further back 3ee8019 in the registry."\n')
+        self.assertEqual(findings, [])
+
+    def test_a_genuine_cue_elsewhere_on_the_line_still_checks(self):
+        """The control that bounds the fix. Masking removes the DIGEST's cue, not
+        every cue — over-withdrawal would stop checking real pins, which fails
+        quiet and is worse than the false positive it removes."""
+        findings, _, _ = self.run_facts(
+            's: "origin/main at 3ee8019, image sha256:d32dfac2."\n')
+        self.assertEqual([f["subject"] for f in findings], ["3ee8019"])
+
+    def test_masking_preserves_offsets_so_line_numbers_survive(self):
+        """Every offset in this module is computed against the original text, so
+        the masked copy must stay the same length or findings land on wrong lines."""
+        self.assertEqual(len(rotate._mask_digests("x sha256:64305da8 y")),
+                         len("x sha256:64305da8 y"))
+        findings, _, _ = self.run_facts(
+            'a: 1\nb: 2\ns: "image sha256:d32dfac2 and commit 1234abc."\n')
+        self.assertEqual([f["line"] for f in findings], [3])
+
     def test_the_same_hex_without_an_algo_prefix_is_still_checked(self):
         """The control. Suppression is scoped to `<algo>:` — `commit: 7760f30`
         stays exactly the pin this check exists to verify."""
@@ -1389,6 +1415,63 @@ class TestPickupReady(unittest.TestCase):
     def test_reports_but_never_raises(self):
         self._write("**Pickup-ready right now:** #999 and #0.")
         rotate.report_pickup_ready(self.ledger)
+
+
+class TestStatusSizeReport(StatusFactsCase):
+    """MP#48 — the fourth place the growth went.
+
+    Descriptions were capped, then the row cells they fled into, then the prose
+    around the table. Nothing watched the OTHER boot file, and STATUS reached
+    29,253 B of which most was closed-task narrative already held by
+    tasks/closed/ — a third copy of state."""
+
+    def test_reports_total_and_per_field_bytes(self):
+        """Total is measured on the NORMALISED text, not os.path.getsize — on
+        Windows a CRLF checkout makes the on-disk size larger than the content,
+        and a boot-cost figure that changes with the checkout's line endings
+        would be measuring the filesystem rather than the file."""
+        self.write('meta:\n  file: S\nin_flight:\n  - "a"\n  - "b"\n')
+        (total, fields), out = _capture(rotate.report_status_size, self.root)
+        self.assertEqual({n for n, _ in fields}, {"meta", "in_flight"})
+        self.assertEqual(total, sum(b for _, b in fields))  # no preamble in this fixture
+        self.assertIn("status-size:", out)
+
+    def test_flags_a_file_over_the_soft_threshold(self):
+        self.write('in_flight:\n  - "%s"\n' % ("x" * 900))
+        _, out = _capture(rotate.report_status_size, self.root, soft_max=256)
+        self.assertIn("!", out)
+        self.assertIn("SNAPSHOT", out)
+
+    def test_a_healthy_file_is_silent(self):
+        self.write('meta:\n  file: S\n')
+        _, out = _capture(rotate.report_status_size, self.root, soft_max=4096)
+        self.assertNotIn("!", out)
+
+    def test_names_the_biggest_field_so_you_know_where_to_look(self):
+        """Per-field for the reason the meter is per-file: the question is never
+        'did it grow' but WHICH field grew."""
+        self.write('meta:\n  file: S\nin_flight:\n  - "%s"\n' % ("x" * 600))
+        _, out = _capture(rotate.report_status_size, self.root, soft_max=64)
+        self.assertIn("in_flight:", out)
+
+    def test_never_raises_when_no_status_file_is_declared(self):
+        empty = tempfile.mkdtemp(prefix="arch_nostatus_")
+        self.addCleanup(shutil.rmtree, empty, True)
+        (total, fields), out = _capture(rotate.report_status_size, empty)
+        self.assertEqual((total, fields), (0, []))
+        self.assertIn("skipped", out)
+
+    def test_a_junk_env_threshold_does_not_break_a_close(self):
+        self.write('meta:\n  file: S\n')
+        old = os.environ.get(rotate.STATUS_SOFT_MAX_ENV)
+        os.environ[rotate.STATUS_SOFT_MAX_ENV] = "not-a-number"
+        try:
+            rotate.report_status_size(self.root)
+        finally:
+            if old is None:
+                os.environ.pop(rotate.STATUS_SOFT_MAX_ENV, None)
+            else:
+                os.environ[rotate.STATUS_SOFT_MAX_ENV] = old
 
 
 class TestRepoDiscovery(unittest.TestCase):

@@ -3,9 +3,9 @@
 **A Return on Context Harness.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 
-**AI coding sessions are goldfish.** Every context window starts cold and dies silent,
-and everything a session learned — decisions, task state, naming discipline, deploy
-facts — evaporates unless it's deposited somewhere the next session will actually look.
+**Every context window starts cold.** Everything a session learned — decisions, task
+state, naming discipline, deploy facts — evaporates unless it's deposited somewhere the
+next session will actually look.
 
 It gets worse the moment you use two surfaces:
 
@@ -20,7 +20,6 @@ silently reverting another's ledger edit.
 
 4SYNC is where the state goes — the discipline that keeps a project's context lean and
 trustworthy across sessions and surfaces, so more of every window goes to the work.
-More model, same subscription.
 
 ## Prerequisites
 

@@ -54,6 +54,10 @@ canon_sources:
     file: scripts/meter.py
     summary: "measures boot-stack token cost vs. deferred canon kept out of the window; read-only"
 
+  - topic: getting help with this instance (ARCH Support)
+    file: archive/ARCH_SUPPORT.md            # genesis moved it here with the rest of the packaging
+    summary: "a read-only diagnostic prompt that reports this instance's shape and measurements, plus what to do with the result. Optional, and useful to run even if nothing is ever sent — it is a health check built from meter/actuals/rotate, which few people think to run together. It changes nothing and reports shape, never content"
+
   # ── Add a row whenever you create a new canon doc ────────────────────────
   # - topic: [what it covers]
   #   file: [path]

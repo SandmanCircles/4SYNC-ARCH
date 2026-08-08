@@ -102,8 +102,9 @@ bootstrap:
       declared one. Re-run the YAML verify afterwards. NOT renamed — CLAUDE.md, which
       Claude Code finds by exact name, and the root documents. This is provenance for
       the identity stack, not a project-wide rename
-    - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md and LICENSE to
-      archive/ as ARCH_README.md, ARCH_EXAMPLE.md, ARCH_LICENSE.md. That is the
+    - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md, LICENSE and
+      SUPPORT.md to archive/ as ARCH_README.md, ARCH_EXAMPLE.md, ARCH_LICENSE.md,
+      ARCH_SUPPORT.md. That is the
       PRODUCT's packaging, not this project's, and at root LICENSE is what GitHub
       reads as the new repo's own licence the moment the user runs git init — their
       work would appear FSL-licensed under someone else's copyright. Keep all three

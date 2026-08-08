@@ -41,6 +41,12 @@ actually used for.
    afterwards, but you have to fix `instance.root` and the absolute hook paths in
    `.claude/settings.json` by hand — and until you do, **closes write to the old location
    and the guards stop firing.**
+   **Think twice about a cloud-synced folder** (iCloud Drive, Google Drive, Dropbox,
+   OneDrive). It is the same permanent choice in a second form: the sync client rewrites
+   paths when it relocates or offloads a folder, and it will happily replicate a
+   half-written ledger between machines while two sessions are editing it. If you want
+   the same project on more than one machine, use git for that and keep the instance
+   root on local disk.
 2. **Drop this filesystem into that folder** (or start from it).
 3. **Tell it what your project is** — either fill in `SEED.md` and flip its flag to
    `AUTHORED`, or don't: just open a Claude session in the folder and it will
@@ -128,7 +134,11 @@ it every instance has a `config/KERNEL.yaml`, and a wrong-instance read looks ex
 like a right one in the tool call, the log, and the reasoning trace. Genesis updates
 every reference in the same pass and sets `ARCH_MANIFEST` in `.claude/settings.json`,
 which is what keeps the guards, the boot receipt, the meter and rotation pointed at the
-renamed manifest. `CLAUDE.md` is never renamed — Claude Code finds it by exact name —
+renamed manifest. **That pin covers Claude Code sessions and nothing else** — run
+`meter.py`, `rotate.py` or `actuals.py` from a plain terminal and they fall back to the
+default filename and report on a manifest you no longer have. Export it in your shell
+(`export ARCH_MANIFEST=ACMEROBOTICS.yaml`, or set it per-command) whenever you run the
+close-time tools by hand, which is exactly how they are meant to be run. `CLAUDE.md` is never renamed — Claude Code finds it by exact name —
 and neither are the root documents; this is provenance for the identity stack, not a
 project-wide rename.
 
@@ -293,6 +303,15 @@ of this is a preference; run several and wire the hooks first.
   STATUS file — manifest caps, byte counts attributed to a named path, test-suite
   counts, commit SHAs, boot cost — each checked against the thing it claims to
   describe. Run at close from a git-capable session.
+
+  **It refuses a dirty tree, so the close is a two-step — run it between two
+  commits.** `--apply` moves files and rewrites the `Tally`, and it will not do
+  that on top of uncommitted work: *"git is the undo."* So the real order is
+  **commit your session's edits → `rotate.py --apply` → commit what it moved**,
+  or pass `--allow-dirty` if you know what you are giving up. The refusal is
+  correct and stays; it reads as the tool being broken only because nobody wrote
+  the order down. (If it refuses when you believe you committed, check that your
+  commit actually ran — a shell alias that did not expand is the reported cause.)
 
   **Why one pass rewrites and the rest report.** A `Tally` is a count of rows
   sitting right there and needs no judgement, so it is derived. A STATUS number sits
@@ -602,6 +621,41 @@ command across all six. Converted; see MP#47/D6.)*
   whether `.session_debt.tsv` gained a row.
 
 </details>
+
+## Staying current — "am I running the latest machinery?"
+
+**There is no update command, and the reason is structural rather than an oversight.**
+ARCH is copied, not installed: genesis renames your stack, rewrites the manifest with
+your `instance.root`, and moves this README and the licence out of your root so
+`git init` doesn't mark your project FSL-licensed. After that there is no upstream to
+diff against, the filenames no longer line up, and most of the content is *yours*.
+
+So sort the files into three buckets, because only one of them is ever "updated":
+
+- **Machinery** — `hooks/pre_tool_use.py`, `hooks/session_start.py`, their two suites,
+  and `scripts/*.py` with theirs. Generic, never renamed, not meant to be edited by
+  you. **Updating means replacing the file**; byte-identical is the correct outcome.
+- **Your instance** — the `config/` stack, the ledger, naming conventions, journal,
+  task documents. **Never touched by an update, ever.** These are the asset you
+  adopted ARCH to accumulate.
+- **The manifest** — the awkward one. It carries your `instance.root` and your
+  project's name, but its `boot:` / `close:` / `integrity:` *structure* is product
+  shape. A new close step has to be **merged in by hand**; it cannot be copied over.
+
+To check the first bucket today, clone fresh to a scratch path and compare:
+
+```bash
+git clone https://github.com/SandmanCircles/4SYNC-ARCH /tmp/arch-latest
+diff -ru --brief /tmp/arch-latest/hooks ./hooks
+diff -ru --brief /tmp/arch-latest/scripts ./scripts
+```
+
+Differences in machinery files are updates you have not taken. Differences anywhere
+else are yours and should be left alone. Re-run both suites after replacing anything.
+
+**Stated plainly because it is a real limitation:** nothing records which build your
+instance was born from (`sync_version` is the *protocol* version and has read `1.0`
+throughout), so the diff above is currently the only way to answer the question.
 
 ## Provenance
 

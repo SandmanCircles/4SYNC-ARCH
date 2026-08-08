@@ -18,8 +18,10 @@ than content — no source, no credentials, no customer names. The last instruct
 session show you the finished report and wait for your approval before anything is sent.
 Read it before you mail it; it is your instance being described.
 
-**Rates.** ARCH Support is $200/hr, and defined pieces of work are quoted fixed-fee. Sending
-a report costs nothing and commits you to nothing.
+**Sending is free.** Running the prompt and mailing the report costs nothing and commits you
+to nothing. What comes back depends entirely on what is in it — some things are a one-line
+answer, some are a scoped piece of work. We aim to reply within 24 hours, and nothing is
+billed unless you agree to it first.
 
 ---
 

@@ -657,6 +657,29 @@ else are yours and should be left alone. Re-run both suites after replacing anyt
 instance was born from (`sync_version` is the *protocol* version and has read `1.0`
 throughout), so the diff above is currently the only way to answer the question.
 
+## Getting help — `SUPPORT.md`
+
+`SUPPORT.md` (moved to `archive/ARCH_SUPPORT.md` by genesis) holds a prompt you paste
+into a session running inside your own instance. It produces one read-only report
+describing that instance — its layout, its measurements from `meter.py` / `actuals.py` /
+`rotate.py`, its protocol health, and which machinery build it is running per the diff
+described above.
+
+**Run it for yourself first.** It is a health check assembled from tooling already in
+this repo that almost nobody thinks to run in one pass, and it ends by asking your own
+session what it would fix first. That answer is usually worth the five minutes whether
+or not anyone else ever sees it.
+
+If you want a second opinion, mail the report to **arch@4sync.ai**. **Sending is free** —
+it costs nothing and commits you to nothing. What comes back depends on what is in the
+report; we aim to reply within 24 hours, and nothing is billed unless you agree to it
+first.
+
+The prompt changes nothing, reports shape and measurements rather than content — no
+source, no credentials, no customer names — and ends by showing you the finished report
+and telling you nothing has been sent. Read it before you mail it; it describes your
+instance.
+
 ## Provenance
 
 Battle-tested before it was packaged: this pattern ran a real multi-agent operation

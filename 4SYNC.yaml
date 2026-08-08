@@ -107,10 +107,10 @@ bootstrap:
       the identity stack, not a project-wide rename
     - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md, LICENSE and
       SUPPORT.md to archive/ as ARCH_README.md, ARCH_EXAMPLE.md, ARCH_LICENSE.md,
-      ARCH_SUPPORT.md. That is the
-      PRODUCT's packaging, not this project's, and at root LICENSE is what GitHub
-      reads as the new repo's own licence the moment the user runs git init — their
-      work would appear FSL-licensed under someone else's copyright. Keep all three
+      ARCH_SUPPORT.md. That is the PRODUCT's packaging, not this project's, and at
+      root LICENSE is what GitHub reads as the new repo's own licence the moment the
+      user runs git init — their work would appear FSL-licensed under someone else's
+      copyright. Keep all four
       TRACKED and never ignore archive/, since the licence must travel with the code
       it covers and the archived seed is the birth record. .gitignore STAYS at root
     - prepend a genesis journal block to MERGE_PLAN.md

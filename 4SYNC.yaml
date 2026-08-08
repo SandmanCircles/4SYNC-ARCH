@@ -7,6 +7,9 @@
 #            finishing its declared task IS the signal)
 # First session in a fresh drop-in: see `bootstrap:` (genesis).
 # Write mode: edit ONLY when this instance's shape changes. Keep under 8KB.
+# NO CALENDAR DATES ANYWHERE IN THIS FILE — `declaration_only` forbids them and
+# g5 enforces it on every write, so one dated comment write-LOCKS the manifest
+# for everybody afterwards. Dated history belongs in the ledger.
 # ═══════════════════════════════════════════════════════════════════════════
 
 sync_version: "1.0"
@@ -21,10 +24,10 @@ boot:
   # Ordered, read whole in a single pass. Verify each loader YAML ends with
   # its `# ═══ EOF <filename> ═══` sentinel as the last received line; a
   # missing sentinel = clipped read → discard and re-read host-side.
-  # IDENTITY BEFORE STATE BEFORE LEDGER. The ledger moved from first to last
-  # 2026-08-06: KERNEL declares itself FIRST ACTION, so loading the task ledger
-  # ahead of it meant every session met the journal before the contract — the
-  # ledger is also the biggest and most volatile file in the stack.
+  # IDENTITY BEFORE STATE BEFORE LEDGER. The ledger moved from first to last:
+  # KERNEL declares itself FIRST ACTION, so loading the task ledger ahead of it
+  # meant every session met the journal before the contract — the ledger is also
+  # the biggest and most volatile file in the stack.
   # (A prompt-cache argument for the same order is on record and UNVERIFIED.
   #  That is not why this changed; do not cite it as settled.)
   - config/KERNEL.yaml       # identity contract — if meta.status: TEMPLATE → bootstrap
@@ -202,11 +205,9 @@ integrity:
                              # Narrative gets cut instead. The 16384 step is different
                              # and is recorded as such: the file had ALREADY passed 12288
                              # unnoticed, so this raise buys nothing — it aligns the two
-                             # repos on one number (Michael, 2026-08-05, restated 08-05
-                             # after the first raise landed in the silo only). What made
-                             # the overrun invisible is the real lesson: g5 measures a
-                             # write, so nothing was watching the file at rest.
-                             # rotate.py's status pass now is.
+                             # repos on one number. What made the overrun invisible is
+                             # the real lesson: g5 measures a write, so nothing was
+                             # watching the file at rest. rotate.py's status pass now is.
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
 
 # ═══ EOF 4SYNC.yaml ═══

@@ -245,7 +245,7 @@ def render(rows):
                 "  Looked in: %s\n"
                 "  This is not an error: transcripts may be pruned (see\n"
                 "  cleanupPeriodDays), or this Claude Code version may write a\n"
-                "  format this script does not recognise.\n" % transcript_root())
+                "  format this script does not recognize.\n" % transcript_root())
 
     out = ["4SYNC ARCH — session actuals (MEASURED, from Claude Code transcripts)",
            "estimates from meter.py are a SEPARATE number — never merge the two",

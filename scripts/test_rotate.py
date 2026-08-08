@@ -871,7 +871,7 @@ class TestTallyReconcile(unittest.TestCase):
         # Scoped to the table section deliberately: the fixture's journal block
         # says "999 tasks total", which CONTAINS "99 tasks total" as a substring
         # — a whole-file assertion here passes or fails on the fixture's digits
-        # rather than on the behaviour.
+        # rather than on the behavior.
         self.assertNotIn("99 tasks total", self._text().split("## Summary table")[1])
 
     def test_apply_changes_nothing_but_the_tally_line(self):
@@ -903,7 +903,7 @@ class TestTallyReconcile(unittest.TestCase):
         counts, changed, out = self._run(apply_=True)
         self.assertFalse(changed)
         self.assertEqual(sum(counts.values()), 3)   # the good rows only
-        self.assertIn("no recognised status mark", out)
+        self.assertIn("no recognized status mark", out)
         self.assertIn("row #4", out)
         self.assertIn(stale, self._text())          # untouched
 

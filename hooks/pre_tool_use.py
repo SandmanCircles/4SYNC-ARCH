@@ -65,7 +65,7 @@ WHAT THESE GUARDS ARE, AND ARE NOT (read before relying on them):
   boundary. The hook runs in the same trust domain as the files it guards, so
   anything that can edit those files can edit this one.
 
-  `ask` is ergonomics with teeth, NOT an authorisation boundary. Verified
+  `ask` is ergonomics with teeth, NOT an authorization boundary. Verified
   2026-08-05: `ask` requests a prompt, and where no prompt can be shown the
   ambient permission decision stands — it resolves to ALLOW under acceptEdits,
   bypassPermissions, `--allowedTools`, and a settings.json `permissions.allow`
@@ -352,10 +352,10 @@ def g1_kernel_write_guard(tool, path, text, cmd):
     to exist in the environment that LAUNCHED Claude Code, which the desktop
     app, the VSCode extension and scheduled runs offer no way to do — so the
     documented door was a wall for most surfaces, and the one workaround
-    (putting it in settings.json) does not authorise once, it disarms the guard
+    (putting it in settings.json) does not authorize once, it disarms the guard
     permanently.
 
-    KNOWN CEILING, verified 2026-08-05 — `ask` is NOT an authorisation
+    KNOWN CEILING, verified 2026-08-05 — `ask` is NOT an authorization
     boundary. It requests a prompt; where no prompt can be shown the ambient
     permission decision stands, and it resolves to ALLOW under acceptEdits,
     bypassPermissions, `--allowedTools Write`, and a settings.json
@@ -695,7 +695,7 @@ def _instance_root(cwd, strict=False):
     Keeps the debt file at ONE known place (the instance root) regardless of which
     subfolder the session's cwd is in — without hard-coding any project path.
 
-    strict=False returns cwd when no instance is found (the original behaviour,
+    strict=False returns cwd when no instance is found (the original behavior,
     kept for callers that need a path no matter what). strict=True returns None
     instead, which is what the debt recorder needs: this hook is designed to be
     wired at USER level so its guards protect every ARCH instance on the machine
@@ -842,7 +842,7 @@ def main():
                     sys.exit(0)
                 sys.stderr.write(reason + "\n")
                 sys.exit(2)
-            else:  # warn — byte-identical to pre-MP#44 behaviour, ask included
+            else:  # warn — byte-identical to pre-MP#44 behavior, ask included
                 _log(f"[{guard.__name__}] tool={tool} path={path} :: {reason}")
                 sys.exit(0)
 

@@ -39,7 +39,7 @@ Three passes MOVE or REWRITE (1-3, all verbatim or derived, all gated on
    it, because a tally needs no human judgement — it is a count of rows sitting
    right there, and a hand-maintained count against a table the same session is
    editing drifts every time (measured here: rewritten by hand, wrong within the
-   hour). Refuses to write if any row's status cell carries no recognised mark:
+   hour). Refuses to write if any row's status cell carries no recognized mark:
    a total that silently omits a row is worse than a stale one.
 
 4. ABBA ARCHIVE: move 'Status: DONE' messages older than --age days (default 10)
@@ -523,7 +523,7 @@ def reconcile_tally(ledger_path, apply_):
     on --apply the ledger stops disagreeing with itself.
 
     UNKNOWN ROWS BLOCK THE REWRITE. If any row's status cell carries no
-    recognised mark, the computed total would silently omit it — and writing a
+    recognized mark, the computed total would silently omit it — and writing a
     confidently wrong number is strictly worse than leaving a stale one, which
     at least still looks like something to check. Report and leave it alone.
 
@@ -539,7 +539,7 @@ def reconcile_tally(ledger_path, apply_):
           ", ".join(f"{counts[n]} {n}" for _, n in STATUS_MARKS))
 
     for tid, cell in unknown[:10]:
-        print(f"  ! row #{tid} has no recognised status mark (cell: {cell!r}) — not counted")
+        print(f"  ! row #{tid} has no recognized status mark (cell: {cell!r}) — not counted")
     if len(unknown) > 10:
         print(f"  … and {len(unknown) - 10} more")
     if unknown:

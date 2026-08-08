@@ -86,7 +86,7 @@ works when the skill is installed has moved a load-bearing step out of the folde
 that travels. Keep the manifest authoritative and let the skill be a shortcut to it.
 
 For a filled-in instance end to end — seed, the config genesis writes from it, and
-one of each artefact in use — see **[`EXAMPLE.md`](EXAMPLE.md)**.
+one of each artifact in use — see **[`EXAMPLE.md`](EXAMPLE.md)**.
 
 ## The shape of the protocol
 
@@ -143,10 +143,10 @@ project-wide rename.
 
 **Genesis also clears our packaging out of your root.** `README.md`, `EXAMPLE.md` and
 `LICENSE` move into `archive/` as `ARCH_README.md`, `ARCH_EXAMPLE.md` and
-`ARCH_LICENSE.md` — still tracked, never ignored. That matters most for the licence:
-left at root, `LICENSE` is what GitHub reads as *your* repo's licence the moment you run
+`ARCH_LICENSE.md` — still tracked, never ignored. That matters most for the license:
+left at root, `LICENSE` is what GitHub reads as *your* repo's license the moment you run
 `git init`, so your work would show up as FSL-licensed under our copyright notice. Moved,
-it still travels with the code it covers, which is what the licence actually asks for.
+it still travels with the code it covers, which is what the license actually asks for.
 `.gitignore` stays at root — its entries are live runtime state, including the
 gitignored session-debt file the protocol depends on.
 
@@ -379,7 +379,7 @@ guessable from them:
 across settings sources: with a user-level and a project-level wire both live, a
 guard event produces one log line, not two. So a project `.claude/settings.local.json`
 can stay for its `env` values while the user-level wire does the covering. (Earlier
-revisions of this file said "not both" — that was written while the behaviour was
+revisions of this file said "not both" — that was written while the behavior was
 unverified, and the verification changed the advice.)
 
 **`wire_hooks.py` writes the project level only.** The user-level wire is a
@@ -489,7 +489,7 @@ guard or manifest key you add:
 |---|---|---|
 | **The product documented a workflow it does not support** | The hook's docstring prescribed an extension mechanism that cannot execute under the wiring the product recommends. An adopter following the docs loses their guards silently. | Every extension point named in prose needs a test proving it executes. |
 | **A guard rejected the product's own format** | The bulletin guard demanded `To:` at line start; every documented example, including the shipped template, puts it inline. At `enforce` the board was unwritable. | A guard and the format it guards must share a fixture. If your template doesn't pass your guard in a test, the guard is wrong. |
-| **A declaration was decorative** | `close.journal.overflow_to` was parsed and obeyed by nothing, so an instance declaring its own history file had rotation quietly scatter blocks into a second, undeclared one. | Every manifest key needs a test proving that changing it changes behaviour. A key that is read but not honoured is worse than an absent one, because it is trusted. |
+| **A declaration was decorative** | `close.journal.overflow_to` was parsed and obeyed by nothing, so an instance declaring its own history file had rotation quietly scatter blocks into a second, undeclared one. | Every manifest key needs a test proving that changing it changes behavior. A key that is read but not honoured is worse than an absent one, because it is trusted. |
 | **Following the advice broke the tooling** | The docs tell adopters to rename their manifest; doing so failed four tests, with no way to tell those failures from real ones. | Run the suite in an instance that has taken every piece of advice the docs give. The adoption path itself needs a test. |
 
 **And the meta-finding, which is the one to keep:**
@@ -540,7 +540,7 @@ that *launched* Claude Code, something the desktop app, the editor extensions
 and scheduled runs give you no way to do. It still works, deprecated, and now
 logs when it is honoured.
 
-> **`ask` is ergonomics, not an authorisation boundary — measured, not assumed.**
+> **`ask` is ergonomics, not an authorization boundary — measured, not assumed.**
 > It *requests* a prompt. Where no prompt can be shown, the ambient permission
 > decision stands, and it resolves to **allow** under `acceptEdits`,
 > `bypassPermissions`, `--allowedTools`, and a `permissions.allow` entry in
@@ -625,7 +625,7 @@ command across all six. Converted; see MP#47/D6.)*
 
 **There is no update command, and the reason is structural rather than an oversight.**
 ARCH is copied, not installed: genesis renames your stack, rewrites the manifest with
-your `instance.root`, and moves this README and the licence out of your root so
+your `instance.root`, and moves this README and the license out of your root so
 `git init` doesn't mark your project FSL-licensed. After that there is no upstream to
 diff against, the filenames no longer line up, and most of the content is *yours*.
 
@@ -681,10 +681,17 @@ instance.
 
 ## Provenance
 
-Battle-tested before it was packaged: this pattern ran a real multi-agent operation
-(five concurrent automated agent roles plus interactive sessions) for months, and its
-disciplines — sentinels, freshness checks, mount distrust, the STATUS/journal split —
-each exist because a real failure taught the lesson.
+This pattern was extracted from a working system, not designed for release. It ran
+4 SHIELD's own multi-agent operation before it was packaged — five declared agent roles
+plus interactive sessions, on one project. Its disciplines — sentinels, freshness
+checks, mount distrust, the STATUS/journal split — each exist because a real failure
+taught the lesson.
+
+What is dated rather than asserted: this repo's own instance has run the protocol since
+its genesis on 2026-07-20, and a second project adopted it on 2026-08-03. For numbers,
+run them yourself — `scripts/meter.py --dir . --json` reports what boot costs on your
+stack, and `scripts/actuals.py` reports what your sessions actually cost, read out of
+Claude Code's own transcripts rather than ours.
 
 ## License
 

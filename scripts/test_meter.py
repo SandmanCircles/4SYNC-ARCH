@@ -103,7 +103,7 @@ class ManifestEnvCase(unittest.TestCase):
     the product's own advice broke their suite, with no way to tell those failures
     from real ones. A test must not depend on the environment it happens to run in.
     (TestResolveManifest is deliberately NOT a subclass: it passes env dicts in
-    explicitly, which is how the knob's own behaviour should be tested.)"""
+    explicitly, which is how the knob's own behavior should be tested.)"""
 
     MANIFEST_NAME = "4SYNC.yaml"
 

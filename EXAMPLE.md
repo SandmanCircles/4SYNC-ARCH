@@ -1,7 +1,7 @@
 # EXAMPLE — one instance, end to end
 
 A worked example of a 4SYNC ARCH instance: a filled seed, the config the genesis
-session distils from it, and one of each artefact the protocol produces during
+session distils from it, and one of each artifact the protocol produces during
 normal use.
 
 The project below is invented. Nothing here is loaded at boot — this file is
@@ -48,14 +48,14 @@ status: AUTHORED
   operator's website, even when the feed is late or broken.
 - Wayfinder is an internal engine name — it NEVER appears in customer-facing
   copy, pricing pages, or the public API surface.
-- Pricing is per-seat, monthly. No perpetual licences, ever.
+- Pricing is per-seat, monthly. No perpetual licenses, ever.
 
 ## Current state
 
 - **Phase:** pre-launch. API deployed to staging; three operator feeds ingesting.
 - **Most important thing in flight:** the winter-schedule cutover, which changes
   every feed at once on 1 November.
-- **Known blockers:** operator #4 has not signed the feed licence.
+- **Known blockers:** operator #4 has not signed the feed license.
 
 ## Agents & surfaces
 
@@ -101,7 +101,7 @@ invariants:
        facing copy, pricing, or the public API surface."
     - "The product is 'Ferrymap' — one word, capital F. Never 'Ferry Map'."
   commercial:
-    - "Pricing is per-seat monthly. NO perpetual licences, ever."
+    - "Pricing is per-seat monthly. NO perpetual licenses, ever."
 
 retired_names:
   - "'FerryAPI' → Ferrymap (RETIRED 2026-05 — the pre-launch working name;
@@ -110,7 +110,7 @@ retired_names:
 
 The seed's "04:40 sailing is real" note lands in `config/REFERENCE.yaml`, not
 here — the KERNEL holds rules, not lore. The winter cutover and the unsigned
-operator-4 licence land in `config/STATUS.yaml`, which is overwritten as those
+operator-4 license land in `config/STATUS.yaml`, which is overwritten as those
 facts change rather than appended to.
 
 ---
@@ -148,7 +148,7 @@ Resolution: landed in a1b9f3c together with the flag change. — Deck
 ```
 
 Note what the message does *not* contain: the changelog text itself. A message
-carries the outcome, where the artefacts are, and the gotcha — never the work
+carries the outcome, where the artifacts are, and the gotcha — never the work
 product. Re-injecting raw content into the reader's window is the cost the board
 exists to avoid.
 

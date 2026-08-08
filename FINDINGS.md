@@ -16,7 +16,7 @@ Be honest that this is **one more surface in a system whose entire pitch is fewe
 
 **3. It is measured.** `scripts/rotate.py` reports this file's size alongside the ledger and the journal, and flags any entry missing a `Trigger:`. A bucket nobody measures is exactly how a ledger becomes most of your boot cost.
 
-**What does NOT belong here:** answers to questions asked later — *why this licence, why this architecture* — belong in `config/REFERENCE.yaml`. Deep canon is not a finding. Task substance belongs in `tasks/MP-0NN.md`.
+**What does NOT belong here:** answers to questions asked later — *why this license, why this architecture* — belong in `config/REFERENCE.yaml`. Deep canon is not a finding. Task substance belongs in `tasks/MP-0NN.md`.
 
 **If a future session finds this file full of entries with no trigger and no exit, the correct move is to DELETE THE FILE, not reorganise it.** The experiment will have failed, and saying so is the honest outcome.
 

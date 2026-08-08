@@ -1441,6 +1441,25 @@ ROW_REF_RE = re.compile(r"(?<![A-Za-z])#(\d+)")
 # placeholder would greet each new adopter with a defect on the first close,
 # which is how a report-only check loses its audience before it has one.
 PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{3,}\](?!\()")
+# The same row number written in a shape this check does not count. `MP-003` is
+# ARCH's CANONICAL ID form everywhere else — the task document path derives from
+# it (tasks/MP-003.md) — so an adopter who writes it there is following house
+# style, and "pending but not named" tells them the opposite of what is true.
+# Observed: it cost the first outside adopter two wrong fixes and a source read
+# before he found the pattern himself. The parser is right; the MESSAGE was wrong.
+OTHER_FORM_RE = re.compile(r"(?<![A-Za-z])(MP[-#]0*(\d+)|[Rr]ow\s+(\d+))")
+
+
+def _named_in_another_form(segment):
+    """{row number: the literal text that named it} for shapes not counted.
+
+    Reported, never accepted — widening ROW_REF_RE instead would re-open the
+    collision it was narrowed to close (`MP#39` inside an argument is not a
+    pickup entry). Naming the shape found is enough to fix in one edit."""
+    found = {}
+    for m in OTHER_FORM_RE.finditer(segment):
+        found.setdefault(int(m.group(2) or m.group(3)), m.group(1))
+    return found
 
 
 def report_pickup_ready(ledger_path):
@@ -1473,7 +1492,13 @@ def report_pickup_ready(ledger_path):
         return missing, extra
     print(f"pickup: line {line} — the 'Pickup-ready' list disagrees with the table")
     if missing:
-        print("  ! pending but not named: " + ", ".join(f"#{t}" for t in missing))
+        forms = _named_in_another_form(m.group(0))
+        unnamed = [t for t in missing if t not in forms]
+        if unnamed:
+            print("  ! pending but not named: " + ", ".join(f"#{t}" for t in unnamed))
+        for t in (t for t in missing if t in forms):
+            print(f"  ! pending and named as `{forms[t]}`, which this check does not "
+                  f"count — write it as a bare `#{t}` to enter the list")
     if extra:
         print("  ! named but not pending: " + ", ".join(f"#{t}" for t in extra))
     print("  The list is prose with an argument in it, so this reports rather than "

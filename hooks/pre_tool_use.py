@@ -448,6 +448,14 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
     content = full
 
     # (a) parseability — best-effort; skip cleanly if PyYAML isn't installed.
+    #     WITHOUT PyYAML THIS CHECK IS SKIPPED and (b) + (c) below still block.
+    #     There is no fallback PARSER here and there must not be one: a partial
+    #     validator presenting as a YAML check is false confidence, which is a
+    #     worse failure than a disclosed gap. (g5's regex fallback is a different
+    #     thing — it extracts two KNOWN KEYS, which a regex genuinely can do.)
+    #     PyYAML is absent from every fresh Python, so this degraded path is the
+    #     default adopter experience; it is covered positively by
+    #     test_pre_tool_use.py::TestStatusGuardWithoutPyYAML.
     try:
         import yaml  # type: ignore
         try:

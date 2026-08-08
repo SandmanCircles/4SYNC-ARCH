@@ -242,7 +242,15 @@ the meter can, because the API is handed one undifferentiated prefix. And it
 depends on the transcript format of the Claude Code version that wrote them; if
 that changes, it reports *"no usable transcripts found"* rather than guessing.
 
-## Hardening (optional)
+## Hardening (optional — but not if you run more than one session at a time)
+
+**"Optional" is true at one session and false at concurrency**, for one specific
+reason: the **session-debt recorder lives inside `hooks/pre_tool_use.py`**. No
+hooks means no `.session_debt.tsv`, which means the boot-time *"do you have
+company?"* reading has nothing to read — so two or three sessions open on the
+same instance are completely blind to each other. **The only mechanism that makes
+concurrency visible is in this section.** Run one session at a time and the rest
+of this is a preference; run several and wire the hooks first.
 
 > **These guards are a collaboration protocol, not a security control.** They
 > exist so a change to your project's identity documents doesn't happen
@@ -262,6 +270,15 @@ that changes, it reports *"no usable transcripts found"* rather than guessing.
   explicit close — surfaced at the next boot, cleared only by a real close.
   Adding domain guards of your own? See **Adding your own guards** below — not by
   appending to this file's `GUARDS` list.
+
+  **One dependency note, because it decides what a check can promise.** YAML
+  *parse* validation in the STATUS guard requires **PyYAML**, which is not in the
+  standard library and is therefore absent on a fresh Python. Without it that one
+  check is skipped and the guard falls back on its EOF-sentinel and
+  `last_touched` checks, which still block — so a clipped or bloated write is
+  caught either way, and a structurally broken YAML file is not. Nothing else
+  degrades: the manifest guard reads two known keys by regex when PyYAML is
+  missing and keeps enforcing. `pip install pyyaml` if you want the parse check.
 - **`hooks/session_start.py`** — a **boot receipt** injected at session start:
   which instance this is, the ordered boot stack with its measured cost, any
   missing EOF sentinel, and the session-debt reading (sessions live *right now*

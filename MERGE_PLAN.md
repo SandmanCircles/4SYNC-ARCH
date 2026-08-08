@@ -78,7 +78,7 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 
 **Tally:** [N tasks total. X completed, Y in_progress, Z pending, A blocked, B dropped.] [Short narrative on current state — what just shipped, what's next.]
 
-**Pickup-ready right now (no blockers):** [List the ⏳ task IDs and a one-line note on each.]
+**Pickup-ready right now (no blockers):** [List the ⏳ rows as bare `#3`, `#7` — NOT `MP-003`, which is the right ID form everywhere else in ARCH but is not what this line's check counts — plus a one-line note on each. Write a *historical* mention as "row 3" so commentary stays out of the list.]
 
 ---
 

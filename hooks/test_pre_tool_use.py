@@ -19,6 +19,7 @@ for. Imports pre_tool_use from the same hooks/ directory. Run either way:
   python hooks/test_pre_tool_use.py        # from the repo root
 """
 
+import contextlib
 import os
 import shutil
 import sys
@@ -28,6 +29,35 @@ import unittest
 # Import pre_tool_use.py from the same directory as this test, regardless of cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pre_tool_use as hooks  # noqa: E402
+
+# Is PyYAML on this box? NOT a preference — it is absent from every fresh Python
+# install, so the no-PyYAML path below is the DEFAULT adopter experience, not an
+# edge case. Anything asserting YAML-parse strictness must skip without it; what
+# the stdlib-only path still guarantees is covered positively instead.
+try:
+    import yaml  # type: ignore # noqa: F401
+    HAS_YAML = True
+except Exception:  # noqa: BLE001
+    HAS_YAML = False
+
+
+@contextlib.contextmanager
+def no_pyyaml():
+    """Run a block as if PyYAML were not installed, on any box.
+
+    `sys.modules[name] = None` makes `import name` raise ImportError, which is
+    exactly what the guards' `try: import yaml` sees on a stdlib-only install.
+    Restores whatever was there before, including nothing."""
+    sentinel = object()
+    previous = sys.modules.get("yaml", sentinel)
+    sys.modules["yaml"] = None
+    try:
+        yield
+    finally:
+        if previous is sentinel:
+            del sys.modules["yaml"]
+        else:
+            sys.modules["yaml"] = previous
 
 
 STATUS_YAML = """\
@@ -235,7 +265,13 @@ class TestStatusGuard(GuardCase):
         self.assertIsNotNone(reason)
         self.assertIn("clipped", reason)
 
+    @unittest.skipUnless(HAS_YAML, "YAML parse validation requires PyYAML")
     def test_edit_that_breaks_yaml_blocks(self):
+        """Check (a) — the PARSE check, and the only one that needs PyYAML.
+
+        Skipped rather than asserted on a stdlib-only box: the guard is behaving
+        as designed there, so a red test would be blaming it for a dependency it
+        declares optional. What the default path DOES hold is asserted below."""
         reason = self.run_guards(
             edit_payload(self.status, 'focus: "harden the guard hooks"', 'focus: "a: b: c'))
         self.assertIsNotNone(reason)
@@ -257,6 +293,53 @@ class TestStatusGuard(GuardCase):
         """Best-effort: no ground truth → stay quiet, never block blind."""
         self.assertIsNone(self.run_guards(
             edit_payload(os.path.join(self.root, "config", "STATUS.yaml.gone"), "x", "y")))
+
+
+class TestStatusGuardWithoutPyYAML(GuardCase):
+    """What g4 still guarantees on a stdlib-only install — the DEFAULT install.
+
+    PyYAML is absent from every fresh Python, so this is the modal adopter's
+    experience rather than a lean-box edge case. These run on any box: the
+    import is blocked deliberately, so a machine that HAS PyYAML still proves
+    the degraded path. Muting the parse test without this would leave the path
+    most adopters run with no coverage at all."""
+
+    def test_clipped_write_still_blocks(self):
+        """Check (b), the EOF sentinel — needs no parser and keeps working."""
+        tail = STATUS_YAML[STATUS_YAML.index("focus:"):]
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(self.status, tail, 'focus: "clipped"\n'))
+        self.assertIsNotNone(reason)
+        self.assertIn("clipped", reason)
+
+    def test_bloated_last_touched_still_blocks(self):
+        """Check (c), last_touched scope — a regex, so it survives too."""
+        with no_pyyaml():
+            reason = self.run_guards(
+                edit_payload(self.status, 'last_touched: "guard hooks"',
+                             'last_touched: "' + ("narrative " * 40) + '"'))
+        self.assertIsNotNone(reason)
+        self.assertIn("last_touched", reason)
+
+    def test_healthy_edit_still_passes(self):
+        """No parser must not mean no writes — the false-positive direction."""
+        with no_pyyaml():
+            reason = self.run_guards(
+                edit_payload(self.status, 'focus: "harden the guard hooks"', 'focus: "ship it"'))
+        self.assertIsNone(reason)
+
+    def test_malformed_yaml_passes_and_that_is_the_documented_limit(self):
+        """The degradation, PINNED so it is a known limit and not a surprise.
+
+        Without PyYAML nothing validates YAML structure, so this write goes
+        through — sentinel and last_touched are both fine. Do NOT "fix" this by
+        hand-rolling a partial validator: a regex that presents as a YAML check
+        is the false-confidence pattern the STATUS checker exists to prevent.
+        The honest fix is this test plus the sentence at the guard."""
+        with no_pyyaml():
+            reason = self.run_guards(
+                edit_payload(self.status, 'focus: "harden the guard hooks"', 'focus: "a: b: c'))
+        self.assertIsNone(reason)
 
 
 class TestBoringGuard(GuardCase):

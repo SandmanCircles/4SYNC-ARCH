@@ -1465,6 +1465,37 @@ class TestPickupReady(unittest.TestCase):
         self._write("**Pickup-ready right now:** #999 and #0.")
         rotate.report_pickup_ready(self.ledger)
 
+    def test_a_row_named_as_MP_0NN_is_not_reported_as_unnamed(self):
+        """The message, not the parser. `MP-007` is ARCH's canonical ID form —
+        the task doc path derives from it — so an adopter naming a row that way
+        is following house style, and "not named" sends them to fix the parser
+        instead of the line. It did, to the first outside adopter: two wrong
+        fixes and a source read. The row is still reported (it IS outside the
+        list); what changes is that the report says which shape it found."""
+        self._write("**Pickup-ready right now:** **#5**, and MP-007 next.")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([7], []))
+        self.assertNotIn("not named", out)
+        self.assertIn("MP-007", out)
+        self.assertIn("#7", out)
+
+    def test_a_genuinely_unnamed_row_still_says_not_named(self):
+        """The other direction: no other shape present, so the original wording
+        is the accurate one and must survive."""
+        self._write("**Pickup-ready right now:** just **#5**.")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([7], []))
+        self.assertIn("pending but not named", out)
+
+    def test_a_mix_reports_each_row_in_its_own_shape(self):
+        """One line can hold both, and conflating them is what made the message
+        wrong in the first place."""
+        self._write("**Pickup-ready right now:** MP-005 is next; nothing on the other.")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([5, 7], []))
+        self.assertIn("MP-005", out)
+        self.assertIn("pending but not named: #7", out)
+
 
 class TestStatusSizeReport(StatusFactsCase):
     """MP#48 — the fourth place the growth went.

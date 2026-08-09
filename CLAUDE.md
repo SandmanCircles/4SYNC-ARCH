@@ -27,7 +27,7 @@ At the start of every session, load (in this order):
    - This is a cross-agent nudge channel — NOT a replacement for the merge plan ledger.
 
 5. **`.session_debt.tsv`** — **do you have company?** Read it at boot and give the rows **two readings**, not one. A row whose `last_activity` is within `4SYNC.yaml`'s `session_debt.live_within` is a session **working right now**: *"⚠ N other session(s) LIVE in this instance; shared ledgers are contested."* An older row is what the tracker was originally for: *"N session(s) holding undeposited state."* Same file, same rows, opposite meanings — one says *be careful now*, the other says *someone forgot*. Pair it with the ledger's `Owner` column: Owner says **who** holds a row, this file says **whether they are still here**.
-   - **Warns, never blocks.** No locking. A session simply knows it has company *before* it starts editing shared ledgers. Concurrency is normal and works; what fails is doing it unknowingly.
+   - **Evidence, not protection — and it warns rather than blocks.** No locking, and it prevents nothing. A session simply knows it has company *before* it starts editing shared ledgers. Concurrency is normal and works; what fails is doing it unknowingly. Its other value is after the fact: a row proving two sessions were live in the same minute is the only artifact that can establish it, and with no hooks there is no row and no account of what happened.
    - **`last_activity` is not activity.** The hook's `WRITE_TOOLS` excludes `Bash`, so a row stops moving at the last *file write* — every git command after that is invisible, and a session that has been reading or thinking looks idle. Treat "not live" as *probably* idle, never as *gone*.
 
 6. **Any other persistent context files your project depends on** — architecture notes, decision logs (ADRs), open design issues. List them here in load order.
@@ -57,7 +57,7 @@ Quick reference — fill in your project's critical facts so they're available e
 Distinct authority, distinct write discipline:
 
 - **`MERGE_PLAN.md`** — **operational** source of truth (task state, deploy state, blocked-by relationships). The session journal lives here — as blank-line blocks in the `## Session journal (recent)` section (newest-first, keep ~5) — never in the config files.
-- **The `config/` loader stack** — **identity** source of truth. Each file has its own write mode: `KERNEL` = edit-in-place, rare (identity/doctrine); `STATUS` = **overwrite** on change (state, not a log); `CANON_INDEX` = append/edit a pointer row; `REFERENCE` = edit-in-place deep canon; `HISTORY` = frozen.
+- **The `config/` loader stack** — **identity** source of truth. Each file has its own write mode: `KERNEL` = edit-in-place, rare (identity/doctrine); `STATUS` = **overwrite the fact, never the file** (state, not a log — replace the one value that changed, in place; a whole-file rewrite from your session-start copy is the single confirmed way to lose data here); `CANON_INDEX` = append/edit a pointer row; `REFERENCE` = edit-in-place deep canon; `HISTORY` = frozen.
 - **`NAMING_CONVENTIONS.md`** — **vocabulary** source of truth (what to call things; what not to call things).
 
 If anything in this CLAUDE.md conflicts with any of the above, the other files win — update this CLAUDE.md to match.

@@ -3,7 +3,16 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Current live state — a snapshot of what is true NOW.
 #
-# WRITE MODE: OVERWRITE. When a fact changes, REPLACE the value — never append.
+# WRITE MODE: OVERWRITE THE FACT, NEVER THE FILE.
+#   When a fact changes, REPLACE that one value in place — never append, and
+#   NEVER rewrite the whole file from your session-start copy. Those are not the
+#   same instruction, and confusing them is THE ONLY CONFIRMED WAY TO LOSE DATA
+#   IN ARCH: a whole-file rewrite silently reverts every fact another session
+#   wrote while you were working, and nothing announces it.
+#   Read this together with the manifest's `close.freshness_check`
+#   (`edit_mode: anchored_only`) — they are one rule stated in two places, and
+#   this file is the place the wide reading gets taken, because "overwrite" at
+#   the FILE level is a plausible reading of the word on its own.
 #   This file must answer "what is the state right now?" at a glance. The log of
 #   HOW state got here lives in your task ledger (MERGE_PLAN.md), not here.
 #

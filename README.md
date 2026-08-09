@@ -95,7 +95,7 @@ Three pillars, with distinct authority and write discipline:
 | Pillar | Files | Discipline |
 |---|---|---|
 | **Operational state** | `MERGE_PLAN.md` (+ `_ARCHIVE`, `_HISTORY`) | Task ledger + session journal. Append blocks, keep-N, never renumber. |
-| **Identity state** | `config/` — `KERNEL` · `STATUS` · `CANON_INDEX` · `REFERENCE` · `HISTORY` | KERNEL edit-rarely · STATUS overwrite-only · INDEX pointer rows · REFERENCE on-demand · HISTORY frozen. |
+| **Identity state** | `config/` — `KERNEL` · `STATUS` · `CANON_INDEX` · `REFERENCE` · `HISTORY` | KERNEL edit-rarely · STATUS **overwrite the fact, never the file** · INDEX pointer rows · REFERENCE on-demand · HISTORY frozen. |
 | **Vocabulary state** | `NAMING_CONVENTIONS.md` | Canonical marks, retired names; loaded before external output. |
 
 Multi-agent extras: `ABBA.md` — a bulletin board of messages addressed by agent
@@ -119,6 +119,14 @@ integrity rules run through everything:
 - **Freshness check** — before ANY ledger write, re-read the target from ground
   truth and apply small anchored edits. A session's loaded copy is a stale base;
   whole-file rewrites from it silently revert other sessions' work.
+  **`config/STATUS.yaml` is where this rule gets broken, and the reason is a
+  word.** Its write mode is *overwrite*, which is a plausible instruction to
+  rewrite the whole file — so read it as **overwrite the FACT, never the FILE**.
+  Replace the one value that changed, in place. Every other shared file resists
+  the mistake by shape: nothing about a prepend-and-flip-rows ledger invites a
+  wholesale rewrite, and that is the only reason `MERGE_PLAN.md` survives two
+  concurrent sessions while STATUS does not. **This is the single confirmed way
+  to lose data in ARCH.**
 
 Close fires only on the user's explicit signal — a pause is not an ending, and
 paused sessions resume rather than wrap. (An unattended run has no pause: finishing
@@ -279,6 +287,18 @@ of this is a preference; run several and wire the hooks first.
   explicit close — surfaced at the next boot, cleared only by a real close.
   Adding domain guards of your own? See **Adding your own guards** below — not by
   appending to this file's `GUARDS` list.
+
+  **The debt file is EVIDENCE, not protection — set your expectations there.** It
+  takes no lock and prevents nothing; it records that a session was working, so
+  the *next* boot can say whether anyone else is in the folder right now. Its real
+  value shows up after something goes wrong: a row proving two sessions were live
+  in the same minute is the only artifact that can establish it, and where there
+  were no hooks there is no row and no account of what happened. Two limits travel
+  with that claim. `last_activity` records **file writes only** — a session mid-
+  commit, or one that has spent twenty minutes reading, looks idle — so *not live*
+  means *probably idle*, never *gone*. And a nested repo that is itself an ARCH
+  instance keeps its **own** debt file, so a session editing both leaves a row in
+  each and an ordinary close clears one.
 
   **One dependency note, because it decides what a check can promise.** YAML
   *parse* validation in the STATUS guard requires **PyYAML**, which is not in the

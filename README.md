@@ -652,8 +652,9 @@ diff against, the filenames no longer line up, and most of the content is *yours
 So sort the files into three buckets, because only one of them is ever "updated":
 
 - **Machinery** — `hooks/pre_tool_use.py`, `hooks/session_start.py`, their two suites,
-  and `scripts/*.py` with theirs. Generic, never renamed, not meant to be edited by
-  you. **Updating means replacing the file**; byte-identical is the correct outcome.
+  and `scripts/*.py` with theirs: **fourteen files, listed canonically in
+  `scripts/arch_build.py`.** Generic, never renamed, not meant to be edited by you.
+  **Updating means replacing the file**; byte-identical is the correct outcome.
 - **Your instance** — the `config/` stack, the ledger, naming conventions, journal,
   task documents. **Never touched by an update, ever.** These are the asset you
   adopted ARCH to accumulate.
@@ -672,17 +673,49 @@ diff -ru --brief /tmp/arch-latest/scripts ./scripts
 Differences in machinery files are updates you have not taken. Differences anywhere
 else are yours and should be left alone. Re-run both suites after replacing anything.
 
-**Stated plainly because it is a real limitation:** nothing records which build your
-instance was born from (`sync_version` is the *protocol* version and has read `1.0`
-throughout), so the diff above is currently the only way to answer the question.
+### What build am I running?
+
+```bash
+python scripts/arch_build.py          # human-readable
+python scripts/arch_build.py --json   # machine-readable
+```
+
+It prints a short id computed from the machinery files **on disk right now**, plus
+what your instance was born with if genesis recorded it (`archive/ARCH_BUILD.txt`).
+Line-ending and final-newline differences are normalized away, so the id doesn't
+change just because a file was checked out on a different platform.
+
+**It is computed, never transcribed, and that is the design.** A stored version
+string can lie — edit a machinery file, forget to bump it, and the instance reports
+a build it isn't running. The birth record is the one thing worth storing, because
+it's the only claim here that *can't* be recomputed: it's written once at genesis
+and never updated, so comparing it to the live id tells you whether anyone has
+changed the machinery since your instance was created.
+
+**It does not tell you whether you are current**, and it won't pretend to. That
+needs the upstream repo as a comparison point — clone it, run the same command
+there, and compare the two ids, or use the `diff` recipe above. "You are up to
+date" computed from local data alone would be a lie with a checkmark on it.
+
+`sync_version` is the *protocol* version and is a different thing; don't overload it.
+
+**The two inventories differ on purpose.** `arch_build.py` hashes **14** machinery
+files. `scripts/check_sync.py` — a maintainer-side tool that does not ship here —
+declares **9**. They answer different questions: `check_sync` asks *has the silo
+drifted from the product*, comparing two directories that both exist on the
+maintainer's machine, and correctly omits `meter.py`, `actuals.py`, their suites and
+`wire_hooks.py`, because the silo keeps no second copy of those and a file with one
+copy cannot drift. From your position all fourteen are machinery alike: copied in,
+never renamed, replaced wholesale by an update. Treating those two questions as one
+is what left the gap this section closes.
 
 ## Getting help — `SUPPORT.md`
 
 `SUPPORT.md` (moved to `archive/ARCH_SUPPORT.md` by genesis) holds a prompt you paste
 into a session running inside your own instance. It produces one read-only report
 describing that instance — its layout, its measurements from `meter.py` / `actuals.py` /
-`rotate.py`, its protocol health, and which machinery build it is running per the diff
-described above.
+`rotate.py`, its protocol health, and which machinery build it is running per
+`arch_build.py` above.
 
 **Run it for yourself first.** It is a health check assembled from tooling already in
 this repo that almost nobody thinks to run in one pass, and it ends by asking your own

@@ -57,12 +57,13 @@ say which were skipped.
   - `python scripts/actuals.py --dir .`       (no --log)
   - the unit-test suites, with pass/fail counts
   - whether PyYAML is installed
-  - WHICH MACHINERY BUILD this instance is running. Nothing records what an instance
-    was born from, so the only answer is a comparison: clone
-    https://github.com/SandmanCircles/4SYNC-ARCH to a scratch path and report which
-    files under hooks/ and scripts/ differ. See "Staying current" in README.md.
-    Report the file names only — a difference here means an update not taken, and
-    without it nobody can tell whether a problem you hit was fixed months ago.
+  - `python scripts/arch_build.py`            (the build id, computed from your files)
+    This one matters more than it looks: without it nobody can tell whether a problem
+    you hit was fixed months ago. It reports what you are RUNNING, not whether you are
+    current — for that, clone https://github.com/SandmanCircles/4SYNC-ARCH to a scratch
+    path, run the same command there, and report both ids. If they differ, add which
+    files under hooks/ and scripts/ differ (names only). See "Staying current" in
+    README.md.
 Repeat per instance if there is more than one, labelled.
 
 If `python` reports "Python was not found", that is Windows sending a bare `python`

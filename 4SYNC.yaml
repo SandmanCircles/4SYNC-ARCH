@@ -113,6 +113,11 @@ bootstrap:
       copyright. Keep all four
       TRACKED and never ignore archive/, since the license must travel with the code
       it covers and the archived seed is the birth record. .gitignore STAYS at root
+    - RECORD THE BUILD THIS INSTANCE WAS BORN WITH — run
+      `python scripts/arch_build.py --write-birth-record`. Writes archive/ARCH_BUILD.txt
+      ONCE and refuses to overwrite — it holds the only claim in the instance that
+      cannot be recomputed later. The build you are RUNNING is always computed live
+      from the machinery on disk, so it is never transcribed and cannot go stale
     - prepend a genesis journal block to MERGE_PLAN.md
     - LAST — delete this `bootstrap` block; genesis cannot re-run once the TEMPLATE
       markers flip, so it is dead weight every later session reads

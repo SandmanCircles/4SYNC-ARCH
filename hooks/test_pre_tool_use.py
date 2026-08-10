@@ -295,6 +295,84 @@ class TestStatusGuard(GuardCase):
             edit_payload(os.path.join(self.root, "config", "STATUS.yaml.gone"), "x", "y")))
 
 
+@unittest.skipUnless(HAS_YAML, "the manifest parse check requires PyYAML")
+class TestBoringGuardParseCheck(GuardCase):
+    """MP#60 — a manifest write that breaks the YAML must not be swallowed.
+
+    The defect: one `except Exception` covered both "PyYAML is absent" (degrade,
+    correct) and "this content does not parse" (the finding). A broken manifest
+    with no date and under max_bytes went through silently. It happened for real
+    and was caught by the close discipline, not by the guard.
+
+    SKIPPED WITHOUT PyYAML, and that is the point rather than an omission: with no
+    parser there is no parse verdict to assert. Asserting one anyway would make a
+    red suite the modal first experience of a fresh clone, which is the exact defect
+    MP#54/F1 removed. The degraded path is covered POSITIVELY by
+    TestBoringGuardWithoutPyYAML below, so the skip leaves no hole."""
+
+    BREAKER = ("  - a list item that wraps onto\n"
+               "    a second line and says this: which breaks it")
+
+    def test_unparseable_manifest_blocks(self):
+        reason = self.run_guards(edit_payload(self.manifest, "  - config/KERNEL.yaml",
+                                              self.BREAKER))
+        self.assertIsNotNone(reason)
+        self.assertIn("UNPARSEABLE", reason)
+
+    def test_refusal_names_the_line(self):
+        """MP#54's standing complaint: a refusal that does not say WHERE is a riddle."""
+        reason = self.run_guards(edit_payload(self.manifest, "  - config/KERNEL.yaml",
+                                              self.BREAKER))
+        self.assertIn("line ", reason)
+
+    def test_refusal_names_the_problem(self):
+        reason = self.run_guards(edit_payload(self.manifest, "  - config/KERNEL.yaml",
+                                              self.BREAKER))
+        self.assertIn("mapping values are not allowed", reason)
+
+    def test_valid_manifest_still_passes(self):
+        """The check must not become a reason every ordinary edit is refused."""
+        reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                              'name: "Still Fine"'))
+        self.assertIsNone(reason)
+
+    def test_valid_yaml_that_is_not_a_mapping_blocks(self):
+        reason = self.run_guards(write_payload(self.manifest, "just a bare string\n"))
+        self.assertIsNotNone(reason)
+        self.assertIn("not a mapping", reason)
+
+
+class TestBoringGuardWithoutPyYAML(GuardCase):
+    """The degraded path, pinned so nobody 'fixes' it into a partial validator.
+
+    PyYAML is absent from every fresh Python, so this is the modal adopter. The
+    parse check is genuinely gone here — that is disclosed, not hidden — while the
+    two rules a regex CAN evaluate keep biting."""
+
+    def test_parse_check_is_skipped_not_faked(self):
+        """Without a parser there is no parse verdict, and none is invented."""
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(
+                self.manifest, "  - config/KERNEL.yaml",
+                "  - a list item that wraps onto\n    a second line and says this: broken"))
+        self.assertIsNone(reason)
+
+    def test_max_bytes_still_blocks(self):
+        bloat = "\n".join(f"  - filler/path/number/{i}.md" for i in range(400))
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(self.manifest, "  - config/KERNEL.yaml",
+                                                  "  - config/KERNEL.yaml\n" + bloat))
+        self.assertIsNotNone(reason)
+        self.assertIn("max_bytes", reason)
+
+    def test_declaration_only_still_blocks_a_date(self):
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                                  'name: "Test Instance"  # 2026-08-09'))
+        self.assertIsNotNone(reason)
+        self.assertIn("2026-08-09", reason)
+
+
 class TestStatusGuardWithoutPyYAML(GuardCase):
     """What g4 still guarantees on a stdlib-only install — the DEFAULT install.
 

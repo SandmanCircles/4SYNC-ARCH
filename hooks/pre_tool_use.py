@@ -514,12 +514,45 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
 
     max_bytes = None
     decl_only = False
+    # TWO CONDITIONS THAT MEAN OPPOSITE THINGS, deliberately not sharing a handler
+    # (MP#60). "PyYAML is absent" is the default on a fresh Python and degrading to
+    # the regex scan is correct — a regex genuinely can extract two known keys. "The
+    # content does not parse" is not a reason to degrade; it IS the finding. One
+    # `except Exception` covering both meant a manifest write that broke the YAML was
+    # allowed through silently: it happened for real, was committed, and was caught by
+    # the close discipline's explicit parse rather than by this guard. Same shape as
+    # g4 above, which had it right already.
     try:
         import yaml  # type: ignore
-        rules = (((yaml.safe_load(content) or {}).get("integrity") or {}).get("manifest_rules") or {})
+    except Exception:  # noqa: BLE001 — PyYAML not installed
+        yaml = None
+
+    if yaml is not None:
+        try:
+            parsed = yaml.safe_load(content)
+        except Exception as exc:  # noqa: BLE001 — a genuine parse failure
+            mark = getattr(exc, "problem_mark", None)
+            where = (" at line %d, column %d" % (mark.line + 1, mark.column + 1)
+                     if mark is not None else "")
+            problem = (getattr(exc, "problem", None) or str(exc).splitlines()[0]).strip()
+            return (f"boring-guard: this write leaves the manifest UNPARSEABLE as YAML"
+                    f"{where} — {problem}. The manifest is the first file every session "
+                    "reads, so a break here surfaces at the NEXT boot as a protocol that "
+                    "will not load, rather than as the edit that caused it. Common cause: "
+                    "a ': ' inside a plain multi-line scalar, which YAML reads as a "
+                    "mapping key — rewrite it with an em dash, or quote the scalar.")
+        if parsed is not None and not isinstance(parsed, dict):
+            return (f"boring-guard: this write leaves the manifest parsing as "
+                    f"{type(parsed).__name__}, not a mapping of declared keys. "
+                    "It is syntactically valid YAML but not a manifest.")
+        rules = (((parsed or {}).get("integrity") or {}).get("manifest_rules") or {})
         max_bytes = rules.get("max_bytes")
         decl_only = bool(rules.get("declaration_only"))
-    except Exception:  # noqa: BLE001 — no/broken yaml: fall back to a line scan
+    else:
+        # Disclosed, not silent: the allow path has no channel to the user, so say it
+        # where a later session can find it. max_bytes and declaration_only still bite.
+        _log("g5: PyYAML absent — manifest PARSE check skipped; max_bytes and "
+             "declaration_only still enforced via the regex scan")
         m = re.search(r'(?m)^\s*max_bytes:\s*(\d+)', content)
         max_bytes = int(m.group(1)) if m else None
         decl_only = bool(re.search(r'(?m)^\s*declaration_only:\s*true\b', content))

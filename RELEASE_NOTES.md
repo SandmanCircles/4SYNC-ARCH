@@ -29,7 +29,9 @@ is this folder.
    copied over. Show me a diff before writing anything.
 4. Re-read my manifest afterwards and confirm it still PARSES as YAML and still ends with
    its EOF sentinel. A stray ": " inside a plain scalar silently turns a line into a
-   mapping and breaks the file; the guard does not catch this yet.
+   mapping and breaks the file. The guard catches this from the release AFTER v1.0.1
+   onward; on v1.0.1 and earlier it does not, so run the check yourself regardless —
+   the version you are moving FROM is the one whose guard is running during the edit.
 5. Run both test suites and scripts/arch_build.py. Tell me the new build id and whether it
    matches the release I was aiming for.
 
@@ -74,7 +76,9 @@ history that did not occur.
 **Known issue, not fixed in this release:** the manifest guard (`g5`) treats a YAML *parse
 failure* the same as *PyYAML not installed* and falls back to a regex scan, so a manifest write
 that breaks the YAML is allowed through. Step 4 of the update prompt above exists because of
-this. Run the parse check yourself until it is fixed.
+this. Run the parse check yourself. **Fixed in the next release** — g5 now tells
+"PyYAML is absent" apart from "your YAML is broken" and refuses the second, naming the
+line and column.
 
 ---
 

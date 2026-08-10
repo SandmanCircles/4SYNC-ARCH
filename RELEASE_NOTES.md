@@ -43,6 +43,51 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.4
+
+**Machinery: replace `hooks/pre_tool_use.py` and `hooks/test_pre_tool_use.py`, plus root
+`VERSION`.** Nothing under `scripts/` changed. This is the guard hook, so it is the file
+every session on your machine loads — take it wholesale, not in part.
+
+**Manifest: one optional line, and read the caveat under it.** Add `max_age: 14d` to your
+`session_debt:` block, and if you want the wording, update `at_close: clear_own_row` to say
+it clears every debt file under the instance root.
+
+> **The manifest line is DOCUMENTATION, not configuration — and you should know that before
+> you edit it expecting something to happen.** The hook reads the window from its own
+> constant and from `ARCH_DEBT_MAX_AGE_DAYS`; it does not parse the manifest for this. So
+> writing `max_age: 30d` changes nothing. To actually move the window, set the environment
+> variable. This is the same shape as a known open issue where the manifest declares the
+> ledger filename three ways and two scripts ignore all three, and it is recorded here
+> rather than quietly shipped.
+
+**What changed:**
+
+- **Session-debt rows now age out.** Rows whose `last_activity` is older than fourteen days
+  drop themselves the next time the hook writes the file. Set `ARCH_DEBT_MAX_AGE_DAYS` to
+  change the window, or `0` to disable ageing entirely.
+- **Why this needed fixing at all:** nothing had ever removed a row from a debt file. Not
+  the hook, not close, not any script. On the instance where this was found the file had
+  reached thirteen rows going back three weeks, none of them actionable — whether that work
+  landed is a question git already answers. **A boot warning nobody can act on is one a
+  reader learns to scroll past, which is the failure the debt tracker's own documentation
+  names.** If your file has grown, that is the same defect and this release stops it.
+- **`clear_own_row` at close now means every debt file under the instance root.** If you
+  keep a nested repo inside your instance, that repo is itself an instance to the hook —
+  writes there record against *its* debt file, while close was only ever clearing the
+  booted one. Sessions that touched both left a row behind every time.
+- **Two deliberate non-behaviors, both of which would be bugs if reversed.** A row with an
+  unparseable timestamp is **kept**, never dropped — dropping on a parse failure would
+  silently delete the thing the file exists to preserve. And a session's **own** row is
+  never aged, because the recorder only fires on file writes, so a long-running session
+  carries a stale `last_activity` and would otherwise delete its own row mid-work.
+- **Tests 94 → 99** in the hook suite, green with and without PyYAML.
+
+**Nothing here is urgent if your debt file is short.** The age-out is housekeeping; the
+guards are unchanged in what they block.
+
+---
+
 ## v1.0.3
 
 **Machinery: replace root `VERSION` only.** Nothing under `hooks/` or `scripts/` changed in this

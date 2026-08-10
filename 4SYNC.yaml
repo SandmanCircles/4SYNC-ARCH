@@ -39,6 +39,7 @@ on_demand:
   - config/REFERENCE.yaml    # deep canon — pull subtrees via CANON_INDEX, never at boot
   - NAMING_CONVENTIONS.md    # load before producing any external-facing output
   - FINDINGS.md              # durable findings; grep `Trigger:`, never read whole
+  - LEDGER_GUIDE.md          # why each ledger rule exists; the rules themselves boot
 
 never_load_whole:
   - config/HISTORY.md        # frozen archive

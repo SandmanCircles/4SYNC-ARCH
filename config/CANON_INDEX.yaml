@@ -42,7 +42,10 @@ canon_sources:
   # ── Operational ──────────────────────────────────────────────────────────
   - topic: task ledger + living session journal
     file: MERGE_PLAN.md
-    summary: "persistent task state + the universal session-journal catcher"
+    summary: "persistent task state + the universal session-journal catcher. Boots as journal + table + one-line operating rules ONLY"
+  - topic: why each ledger rule exists (the reasoning behind MERGE_PLAN's rules)
+    file: LEDGER_GUIDE.md
+    summary: "ON DEMAND, never booted. The rules are operative in MERGE_PLAN; this holds the argument, the measurements behind each cap, and the failure each rule prevents. Rule names match, so look one up by name. Split out because the teaching was 70% of the booted template — a protocol claiming disciplined context spending cannot ship its own explanation in the boot path"
   - topic: cross-agent nudges (agent bulletin board)
     file: ABBA.md                              # only if you run more than one agent/surface
     summary: "messages addressed by name; check OPEN To: your name at session start"

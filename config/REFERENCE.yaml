@@ -47,4 +47,84 @@ retired:
   # Keeping the 'why' here stops a future session from reviving a rejected idea.
   notes: "[Why each retired item was retired, with dates.]"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIRECTIVE RATIONALE  (why the KERNEL's one-line directives say what they say)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Split out of KERNEL under MP#56. The RULES are operative one-liners in
+# `agent_directives:` and are read at every boot; this is the argument behind them
+# and is read once, on demand. Keys match the directive NAME. If a rule here and a
+# rule there disagree, KERNEL wins and this file is the stale one.
+directive_rationale:
+
+  third_action_bulletin: >-
+    SCAN, never read whole: the board is ADDRESSED, so reading it entire pays for
+    every other agent's un-drained inbox. Measured on a real board — 46 KB read
+    against ~1.1 K needed, 90% waste.
+    The header COUNT is the safety net and it is line-anchored on purpose. A board
+    documents its own format, so headers quoted inside message bodies exist; those
+    are indented or inline and must not count, while a header that has drifted out
+    of format still starts its line. Counting raw occurrences anywhere in the file
+    can therefore NEVER balance (MP#45). A header the pattern misses is an
+    INVISIBLE miss, which is worse than an expensive read — hence fall back to a
+    full read and say so, rather than proceeding on a silent gap.
+    Gate on `close.bulletin.check_at_boot`, never on the presence of an `agents:`
+    block. The block is a proxy that happened to hold on one instance and nowhere
+    else, and `meter.py` prices the board off `check_at_boot` — gating the two
+    differently makes the manifest declare one thing while the meter measures
+    another.
+    Never validate `To:` against the roster: the roster is a DIRECTORY, not a guest
+    list. Humans, one-off personas and agents invented mid-conversation are all
+    valid recipients and appear in no table.
+    The bulletin is lightweight cross-agent nudges. It is NOT a replacement for the
+    task ledger, and work that lands there instead of in a row is work nothing
+    tracks.
+
+  template_guard: >-
+    An uninstantiated stack is worse than an empty folder, because placeholder text
+    reads like content: a session that orients from it will confidently describe a
+    project that does not exist. Genesis has two paths and the manifest declares
+    both — an AUTHORED seed runs silently; a TEMPLATE seed means interviewing the
+    user through it. With no seed at all, ASK. Inventing an identity from
+    placeholders is the one failure genesis can make that nobody catches, because
+    the output looks finished.
+
+  stack_integrity_sentinel: >-
+    The sentinel exists because a clipped read is INDISTINGUISHABLE from a short file
+    unless something marks the end. Mounts serve truncated views; tools impose
+    limits. A file that ends where it should is the cheapest possible proof the
+    read was whole. The post-write re-read matters just as much: a write that
+    passed can still have landed truncated, and the guard that inspects the write
+    says nothing about the file at rest.
+
+  state_verification: >-
+    Session-start reads are a STALE BASE by the time the work begins — minutes of
+    tool calls later, on shared files another session may have written. The
+    inflection points named in the rule are where staleness has actually bitten:
+    starting a new subtask, returning from a long shell run, and immediately before
+    a deploy.
+
+  mounted_filesystem_distrust: >-
+    The failure is specific and silent: a virtualization layer can serve fresh
+    content clipped at an out-of-date file SIZE — truncated where the file grew,
+    NUL-padded where it shrank. So a shell read can appear to confirm a host-side
+    write that did not land as read.
+    Git through such a mount is the dangerous case, and it is why the rule is
+    NEVER rather than "prefer not to": git diffs against the clipped view and will
+    cheerfully commit a genuinely truncated file, with a clean-looking diff.
+    Host-side native git is ground truth.
+
+  handoff_precision: >-
+    The test is whether the recipient can execute BLIND. A handoff that requires
+    the receiver to re-derive ordering, or to guess which files belong to which
+    repo, has moved the work rather than delegated it — and the receiver has less
+    context than the sender, not more. Routine commit handoffs belong in
+    LANDING_QUEUE.md because they are a queue with a drain, not a conversation.
+
+  last_action_journal: >-
+    The journal block is the UNIVERSAL CATCHER: every other output has a condition
+    attached (state changed, a rule was decided, something durable was learned) and
+    a session that meets none of them still happened. Without the unconditional
+    block, exactly the sessions that are hardest to reconstruct later — the ones
+    that investigated and concluded nothing — leave no trace at all.
+
 # ═══ EOF REFERENCE.yaml — this must be the LAST line of any read; if it is missing, your read was CLIPPED — discard it and re-read via host-side tools ═══

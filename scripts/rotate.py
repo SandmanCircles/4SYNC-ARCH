@@ -672,12 +672,21 @@ def report_table_prose(ledger_path):
         elif line.strip():
             prose += n
     total = rows + prose
-    print(f"table: {rows:,} B of rows + {prose:,} B of prose "
-          f"(~{total // 4:,} tok of boot)")
+    # Phrased as a RATIO AGAINST A THRESHOLD rather than as two byte counts.
+    # MP#56: this line printed the number that eventually produced a whole
+    # restructure, at every close, for weeks — and it read as scenery, because a
+    # bare measurement with no stated limit gives a reader nothing to fail. The
+    # figure has to arrive already compared to something or it is furniture.
+    # A MEASUREMENT YOU SEE EVERY DAY STOPS BEING READ.
+    share = (100.0 * prose / total) if total else 0.0
+    verdict = "over" if prose > rows else "under"
+    print(f"table: prose is {share:.0f}% of the summary section "
+          f"({prose:,} B prose / {rows:,} B rows, ~{total // 4:,} tok of boot) "
+          f"— {verdict} the 50% threshold")
     if prose > rows:
-        print(f"  ! prose outweighs the rows it annotates ({prose:,} > {rows:,} B). "
-              "A tally is a count; once it explains why each row closed it is a "
-              f"second copy of {TASKS_DIRNAME}/closed/. (Reported, not blocked.)")
+        print(f"  ! OVER THRESHOLD. A tally is a count; once it explains why each row "
+              f"closed it is a second copy of {TASKS_DIRNAME}/closed/, and it drifts from "
+              "both. Cut it back to a count. (Reported, not blocked.)")
     return rows, prose
 
 
@@ -1511,6 +1520,68 @@ def report_pickup_ready(ledger_path):
 FINDINGS_FILENAME = "FINDINGS.md"
 
 
+# ── Boot-growth alert ──────────────────────────────────────────────────────────
+
+# Growth beyond this share since the last logged close is worth a session's
+# attention. Not a cap and nothing is refused: boot legitimately grows when a
+# journal block lands. The point is that it should grow VISIBLY and by an amount
+# someone chose, rather than by accumulation nobody watched — which is exactly how
+# the ledger became 70% teaching prose (MP#56).
+BOOT_GROWTH_ALERT_PCT = 15.0
+ROC_SERIES_REL = os.path.join("metrics", "roc_series.jsonl")
+
+
+def report_boot_growth(root, manifest_name=None, run_meter=True, pct=BOOT_GROWTH_ALERT_PCT):
+    """Compare boot cost now against the last row the meter logged.
+
+    MP#56, absorbed from MP#54 Finding 7 #7. The meter already writes a per-close
+    series; nothing ever read it back. A trend nobody compares against is the same
+    failure as a measurement nobody reads — see report_table_prose.
+
+    Reports; never blocks. Returns (now_tokens, prev_tokens) or None when it cannot
+    compare, which it says out loud rather than passing silently."""
+    if not run_meter:
+        return None
+    script = manifest_meter_script(root, manifest_name)
+    if not script:
+        return None
+    got = _meter_boot(root, script)
+    if not got:
+        return None
+    now = got[0]
+
+    series = os.path.join(root, ROC_SERIES_REL)
+    if not os.path.exists(series):
+        print(f"boot-growth: no {ROC_SERIES_REL} yet — nothing to compare "
+              f"(boot is {now:,} tok; the next close starts the series)")
+        return None
+    prev = None
+    try:
+        for line in read(series).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if isinstance(row.get("boot_tokens"), int):
+                prev = row["boot_tokens"]
+    except Exception:  # noqa: BLE001 — a malformed series must not fail a close
+        prev = None
+    if not prev:
+        print(f"boot-growth: {ROC_SERIES_REL} carries no usable boot figure — skipped")
+        return None
+
+    delta = now - prev
+    share = (100.0 * delta / prev) if prev else 0.0
+    arrow = "+" if delta >= 0 else ""
+    print(f"boot-growth: {now:,} tok vs {prev:,} at the last logged close "
+          f"({arrow}{delta:,}, {arrow}{share:.1f}%) — threshold {pct:.0f}%")
+    if share > pct:
+        print(f"  ! OVER THRESHOLD. Boot grew {share:.1f}% since the last close. "
+              "Run the meter with --json to see WHICH file grew; the per-file "
+              "breakdown is the whole reason it reports per file. (Reported, not blocked.)")
+    return now, prev
+
+
 def report_findings(root, findings_name=FINDINGS_FILENAME):
     """Measure FINDINGS.md and flag entries with no `Trigger:` line.
 
@@ -1637,6 +1708,7 @@ def main():
         report_pickup_ready(ledger)
     report_status_size(d)
     report_status_facts(d, run_meter=not args.no_meter)
+    report_boot_growth(d, run_meter=not args.no_meter)
     report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 

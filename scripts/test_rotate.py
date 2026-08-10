@@ -18,6 +18,7 @@ rotate_journal rebuilds the ledger from `before + blocks`.
 import builtins
 import contextlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -601,12 +602,24 @@ class TestTableProseReport(unittest.TestCase):
     def test_prose_outweighing_rows_is_flagged(self):
         rows, pr, out = self._run("**Tally:** " + "narrative " * 200)
         self.assertGreater(pr, rows)
-        self.assertIn("prose outweighs", out)
+        self.assertIn("OVER THRESHOLD", out)
 
     def test_a_short_tally_is_clean(self):
         rows, pr, out = self._run("**Tally:** 2 tasks. 1 completed, 1 pending.")
         self.assertLess(pr, rows)
-        self.assertNotIn("prose outweighs", out)
+        self.assertNotIn("OVER THRESHOLD", out)
+
+    def test_the_figure_arrives_already_compared(self):
+        """MP#56: a bare measurement with no stated limit gives a reader nothing to
+        fail, which is how this line read as scenery for weeks while reporting the
+        number that eventually forced a restructure."""
+        _, _, over = self._run("**Tally:** " + "narrative " * 200)
+        _, _, under = self._run("**Tally:** 2 tasks. 1 completed, 1 pending.")
+        for out in (over, under):
+            self.assertIn("% of the summary section", out)
+            self.assertIn("threshold", out)
+        self.assertIn("over the 50% threshold", over)
+        self.assertIn("under the 50% threshold", under)
 
     def test_rows_and_prose_are_counted_separately(self):
         rows, pr, _ = self._run("Short note.")
@@ -1642,6 +1655,76 @@ class TestCliFlags(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[:200])
         self.assertIn("--dry-run", out.stdout)
 
+
+
+class TestBootGrowthAlert(unittest.TestCase):
+    """MP#56 — the meter has written a per-close series all along and nothing ever
+    read it back. A trend nobody compares against fails the same way a measurement
+    nobody reads does."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rot-growth-")
+        os.makedirs(os.path.join(self.root, "metrics"))
+        self._script = rotate.manifest_meter_script
+        self._boot = rotate._meter_boot
+        rotate.manifest_meter_script = lambda root, mn=None: "meter.py"
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        rotate.manifest_meter_script = self._script
+        rotate._meter_boot = self._boot
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _series(self, *boot_tokens):
+        p = os.path.join(self.root, "metrics", "roc_series.jsonl")
+        with open(p, "w", encoding="utf-8") as fh:
+            for n in boot_tokens:
+                print(json.dumps({"boot_tokens": n}), file=fh)
+
+    def _run(self, now):
+        rotate._meter_boot = lambda root, script: (now, now * 4)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = rotate.report_boot_growth(self.root)
+        return got, buf.getvalue()
+
+    def test_growth_over_threshold_is_flagged(self):
+        self._series(10000)
+        got, out = self._run(12000)          # +20%
+        self.assertEqual(got, (12000, 10000))
+        self.assertIn("OVER THRESHOLD", out)
+
+    def test_growth_under_threshold_is_reported_not_flagged(self):
+        self._series(10000)
+        _, out = self._run(10500)            # +5%
+        self.assertIn("boot-growth:", out)
+        self.assertNotIn("OVER THRESHOLD", out)
+
+    def test_a_shrink_is_never_flagged(self):
+        self._series(10000)
+        _, out = self._run(9000)
+        self.assertNotIn("OVER THRESHOLD", out)
+        self.assertIn("-1,000", out)
+
+    def test_it_compares_against_the_LAST_row(self):
+        """Not the first, and not an average — the question is what changed since
+        the previous close."""
+        self._series(5000, 20000, 10000)
+        got, _ = self._run(10500)
+        self.assertEqual(got[1], 10000)
+
+    def test_absent_series_says_so_rather_than_passing_silently(self):
+        got, out = self._run(10000)
+        self.assertIsNone(got)
+        self.assertIn("nothing to compare", out)
+
+    def test_malformed_series_does_not_fail_the_close(self):
+        p = os.path.join(self.root, "metrics", "roc_series.jsonl")
+        with open(p, "w", encoding="utf-8") as fh:
+            print("{not json at all", file=fh)
+        got, out = self._run(10000)
+        self.assertIsNone(got)
+        self.assertIn("skipped", out)
 
 if __name__ == "__main__":
     unittest.main()

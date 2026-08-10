@@ -814,6 +814,19 @@ DEBT_FILENAME = ".session_debt.tsv"
 DEBT_HEADER = ("# 4SYNC session-debt — unwrapped sessions; an explicit close clears its own row.\n"
                "# session_id\tstarted\tlast_activity\tcwd\tstatus")
 
+# Rows older than this drop themselves on the next write. Override with
+# ARCH_DEBT_MAX_AGE_DAYS; 0 disables ageing entirely.
+#
+# WHY THERE IS A WINDOW AT ALL. A row says "a session wrote a file and never
+# wrapped." That is worth knowing for days, not for months: whether the work
+# actually landed is a question git already answers, and after a couple of weeks
+# the row can neither be acted on nor attributed. Without a window nothing ever
+# removes one — a nested instance's file here reached 13 rows going back three
+# weeks, none of them recoverable, and a boot warning nobody can act on is the
+# failure this file's own documentation names: a warning you learn to scroll past
+# is the same warning that would flag a genuinely stranded session.
+DEBT_MAX_AGE_DAYS = 14
+
 
 def _instance_root(cwd, strict=False):
     """Nearest ancestor of cwd that contains the loader-stack config dir.
@@ -837,6 +850,24 @@ def _instance_root(cwd, strict=False):
         if parent == cur:
             return None if strict else start
         cur = parent
+
+
+def _debt_row_expired(last_activity, now_epoch, max_age_days):
+    """True ONLY when a row is confidently older than the window.
+
+    An unparseable timestamp returns False, so the row is KEPT. The fail-safe
+    direction matters and it is not symmetric: dropping on a parse failure would
+    silently delete the exact thing this file exists to preserve, and nothing
+    would report that it happened. Keeping an unreadable row costs one stale
+    line that a human can see and delete.
+    """
+    if max_age_days <= 0:
+        return False
+    try:
+        stamp = time.mktime(time.strptime(last_activity, "%Y-%m-%dT%H:%M:%S"))
+    except Exception:  # noqa: BLE001 — see the docstring: unreadable means keep
+        return False
+    return (now_epoch - stamp) > max_age_days * 86400
 
 
 def _record_debt(payload):
@@ -870,6 +901,18 @@ def _record_debt(payload):
         pass
     except Exception:  # noqa: BLE001 — an unreadable debt file must not break the call
         return
+
+    # Age out other sessions' stale rows on the way past. Done HERE rather than in
+    # a sweeper because this is the only code that already rewrites the file — a
+    # separate pass would be a second writer racing the first for no benefit.
+    # This session's own row is never aged: it is being written on this very line.
+    try:
+        max_age = int(os.environ.get("ARCH_DEBT_MAX_AGE_DAYS", DEBT_MAX_AGE_DAYS))
+    except ValueError:
+        max_age = DEBT_MAX_AGE_DAYS
+    now_epoch = time.time()
+    rows = {k: c for k, c in rows.items()
+            if k == sid or not _debt_row_expired(c[2], now_epoch, max_age)}
 
     started = rows[sid][1] if sid in rows else now
     rows[sid] = [sid, started, now, cwd, "unwrapped"]

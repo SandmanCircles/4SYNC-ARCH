@@ -52,7 +52,15 @@ session_debt:              # unwrapped-session tracker: hook sets on mutation; o
   live_within: 15m         # newer last_activity = a session working NOW, not debt
   at_boot: report_rows     # two readings: within live_within → "N other session(s) LIVE,
                            # ledgers contested"; older → "holding undeposited state"
-  at_close: clear_own_row  # delete $CLAUDE_CODE_SESSION_ID's row
+  max_age: 14d             # the hook drops rows older than this on its next write
+                           # (ARCH_DEBT_MAX_AGE_DAYS; 0 disables). A row is worth
+                           # days, not months — whether the work landed is a
+                           # question git answers, and a warning nobody can act on
+                           # is one a reader learns to scroll past.
+  at_close: clear_own_row  # delete $CLAUDE_CODE_SESSION_ID's row — from EVERY debt
+                           # file under the instance root, not only the booted
+                           # instance's. A nested repo is itself an instance, so a
+                           # session that edits both leaves a row in each.
 
 agents:                    # OPTIONAL — omit if one surface; the bulletin stays inert
   self: [declared, env:ARCH_AGENT, shell, ask]   # identity ladder, first hit wins

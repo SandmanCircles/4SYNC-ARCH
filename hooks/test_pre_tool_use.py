@@ -24,6 +24,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 # Import pre_tool_use.py from the same directory as this test, regardless of cwd.
@@ -676,6 +677,78 @@ class TestDebtRecorderScope(unittest.TestCase):
         os.makedirs(plain)
         hooks._record_debt(self._write_payload(plain))
         self.assertEqual(os.listdir(plain), [], "no instance => no file, anywhere")
+
+    def _seed(self, inst, rows):
+        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR), exist_ok=True)
+        path = os.path.join(inst, hooks.DEBT_FILENAME)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(hooks.DEBT_HEADER + "\n")
+            for r in rows:
+                fh.write("\t".join(r) + "\n")
+        return path
+
+    def _ids(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return [ln.split("\t")[0] for ln in fh if ln.strip() and not ln.startswith("#")]
+
+    @staticmethod
+    def _ago(days):
+        return time.strftime("%Y-%m-%dT%H:%M:%S",
+                             time.localtime(time.time() - days * 86400))
+
+    def test_ages_out_rows_past_the_window(self):
+        """The defect this closes: nothing ever removed a row, so a nested
+        instance's file reached 13 rows going back three weeks."""
+        inst = os.path.join(self.root, "proj")
+        path = self._seed(inst, [
+            ["s-old", self._ago(40), self._ago(40), inst, "unwrapped"],
+            ["s-recent", self._ago(2), self._ago(2), inst, "unwrapped"],
+        ])
+        hooks._record_debt(self._write_payload(inst))
+        ids = self._ids(path)
+        self.assertNotIn("s-old", ids, "a 40-day-old row must age out")
+        self.assertIn("s-recent", ids, "a 2-day-old row is still live debt")
+        self.assertIn("s-test", ids, "this session's own row is written")
+
+    def test_never_ages_out_this_sessions_own_row(self):
+        """A long-running session's own row carries a stale last_activity — the
+        recorder only fires on file writes — so ageing it would delete the row of
+        the session actively writing the file."""
+        inst = os.path.join(self.root, "proj")
+        path = self._seed(inst, [
+            ["s-test", self._ago(90), self._ago(90), inst, "unwrapped"],
+        ])
+        hooks._record_debt(self._write_payload(inst))
+        self.assertIn("s-test", self._ids(path))
+
+    def test_unparseable_timestamp_is_kept_not_dropped(self):
+        """Fail-safe direction, and it is deliberately asymmetric: dropping on a
+        parse failure would silently delete the thing the file exists to preserve."""
+        inst = os.path.join(self.root, "proj")
+        path = self._seed(inst, [
+            ["s-garbled", "not-a-timestamp", "also-not", inst, "unwrapped"],
+        ])
+        hooks._record_debt(self._write_payload(inst))
+        self.assertIn("s-garbled", self._ids(path))
+
+    def test_ageing_can_be_disabled(self):
+        inst = os.path.join(self.root, "proj")
+        path = self._seed(inst, [
+            ["s-ancient", self._ago(400), self._ago(400), inst, "unwrapped"],
+        ])
+        os.environ["ARCH_DEBT_MAX_AGE_DAYS"] = "0"
+        hooks._record_debt(self._write_payload(inst))
+        self.assertIn("s-ancient", self._ids(path))
+
+    def test_a_junk_window_falls_back_to_the_default(self):
+        """ARCH_DEBT_MAX_AGE_DAYS=banana must not crash a tool call."""
+        inst = os.path.join(self.root, "proj")
+        path = self._seed(inst, [
+            ["s-old", self._ago(40), self._ago(40), inst, "unwrapped"],
+        ])
+        os.environ["ARCH_DEBT_MAX_AGE_DAYS"] = "banana"
+        hooks._record_debt(self._write_payload(inst))
+        self.assertNotIn("s-old", self._ids(path))
 
     def test_strict_and_lenient_instance_root_differ_only_off_instance(self):
         plain = os.path.join(self.root, "plain")

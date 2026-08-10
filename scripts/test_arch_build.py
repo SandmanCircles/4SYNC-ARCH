@@ -23,7 +23,10 @@ class TempInstance(unittest.TestCase):
             path = os.path.join(self.root, rel.replace("/", os.sep))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as fh:
-                fh.write(b"content of %s\n" % rel.encode("utf-8"))
+                if rel == "VERSION":
+                    fh.write(b"9.9.9\n")
+                else:
+                    fh.write(b"content of %s\n" % rel.encode("utf-8"))
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -38,8 +41,12 @@ class TempInstance(unittest.TestCase):
 
 
 class TestInventory(unittest.TestCase):
-    def test_inventory_is_fourteen_files(self):
-        self.assertEqual(len(arch_build.MACHINERY), 14)
+    def test_inventory_is_fifteen_files(self):
+        self.assertEqual(len(arch_build.MACHINERY), 15)
+
+    def test_inventory_includes_the_version_file(self):
+        """A release number is part of the build, not metadata about it."""
+        self.assertIn("VERSION", arch_build.MACHINERY)
 
     def test_inventory_has_no_duplicates(self):
         self.assertEqual(len(arch_build.MACHINERY), len(set(arch_build.MACHINERY)))
@@ -109,7 +116,7 @@ class TestBuildId(TempInstance):
         os.remove(os.path.join(self.root, "scripts", "meter.py"))
         digests, missing = arch_build.file_digests(self.root)
         self.assertEqual(missing, ["scripts/meter.py"])
-        self.assertEqual(len(digests), 13)
+        self.assertEqual(len(digests), 14)
 
     def test_two_different_missing_files_give_different_ids(self):
         """Missing files participate by NAME, not merely by count."""
@@ -127,35 +134,62 @@ class TestBuildId(TempInstance):
         self.assertEqual(len(digests), len(arch_build.MACHINERY))
 
 
+class TestVersion(TempInstance):
+    def test_version_is_read_from_the_file(self):
+        self.assertEqual(arch_build.read_version(self.root), "9.9.9")
+
+    def test_absent_version_reads_as_none(self):
+        os.remove(os.path.join(self.root, "VERSION"))
+        self.assertIsNone(arch_build.read_version(self.root))
+
+    def test_empty_version_reads_as_none(self):
+        self._write("VERSION", b"\n")
+        self.assertIsNone(arch_build.read_version(self.root))
+
+    def test_version_bump_changes_the_build_id(self):
+        """Two trees differing only in VERSION are different builds."""
+        before = self._id()
+        self._write("VERSION", b"9.9.10\n")
+        self.assertNotEqual(before, self._id())
+
+
 class TestBirthRecord(TempInstance):
     def test_absent_record_reads_as_none(self):
         self.assertIsNone(arch_build.read_birth_record(self.root))
 
     def test_written_record_round_trips(self):
         bid = self._id()
-        arch_build.write_birth_record(self.root, bid, 14, [])
-        self.assertEqual(arch_build.read_birth_record(self.root), bid)
+        arch_build.write_birth_record(self.root, bid, 15, [], "9.9.9")
+        rec = arch_build.read_birth_record(self.root)
+        self.assertEqual(rec["build"], bid)
+        self.assertEqual(rec["version"], "9.9.9")
 
     def test_record_lands_at_the_declared_path(self):
-        arch_build.write_birth_record(self.root, self._id(), 14, [])
+        arch_build.write_birth_record(self.root, self._id(), 15, [])
         self.assertTrue(os.path.exists(os.path.join(self.root, arch_build.BIRTH_RECORD)))
 
     def test_record_refuses_to_overwrite(self):
         """It holds the one fact that cannot be recomputed — a re-run is an error."""
-        arch_build.write_birth_record(self.root, self._id(), 14, [])
+        arch_build.write_birth_record(self.root, self._id(), 15, [])
         with self.assertRaises(SystemExit):
-            arch_build.write_birth_record(self.root, "deadbeef0000", 14, [])
+            arch_build.write_birth_record(self.root, "deadbeef0000", 15, [])
 
     def test_record_survives_a_machinery_change(self):
         """Born-with is a historical fact; changing machinery must not rewrite it."""
         born = self._id()
-        arch_build.write_birth_record(self.root, born, 14, [])
+        arch_build.write_birth_record(self.root, born, 15, [], "9.9.9")
         self._write("scripts/rotate.py", b"updated\n")
-        self.assertEqual(arch_build.read_birth_record(self.root), born)
+        self.assertEqual(arch_build.read_birth_record(self.root)["build"], born)
         self.assertNotEqual(self._id(), born)
 
+    def test_record_without_a_version_line_still_reads(self):
+        """A record written by an older build has no version — not corruption."""
+        arch_build.write_birth_record(self.root, self._id(), 15, [])
+        rec = arch_build.read_birth_record(self.root)
+        self.assertEqual(rec["version"], "unknown")
+
     def test_record_notes_files_missing_at_genesis(self):
-        arch_build.write_birth_record(self.root, self._id(), 13, ["scripts/meter.py"])
+        arch_build.write_birth_record(self.root, self._id(), 14, ["scripts/meter.py"])
         path = os.path.join(self.root, arch_build.BIRTH_RECORD)
         with open(path, encoding="utf-8") as fh:
             self.assertIn("missing_at_genesis: scripts/meter.py", fh.read())

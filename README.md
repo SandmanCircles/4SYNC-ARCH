@@ -652,7 +652,7 @@ diff against, the filenames no longer line up, and most of the content is *yours
 So sort the files into three buckets, because only one of them is ever "updated":
 
 - **Machinery** — `hooks/pre_tool_use.py`, `hooks/session_start.py`, their two suites,
-  and `scripts/*.py` with theirs: **fourteen files, listed canonically in
+  and `scripts/*.py` with theirs: **fifteen files, listed canonically in
   `scripts/arch_build.py`.** Generic, never renamed, not meant to be edited by you.
   **Updating means replacing the file**; byte-identical is the correct outcome.
 - **Your instance** — the `config/` stack, the ledger, naming conventions, journal,
@@ -699,13 +699,13 @@ date" computed from local data alone would be a lie with a checkmark on it.
 
 `sync_version` is the *protocol* version and is a different thing; don't overload it.
 
-**The two inventories differ on purpose.** `arch_build.py` hashes **14** machinery
+**The two inventories differ on purpose.** `arch_build.py` hashes **15** machinery
 files. `scripts/check_sync.py` — a maintainer-side tool that does not ship here —
 declares **9**. They answer different questions: `check_sync` asks *has the silo
 drifted from the product*, comparing two directories that both exist on the
 maintainer's machine, and correctly omits `meter.py`, `actuals.py`, their suites and
 `wire_hooks.py`, because the silo keeps no second copy of those and a file with one
-copy cannot drift. From your position all fourteen are machinery alike: copied in,
+copy cannot drift. From your position all fifteen are machinery alike: copied in,
 never renamed, replaced wholesale by an update. Treating those two questions as one
 is what left the gap this section closes.
 

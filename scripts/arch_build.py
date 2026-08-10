@@ -54,7 +54,7 @@ import os
 import sys
 
 # ── The adopter-facing machinery inventory ───────────────────────────────────
-# All 14 shipped machinery files. Every adopter gets all of them, so all of them
+# All 15 shipped machinery files (14 code files plus VERSION). Every adopter gets all of them, so all of them
 # are part of the build identity.
 #
 # THIS LIST IS DELIBERATELY LONGER THAN check_sync.py's, AND THE DIFFERENCE IS
@@ -66,7 +66,7 @@ import sys
 #     a sound reason: the silo carries no copy of those — it runs them out of the
 #     nested product folder — and a file with exactly one copy cannot drift.
 #
-#   arch_build.py (14 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
+#   arch_build.py (15 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
 #     adopter's position those five are machinery exactly like the other nine:
 #     copied in, never renamed, replaced wholesale by an update. Omitting them
 #     would produce a build identity that silently ignores five files an update
@@ -75,6 +75,10 @@ import sys
 # Treating those two questions as one is what left the gap. Keep both lists, keep
 # them honest, and keep this comment next to whichever one you edit.
 MACHINERY = [
+    # The release number is part of the build, not metadata about it: two trees
+    # that differ only in VERSION are different builds, and hashing it means
+    # "v1.0.1, unmodified" is a single check rather than two.
+    "VERSION",
     "hooks/pre_tool_use.py",
     "hooks/test_pre_tool_use.py",
     "hooks/session_start.py",
@@ -136,19 +140,41 @@ def build_id(digests, missing):
     return hashlib.sha256(combined).hexdigest()[:12]
 
 
-def read_birth_record(root):
-    """Return the build id genesis recorded, or None. Never invents one."""
-    path = os.path.join(root, BIRTH_RECORD)
+def read_version(root):
+    """The declared release number, or None.
+
+    This one IS transcribed, and that is correct — a release number is a fact we
+    declare, not one that can be derived from bytes. The digest is the part that
+    must never be transcribed. Do not conflate them: the version says what we
+    published, the digest says what is actually on this disk.
+    """
+    path = os.path.join(root, "VERSION")
     if not os.path.exists(path):
         return None
     with open(path, "r", encoding="utf-8") as fh:
+        line = fh.readline().strip()
+    return line or None
+
+
+def read_birth_record(root):
+    """Return {'build':…, 'version':…} as genesis recorded them, or None.
+
+    Missing keys come back as None rather than raising — a record written by an
+    older build legitimately has no version line, and that is not corruption.
+    """
+    path = os.path.join(root, BIRTH_RECORD)
+    if not os.path.exists(path):
+        return None
+    out = {"build": None, "version": None}
+    with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
-            if line.startswith("build:"):
-                return line.split(":", 1)[1].strip()
-    return None
+            for key in ("build", "version"):
+                if line.startswith(key + ":"):
+                    out[key] = line.split(":", 1)[1].strip() or None
+    return out if out["build"] else None
 
 
-def write_birth_record(root, bid, count, missing):
+def write_birth_record(root, bid, count, missing, version=None):
     """Write the born-with record. Refuses to overwrite an existing one.
 
     Genesis runs once and this record is the only claim in the instance that
@@ -168,10 +194,12 @@ def write_birth_record(root, bid, count, missing):
         "# ARCH birth record — written once at genesis, never updated.\n"
         "# What this instance was created with. The build you are RUNNING is\n"
         "# computed live: python scripts/arch_build.py\n"
+        "version: %s\n"
         "build: %s\n"
         "files: %d\n"
         "missing_at_genesis: %s\n"
-    ) % (bid, count, ",".join(sorted(missing)) if missing else "none")
+    ) % (version or "unknown", bid, count,
+         ",".join(sorted(missing)) if missing else "none")
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(body)
     return path
@@ -193,26 +221,40 @@ def main():
     root = os.path.abspath(args.dir)
     digests, missing = file_digests(root)
     bid = build_id(digests, missing)
+    version = read_version(root)
     born = read_birth_record(root)
 
     if args.write_birth_record:
-        path = write_birth_record(root, bid, len(digests), missing)
-        print("arch_build: birth record written — %s (build %s)" % (path, bid))
+        path = write_birth_record(root, bid, len(digests), missing, version)
+        print("arch_build: birth record written — %s (ARCH %s, build %s)"
+              % (path, version or "version unknown", bid))
         return
 
     if args.json:
         print(json.dumps({
+            "version": version,
             "build": bid,
             "files_present": len(digests),
             "files_expected": len(MACHINERY),
             "missing": missing,
-            "born_with": born,
-            "modified_since_genesis": (born is not None and born != bid),
+            "born_version": (born or {}).get("version"),
+            "born_build": (born or {}).get("build"),
+            "modified_since_genesis": (born is not None and born["build"] != bid),
             "digests": digests,
         }, indent=2, sort_keys=True))
         return
 
-    print("ARCH build: %s   (%d/%d machinery files)" % (bid, len(digests), len(MACHINERY)))
+    # Version first: it is the thing a human can act on. The digest is the
+    # tamper check and belongs underneath it, not in the headline.
+    headline = "ARCH %s" % (("v" + version) if version else "— version not declared")
+    if born is None:
+        print(headline)
+    elif born["build"] == bid:
+        print("%s — machinery unmodified since genesis" % headline)
+    else:
+        print("%s — MACHINERY MODIFIED since genesis" % headline)
+    print("  build %s · %d/%d machinery files" % (bid, len(digests), len(MACHINERY)))
+
     if missing:
         print("  ! missing: %s" % ", ".join(missing))
         print("    A missing machinery file changes the build id by design — a partial")
@@ -220,10 +262,8 @@ def main():
     if born is None:
         print("  born with: no record (instance predates the birth record, or genesis")
         print("             did not write one) — not an error, just unknown.")
-    elif born == bid:
-        print("  born with: %s — machinery unchanged since genesis" % born)
-    else:
-        print("  born with: %s — MACHINERY HAS CHANGED since genesis" % born)
+    elif born["build"] != bid:
+        print("  born with: ARCH %s, build %s" % (born["version"] or "unknown", born["build"]))
         print("    Expected if you have updated; worth a look if you have not.")
     print()
     print("  This says what you are RUNNING, not whether you are CURRENT. Being")

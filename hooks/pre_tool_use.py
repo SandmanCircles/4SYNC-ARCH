@@ -569,9 +569,34 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
     if decl_only:
         m = re.search(r'\b(20\d\d-[01]\d-[0-3]\d)\b', content)
         if m:
-            return (f"boring-guard: the manifest declares declaration_only, but this write "
-                    f"contains a calendar date ({m.group(1)}) — journal/narrative creep. "
-                    "State belongs in STATUS; history belongs in the task-ledger journal.")
+            date = m.group(1)
+            line = content[:m.start()].count("\n") + 1
+            # WHOSE DATE IS IT? One dated comment write-LOCKS the manifest for
+            # everybody afterwards, so the author of a refused write is usually NOT
+            # the author of the offending line. Saying only "this write contains a
+            # date" makes the refusal read as "the guard is broken" to someone whose
+            # edit was three lines away and blameless — which is exactly how the
+            # original write-lock episode was misdiagnosed (MP#54). Compare against
+            # the file on disk and say which case this is.
+            was_there = None
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    was_there = date in fh.read()
+            except Exception:  # noqa: BLE001 — unreadable path: claim neither
+                was_there = None
+            if was_there:
+                origin = (f" It is at line {line} and was ALREADY IN THE FILE — your edit did "
+                          "not introduce it. It has been locking this manifest against every "
+                          "write since it landed. Remove that line, then re-apply your change.")
+            elif was_there is False:
+                origin = f" This write introduces it, at line {line} of the resulting file."
+            else:
+                origin = (f" It is at line {line} of the resulting file; it may pre-date your "
+                          "edit, so check before assuming it is yours.")
+            return (f"boring-guard: the manifest declares declaration_only, but the resulting "
+                    f"file contains the calendar date {date} — journal/narrative creep."
+                    f"{origin} State belongs in STATUS; history belongs in the task-ledger "
+                    "journal.")
     return None
 
 

@@ -412,6 +412,43 @@ class TestBoringGuardParseCheck(GuardCase):
         self.assertIn("not a mapping", reason)
 
 
+class TestBoringGuardDateAttribution(GuardCase):
+    """The refusal must say WHERE the date is and WHOSE it is.
+
+    One dated comment write-locks the manifest for everybody afterwards, so the
+    author of a refused write is usually not the author of the offending line.
+    A refusal that says only "this write contains a date" reads as "the guard is
+    broken" to someone whose edit was three lines away — which is how the original
+    write-lock episode was misdiagnosed (MP#54)."""
+
+    def test_a_date_this_write_introduces_is_attributed_to_it(self):
+        reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                              'name: "Test Instance"  # 2026-08-09'))
+        self.assertIsNotNone(reason)
+        self.assertIn("This write introduces it", reason)
+
+    def test_the_refusal_names_the_line(self):
+        reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                              'name: "Test Instance"  # 2026-08-09'))
+        self.assertIn("line ", reason)
+
+    def test_a_preexisting_date_is_not_blamed_on_this_write(self):
+        """The case the whole change exists for: an innocent edit to a manifest
+        somebody else dated."""
+        self._put(self.manifest, MANIFEST_YAML.replace(
+            'sync_version: "1.0"', '# touched 2026-08-09\nsync_version: "1.0"'))
+        reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                              'name: "Renamed"'))
+        self.assertIsNotNone(reason)
+        self.assertIn("ALREADY IN THE FILE", reason)
+        self.assertIn("did not introduce it", reason)
+
+    def test_a_clean_manifest_edit_still_passes(self):
+        reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                              'name: "Renamed"'))
+        self.assertIsNone(reason)
+
+
 class TestBoringGuardWithoutPyYAML(GuardCase):
     """The degraded path, pinned so nobody 'fixes' it into a partial validator.
 

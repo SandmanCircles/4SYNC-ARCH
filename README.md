@@ -701,9 +701,12 @@ and never updated, so comparing it to the live id tells you whether anyone has
 changed the machinery since your instance was created.
 
 **It does not tell you whether you are current**, and it won't pretend to. That
-needs the upstream repo as a comparison point — clone it, run the same command
-there, and compare the two ids, or use the `diff` recipe above. "You are up to
-date" computed from local data alone would be a lie with a checkmark on it.
+needs a comparison point, and the cheapest one is published: **fetch
+<https://www.4sync.ai/llms.txt>** and compare its `build:` line to your id. One
+request, no clone, no git. If they differ you are either behind or your machinery
+has been edited locally — clone the repo and use the `diff` recipe above to find
+out which. "You are up to date" computed from local data alone would be a lie with
+a checkmark on it, which is why this asks you to fetch something.
 
 `sync_version` is the *protocol* version and is a different thing; don't overload it.
 

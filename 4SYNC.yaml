@@ -6,7 +6,10 @@
 #           (silence/idle/pause is NEVER a signal; for an UNATTENDED run,
 #            finishing its declared task IS the signal)
 # First session in a fresh drop-in: see `bootstrap:` (genesis).
-# Write mode: edit ONLY when this instance's shape changes. Keep under 8KB.
+# Write mode: edit ONLY when this instance's shape changes. The real cap is the
+# max_bytes this file declares for itself under integrity.manifest_rules, and g5
+# enforces it on every write — do not restate the number here, where it can drift
+# from the one actually enforced. It already did.
 # NO CALENDAR DATES ANYWHERE IN THIS FILE — `declaration_only` forbids them and
 # g5 enforces it on every write, so one dated comment write-LOCKS the manifest
 # for everybody afterwards. Dated history belongs in the ledger.

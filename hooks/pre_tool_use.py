@@ -2,7 +2,7 @@
 """
 4SYNC ARCH — PreToolUse guard hooks.
 
-Generic, product-shippable guard set. One dispatcher, six guards. Each guard
+Generic, product-shippable guard set. One dispatcher, seven guards. Each guard
 enforces a *structural* protocol invariant that applies to ANY adopter of the
 loader-stack pattern — nothing here is specific to any one product or brand.
 
@@ -13,6 +13,8 @@ loader-stack pattern — nothing here is specific to any one product or brand.
   g5  boring guard         — keep the manifest pure declaration (its own max_bytes; no date creep)
   g6  root fence           — flag a write into a DIFFERENT ARCH instance than the
                              session booted in; silent outside ARCH entirely
+  g7  STATUS stale-write   — a WHOLE-FILE Write to STATUS asks before it lands, showing
+                             what it would remove; anchored Edits pass untouched
 
 NOTE ON PORTABILITY (why this differs from an internal deployment):
   This is the neutral template shipped with 4SYNC ARCH. An internal deployment may
@@ -663,6 +665,65 @@ def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
     return None
 
 
+def g7_status_stale_write_guard(tool, path, text, cmd, full=None, ctx=None):
+    """Put a WHOLE-FILE `Write` to STATUS in front of the human, showing what it
+    would remove. Anchored `Edit`/`MultiEdit` never reach this guard.
+
+    THE FAILURE (MP#57): STATUS declares overwrite mode, and a session under load
+    reads "overwrite" at the FILE level — rewriting the whole snapshot from its
+    session-start copy and silently reverting every fact another session wrote in
+    between. It is the only CONFIRMED way to lose data in ARCH, across four
+    independent observations. The documentation fix landed first (`overwrite the
+    FACT, never the FILE`); this is the machine standing behind the sentence.
+
+    WHY IT ASKS AND CANNOT BLOCK. Whether a whole-file Write is a deliberate
+    rewrite or a stale-base revert depends on what its author had read, which no
+    guard can see. That is a DECISION, and per the return contract above a
+    decision asks. Two ceilings, stated rather than implied (MP#43/#44): the
+    permission prompt is refusable but also grantable, and a shell redirect never
+    reaches this code at all. It narrows the window; it does not seal it.
+
+    WHAT THE PROMPT IS FOR. A bare "are you sure?" cannot be answered — the human
+    has no more idea than the guard does. So the message carries the lines that
+    exist on disk RIGHT NOW and would not exist afterwards: a stale-base revert
+    shows another session's facts in that list, and a deliberate rewrite shows the
+    values the author meant to change. The list is the whole point of the prompt.
+
+    An identical write (byte-for-byte no-op) passes silently, and so does a Write
+    to a STATUS that does not exist yet — genesis authoring the file for the first
+    time has nothing to revert."""
+    if tool != "Write":
+        # Anchored edits are the documented concurrency-safe mode. Guarding them
+        # would punish the exact behaviour this row spent its life recommending.
+        return None
+    hit, knowable = _targeted(tool, path, cmd, rx=_RX_STATUS, rx_bash=_RX_STATUS_BASH)
+    if not hit or not knowable or full is None:
+        return None
+
+    # `path` arrives lowercased for matching; the real path is only in ctx.
+    target = (ctx or {}).get("raw_path") or path
+    try:
+        with open(target, encoding="utf-8") as fh:
+            on_disk = fh.read()
+    except Exception:  # noqa: BLE001 — absent (genesis) or unreadable: nothing to lose
+        return None
+
+    incoming = {ln.strip() for ln in full.splitlines() if ln.strip()}
+    losing = [ln.strip() for ln in on_disk.splitlines()
+              if ln.strip() and ln.strip() not in incoming]
+    if not losing:
+        return None
+
+    shown = "; ".join(repr(ln) for ln in losing[:3])
+    more = f" (+{len(losing) - 3} more)" if len(losing) > 3 else ""
+    return ("ask",
+            f"STATUS stale-write guard: this is a WHOLE-FILE write to STATUS, and "
+            f"{len(losing)} line(s) currently on disk would not survive it: {shown}{more}. "
+            "If any of those are facts another session wrote while this one was "
+            "working, this write reverts them and nothing else will notice. STATUS is "
+            "overwrite-the-FACT, never overwrite-the-FILE — re-read it and apply an "
+            "anchored edit instead, or approve if this rewrite is deliberate.")
+
 # ORDER IS LOAD-BEARING (MP#44). The first guard to return a reason decides the
 # consequence, so a guard that ASKS must never pre-empt one that would BLOCK.
 # g6 runs first because the instance fence is permanent doctrine (MP#36): a
@@ -670,12 +731,19 @@ def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
 # being downgraded from block to ask — the content guard has no verdict there
 # anyway, and the fence does. Ordering only became load-bearing when `ask`
 # arrived; before that every guard blocked and the order merely picked a message.
+# g7 sits AFTER g4 for the same reason: both look at STATUS, g4 finds defects
+# (unparseable, clipped) and blocks, g7 raises a decision and asks. A clipped
+# whole-file write must be refused outright, not offered to the human as a choice.
+# The number: an old bulletin proposal reserved `g7` for a budget guard that was
+# never built. Built beats reserved — a later budget guard takes the next free
+# number, which is the rule that stops a name being held hostage by an idea.
 GUARDS = [
     g6_root_fence,
     g1_kernel_write_guard,
     g2_abba_format_guard,
     g3_sandbox_git_guard,
     g4_status_write_guard,
+    g7_status_stale_write_guard,
     g5_boring_guard,
 ]
 

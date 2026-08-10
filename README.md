@@ -88,6 +88,10 @@ that travels. Keep the manifest authoritative and let the skill be a shortcut to
 For a filled-in instance end to end — seed, the config genesis writes from it, and
 one of each artifact in use — see **[`EXAMPLE.md`](EXAMPLE.md)**.
 
+Once it is running, **[`TIPS.md`](TIPS.md)** is the short version written for you rather
+than for the session — what to say, what to expect, how to answer a permission prompt,
+and what to keep an eye on.
+
 ## The shape of the protocol
 
 Three pillars, with distinct authority and write discipline:
@@ -279,10 +283,12 @@ of this is a preference; run several and wire the hooks first.
 > earn their keep. See **What the guards do and don't cover** for the specifics,
 > including exactly where the coverage stops and why some of it never closes.
 
-- **`hooks/pre_tool_use.py`** — six structural guards (KERNEL-write, ABBA-format,
+- **`hooks/pre_tool_use.py`** — seven structural guards (KERNEL-write, ABBA-format,
   sandbox-git, STATUS-snapshot, the **boring-guard** that holds the manifest within
-  its own declared `max_bytes` and keeps it declaration-only, and the **root fence**
-  that flags a write into a different ARCH instance than the session booted in) plus
+  its own declared `max_bytes` and keeps it declaration-only, the **root fence**
+  that flags a write into a different ARCH instance than the session booted in, and the
+  **STATUS stale-write guard** that stops a whole-file rewrite of STATUS to show you
+  which lines currently on disk it would remove) plus
   a **session-debt recorder** that flags a session which did work but never ran an
   explicit close — surfaced at the next boot, cleared only by a real close.
   Adding domain guards of your own? See **Adding your own guards** below — not by
@@ -461,7 +467,7 @@ to look nothing up.* Cheap, and worth running on any surface.
 
 ### Adding your own guards
 
-The six shipped guards are **structural** — they protect the shape of the pattern, and
+The seven shipped guards are **structural** — they protect the shape of the pattern, and
 nothing in them is specific to any product or brand. Most adopters eventually want
 domain guards too: don't leak this brand name, don't revive that retired concept,
 don't edit this protected prompt.
@@ -479,14 +485,15 @@ you keep the launch-directory bypass that the user-level wire exists to close.
 
 | | wired at | holds | upgrades |
 |---|---|---|---|
-| `hooks/pre_tool_use.py` | user (`~/.claude/settings.json`) | the 6 structural guards | replace wholesale |
+| `hooks/pre_tool_use.py` | user (`~/.claude/settings.json`) | the 7 structural guards | replace wholesale |
 | `hooks/guards_<org>.py` | project (`.claude/settings.local.json`) | your domain guards | yours, never touched |
 
 Your file is a standalone hook, not an import of this one: same stdin/exit contract
 (exit 0 allow, exit 2 block with the reason on stderr), same `ARCH_HOOKS_MODE` read,
 its own `GUARDS` list. Copy this file's dispatcher as a starting point and delete the
-six guards. The arity dispatch is worth keeping — 4-arg `(tool, path, text, cmd)`
-guards and 5-arg ones taking the prospective whole-file content both work.
+seven guards. The arity dispatch is worth keeping — 4-arg `(tool, path, text, cmd)`
+guards, 5-arg ones taking the prospective whole-file content, and 6-arg ones that also
+receive the session context all work.
 
 **Why not auto-discovery?** The obvious alternative — have the shared hook import a
 `guards_local.py` from whichever instance a write resolves into — was considered and

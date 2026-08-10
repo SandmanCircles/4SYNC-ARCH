@@ -295,6 +295,76 @@ class TestStatusGuard(GuardCase):
             edit_payload(os.path.join(self.root, "config", "STATUS.yaml.gone"), "x", "y")))
 
 
+
+
+class TestStatusStaleWriteGuard(GuardCase):
+    """g7 (MP#57) — a WHOLE-FILE Write to STATUS asks and names what it would remove.
+
+    The hazard is a session rewriting the snapshot from its session-start copy and
+    silently reverting facts another session wrote in between. The guard cannot know
+    which of the two it is looking at, so it asks — and the assertions below are as
+    much about what it must NOT touch (anchored edits, first writes, no-ops) as about
+    what it catches."""
+
+    def test_whole_file_write_that_drops_a_line_asks(self):
+        stale = STATUS_YAML.replace('product: "v1.2.0"', 'product: "v1.1.0"')
+        kind, reason = self.run_verdict(write_payload(self.status, stale))
+        self.assertEqual(kind, "ask")
+        self.assertIn("stale-write", reason)
+
+    def test_the_prompt_names_what_would_be_lost(self):
+        """A bare "are you sure?" is unanswerable — the human knows no more than the
+        guard does. The disappearing lines ARE the question."""
+        stale = STATUS_YAML.replace('product: "v1.2.0"', 'product: "v1.1.0"')
+        _, reason = self.run_verdict(write_payload(self.status, stale))
+        self.assertIn("v1.2.0", reason)
+
+    def test_identical_write_is_silent(self):
+        self.assertIsNone(self.run_guards(write_payload(self.status, STATUS_YAML)))
+
+    def test_pure_addition_is_silent(self):
+        """Nothing on disk disappears, so nothing can have been reverted."""
+        added = STATUS_YAML.replace("meta:", 'note: "added"\nmeta:', 1)
+        self.assertIsNone(self.run_guards(write_payload(self.status, added)))
+
+    def test_anchored_edit_never_reaches_this_guard(self):
+        """The documented concurrency-safe write mode must stay unpunished."""
+        self.assertIsNone(self.run_guards(
+            edit_payload(self.status, 'product: "v1.2.0"', 'product: "v1.3.0"')))
+
+    def test_first_write_to_a_missing_status_is_silent(self):
+        """Genesis authoring STATUS for the first time has nothing to revert."""
+        os.remove(self.status)
+        self.assertIsNone(self.run_guards(write_payload(self.status, STATUS_YAML)))
+
+    def test_non_status_file_is_untouched(self):
+        other = os.path.join(self.root, "config", "NOTES.yaml")
+        self._put(other, "a: 1\n")
+        self.assertIsNone(self.run_guards(write_payload(other, "b: 2\n")))
+
+    def test_bash_write_does_not_double_ask(self):
+        """g4 already asks for a shell write it cannot inspect; g7 must not stack a
+        second prompt on the same call."""
+        payload = {"tool_name": "Bash",
+                   "tool_input": {"command": "echo x > config/STATUS.yaml"}}
+        kind, reason = self.run_verdict(payload)
+        self.assertEqual(kind, "ask")
+        self.assertIn("STATUS write guard", reason)
+        self.assertNotIn("stale-write", reason)
+
+    def test_guard_is_registered_after_g4(self):
+        """A clipped whole-file write must be REFUSED by g4, never offered to the
+        human as a choice by g7."""
+        names = [g.__name__ for g in hooks.GUARDS]
+        self.assertLess(names.index("g4_status_write_guard"),
+                        names.index("g7_status_stale_write_guard"))
+
+    def test_clipped_whole_file_write_still_blocks_rather_than_asks(self):
+        kind, reason = self.run_verdict(
+            write_payload(self.status, STATUS_YAML.split("# ═══ EOF")[0]))
+        self.assertEqual(kind, "block")
+        self.assertIn("EOF sentinel", reason)
+
 @unittest.skipUnless(HAS_YAML, "the manifest parse check requires PyYAML")
 class TestBoringGuardParseCheck(GuardCase):
     """MP#60 — a manifest write that breaks the YAML must not be swallowed.

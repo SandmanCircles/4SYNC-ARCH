@@ -1,6 +1,8 @@
-# TIPS — getting the most out of it
+# TIPS — turning vibes into builds
 
-The README is the manual. This is what's worth knowing as the person using it.
+> **Turn vibes into builds that you can stand on.**
+
+The README is the manual. This is the part you'd otherwise learn by running it for a month.
 
 ## Starting out
 
@@ -44,11 +46,26 @@ There's no command vocabulary to learn, and no wrong opener. Plain English gets 
 - If it says a file would lose lines — that's another session's work about to disappear. Say no and ask what changed.
 - Approving is fine when you know the answer. The prompt exists so you get the chance, not to slow you down.
 
-## Running two at once
+## Running more than one
 
-- You can. Just know you are — tell each one the other exists.
-- Expect more permission prompts. That's them noticing each other.
-- Anything running in a cloud or sandbox session is invisible to the others. Mention it.
+You can open several and put them all to work. That's the shape this is built for, not a hazard it tolerates.
+
+The dividing line is where the session actually runs, not what it's called. On your machine it has git and the hooks; in a cloud container it has neither, whatever folder you launched it from.
+
+|  | Claude Code, on your machine | Cowork, in the cloud |
+|---|---|---|
+| **Git** | Commits, tags, pushes | None |
+| **Hooks** | Fire on every tool call | Never |
+| **In the debt file** | Yes — the others can see it | No — invisible to the others |
+| **Finishes work by** | Committing it | Writing a landing-queue row |
+| **Reach for it when** | Work needs to land, or you're closing out | You want to think out loud without the technical register |
+
+Two of the same kind is just two of the same row. The pairing that does the most is one of each: the cloud session works, the machine session lands it. Two hands is normal. Six is a busy afternoon.
+
+- **Ask for the handoff by name** if a cloud session forgets it. "Queue that for landing" is the whole instruction.
+- Tell each session the others exist. They're careful neighbors, but only once they know they have neighbors.
+- Expect more permission prompts when they overlap. That's them noticing each other, which is the feature.
+- Two sessions editing the same file is fine and happens constantly. Two sessions editing it from stale copies is the thing to avoid — say "re-read it first" and you've handled it.
 
 ## Checking on it
 
@@ -62,6 +79,10 @@ There's no command vocabulary to learn, and no wrong opener. Plain English gets 
 - Numbers in your own docs that nobody recomputes. They drift.
 - A session agreeing with you too readily on something you're unsure about.
 - Work you did in chat that never landed in a file. If it isn't written down, it didn't happen.
+
+---
+
+None of this is a workflow you have to adopt. It's what the folder already does — these are just the parts nobody tells you.
 
 ---
 

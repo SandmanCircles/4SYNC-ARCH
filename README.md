@@ -92,6 +92,13 @@ Once it is running, **[`TIPS.md`](TIPS.md)** is the short version written for yo
 than for the session — what to say, what to expect, how to answer a permission prompt,
 and what to keep an eye on.
 
+Before you commit a real project to it, **[`ADOPTING.md`](ADOPTING.md)** covers the
+three questions this file does not: how to trial it in a folder you intend to delete,
+how to bring in a project that already exists (including reconstructing its history
+without paying for it at every boot), and how to remove it again if you decide against
+it. The exit story is there on purpose — it is the last thing people ask and the first
+thing worth knowing.
+
 ## The shape of the protocol
 
 Three pillars, with distinct authority and write discipline:

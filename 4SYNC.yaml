@@ -110,13 +110,13 @@ bootstrap:
       Claude Code finds by exact name, and the root documents. This is provenance for
       the identity stack, not a project-wide rename
     - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md, TIPS.md,
-      LICENSE, SUPPORT.md and RELEASE_NOTES.md to archive/ as ARCH_README.md,
-      ARCH_EXAMPLE.md, ARCH_TIPS.md, ARCH_LICENSE.md, ARCH_SUPPORT.md,
-      ARCH_RELEASE_NOTES.md.
+      ADOPTING.md, LICENSE, SUPPORT.md and RELEASE_NOTES.md to archive/ as
+      ARCH_README.md, ARCH_EXAMPLE.md, ARCH_TIPS.md, ARCH_ADOPTING.md,
+      ARCH_LICENSE.md, ARCH_SUPPORT.md, ARCH_RELEASE_NOTES.md.
       That is the PRODUCT's packaging, not this project's, and at
       root LICENSE is what GitHub reads as the new repo's own license the moment the
       user runs git init — their work would appear FSL-licensed under someone else's
-      copyright. Keep all six
+      copyright. Keep all seven
       TRACKED and never ignore archive/, since the license must travel with the code
       it covers and the archived seed is the birth record. .gitignore STAYS at root
     - RECORD THE BUILD THIS INSTANCE WAS BORN WITH — run
@@ -205,7 +205,7 @@ close:
 integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
   hooks:                                 # ARCH_HOOKS_MODE: warn | enforce | off
-    - hooks/pre_tool_use.py              # PreToolUse — six structural guards + debt recorder
+    - hooks/pre_tool_use.py              # PreToolUse — seven structural guards + debt recorder
     - hooks/session_start.py             # SessionStart — boot receipt; ARCH_BOOT_MODE: announce | inject | off
   manifest_rules:            # enforced by g5 boring-guard (hooks/pre_tool_use.py)
     max_bytes: 16384         # raised 8192 → 10240 → 12288 → 16384, each time in the

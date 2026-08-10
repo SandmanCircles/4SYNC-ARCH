@@ -43,6 +43,55 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.2
+
+**Machinery:** replace all files under `hooks/` and `scripts/`, plus root `VERSION`.
+
+**Manifest: no change required for an existing instance.** The only edit is inside the
+`bootstrap:` block, which genesis deletes when it runs — it archives two more packaging files.
+New adoptions only.
+
+**One NEW file, and it is optional: `LEDGER_GUIDE.md`.** Copy it in if you want it. It is the
+reasoning behind the ledger's rules, and it pairs with a *template* change described below that
+**this update does not make to your files** — so on its own it is reference material, not a
+dependency. Nothing breaks if you skip it.
+
+**Read this part carefully, because it is the first release where the template and your
+instance genuinely diverge.** `MERGE_PLAN.md`, `config/KERNEL.yaml` and `config/REFERENCE.yaml`
+were all restructured in this release — **for new instances.** Yours are *your files*, in the
+instance bucket, and **no update touches them, including this one.** If you want the same
+benefit you restructure your own copies deliberately, at a time of your choosing; the guide and
+the shipped template show you the shape. Doing nothing is a valid choice and costs you only the
+startup tokens you are already paying.
+
+**What changed:**
+
+- **`g7` — a new guard.** A whole-file `Write` to `config/STATUS.yaml` now ASKS before it lands
+  and names what it would remove; anchored `Edit`/`MultiEdit` never reach it. STATUS declares
+  overwrite mode, and a session that reads "overwrite" at the *file* level rewrites the whole
+  snapshot from its session-start copy, silently reverting anything another session wrote in
+  between. It is the only confirmed way to lose data in ARCH. It asks rather than blocks because
+  whether a whole-file write is deliberate or a stale-base revert depends on what its author had
+  read, which no guard can see.
+- **`g5` tells "PyYAML is absent" apart from "your YAML is broken."** One `except` covered both,
+  so a manifest write that broke the YAML was allowed through silently. The refusal now names the
+  line and column.
+- **`g5`'s date refusal says whose date it is.** One dated comment write-locks the manifest for
+  everybody afterwards, so the author of a refused write is usually not the author of the
+  offending line. It now distinguishes a date your write introduces from one already sitting in
+  the file, and names the line either way.
+- **`rotate.py` checks the manifest AT REST** — parse and `declaration_only` — because a guard
+  on the door says nothing about what is already in the room. It also reports the ledger's
+  prose share against a stated threshold rather than as a bare number, and alerts when boot cost
+  grows more than 15% since the last logged close.
+- **`TIPS.md`** — adopter-facing day-to-day guidance. Not machinery, not in the boot path.
+
+**The template's startup cost dropped ~20%** (12,129 → 9,655 tokens on a fresh instance) by
+moving read-once teaching text out of the files read at every boot. Again: that lands for new
+instances, not for yours.
+
+---
+
 ## v1.0.1
 
 **Machinery:** replace all files under `hooks/` and `scripts/`, plus the new root `VERSION`.

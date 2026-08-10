@@ -86,4 +86,4 @@ None of this is a workflow you have to adopt. It's what the folder already does 
 
 ---
 
-*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Genesis moves this to `archive/ARCH_TIPS.md` — it's the product's documentation, not your project's.*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Genesis moves this to `arch/TIPS.md` — it's the product's documentation, not your project's.*

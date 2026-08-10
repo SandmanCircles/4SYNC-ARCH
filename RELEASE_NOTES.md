@@ -20,7 +20,8 @@ is this folder.
 
 1. Read RELEASE_NOTES.md in the clone. Work through every release BETWEEN my current
    version and the one I'm moving to, oldest first — my version is in
-   archive/ARCH_BUILD.txt if genesis recorded it, or run scripts/arch_build.py.
+   arch/BUILD.txt (archive/ARCH_BUILD.txt if my instance predates v1.0.5) if
+   genesis recorded it, or run scripts/arch_build.py.
 2. Replace the machinery files each release lists, byte for byte, from the clone.
    Do NOT touch my config/ stack, my ledger, my naming file, or my task documents —
    those are mine and no update modifies them.

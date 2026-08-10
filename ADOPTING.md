@@ -221,4 +221,4 @@ You'll likely be the one running the trial. Two things:
 
 ---
 
-*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Genesis moves this to `archive/ARCH_ADOPTING.md` — it's the product's documentation, not your project's.*
+*Part of [4SYNC ARCH](https://github.com/SandmanCircles/4SYNC-ARCH). Genesis moves this to `arch/ADOPTING.md` — it's the product's documentation, not your project's.*

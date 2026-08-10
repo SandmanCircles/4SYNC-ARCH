@@ -23,7 +23,7 @@ class TempInstance(unittest.TestCase):
             path = os.path.join(self.root, rel.replace("/", os.sep))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as fh:
-                if rel == "VERSION":
+                if rel == "arch/VERSION":
                     fh.write(b"9.9.9\n")
                 else:
                     fh.write(b"content of %s\n" % rel.encode("utf-8"))
@@ -46,7 +46,16 @@ class TestInventory(unittest.TestCase):
 
     def test_inventory_includes_the_version_file(self):
         """A release number is part of the build, not metadata about it."""
-        self.assertIn("VERSION", arch_build.MACHINERY)
+        self.assertIn("arch/VERSION", arch_build.MACHINERY)
+
+    def test_version_is_inventoried_at_its_shipped_path(self):
+        """It ships in arch/ so the rel key is identical everywhere.
+
+        build_id hashes `rel:digest`, so a file genesis MOVED would hash under a
+        different key than the same file upstream and no adopter could match a
+        published id. Pinning the bare name here would reintroduce exactly that.
+        """
+        self.assertNotIn("VERSION", arch_build.MACHINERY)
 
     def test_inventory_has_no_duplicates(self):
         self.assertEqual(len(arch_build.MACHINERY), len(set(arch_build.MACHINERY)))
@@ -139,18 +148,50 @@ class TestVersion(TempInstance):
         self.assertEqual(arch_build.read_version(self.root), "9.9.9")
 
     def test_absent_version_reads_as_none(self):
-        os.remove(os.path.join(self.root, "VERSION"))
+        os.remove(os.path.join(self.root, "arch", "VERSION"))
         self.assertIsNone(arch_build.read_version(self.root))
 
     def test_empty_version_reads_as_none(self):
-        self._write("VERSION", b"\n")
+        self._write("arch/VERSION", b"\n")
         self.assertIsNone(arch_build.read_version(self.root))
 
     def test_version_bump_changes_the_build_id(self):
         """Two trees differing only in VERSION are different builds."""
         before = self._id()
-        self._write("VERSION", b"9.9.10\n")
+        self._write("arch/VERSION", b"9.9.10\n")
         self.assertNotEqual(before, self._id())
+
+    def test_a_root_version_is_never_read_as_a_fallback(self):
+        """The deliberate non-behavior, and reversing it would be a bug.
+
+        Falling back would print the right version while the id stayed wrong —
+        the same mismatch with its only visible symptom removed.
+        """
+        os.remove(os.path.join(self.root, "arch", "VERSION"))
+        self._write("VERSION", b"9.9.9\n")
+        self.assertIsNone(arch_build.read_version(self.root))
+
+
+class TestStrayRootVersion(TempInstance):
+    """The one failure this layout can produce: machinery updated, VERSION not."""
+
+    def test_a_correctly_placed_version_is_not_stray(self):
+        self.assertFalse(arch_build.stray_root_version(self.root))
+
+    def test_version_left_at_root_is_detected(self):
+        os.remove(os.path.join(self.root, "arch", "VERSION"))
+        self._write("VERSION", b"9.9.9\n")
+        self.assertTrue(arch_build.stray_root_version(self.root))
+
+    def test_both_copies_present_is_not_stray(self):
+        """arch/ is authoritative — a leftover root copy is not an alarm."""
+        self._write("VERSION", b"9.9.9\n")
+        self.assertFalse(arch_build.stray_root_version(self.root))
+
+    def test_neither_copy_present_is_not_stray(self):
+        """Absent everywhere is `missing`, which already reports itself."""
+        os.remove(os.path.join(self.root, "arch", "VERSION"))
+        self.assertFalse(arch_build.stray_root_version(self.root))
 
 
 class TestBirthRecord(TempInstance):

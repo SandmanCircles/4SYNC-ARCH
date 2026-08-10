@@ -78,7 +78,14 @@ MACHINERY = [
     # The release number is part of the build, not metadata about it: two trees
     # that differ only in VERSION are different builds, and hashing it means
     # "v1.0.1, unmodified" is a single check rather than two.
-    "VERSION",
+    #
+    # IT LIVES IN arch/ AND SHIPS THAT WAY, so this path is identical in the
+    # product repo and in every adopter's instance. That is the whole point: the
+    # rel key is hashed alongside the digest (see build_id), so a file that
+    # genesis MOVED would hash under a different key than the same file upstream
+    # and no adopter could ever match a published id. A path that never moves
+    # needs no dual-location lookup and no canonical-key indirection.
+    "arch/VERSION",
     "hooks/pre_tool_use.py",
     "hooks/test_pre_tool_use.py",
     "hooks/session_start.py",
@@ -95,11 +102,18 @@ MACHINERY = [
     "scripts/wire_hooks.py",
 ]
 
-# Where genesis records what the instance was born with. Under archive/ because
+# Where genesis records what the instance was born with. Under arch/ because
 # that is where genesis already puts the packaging — the birth record belongs
 # with the birth certificate, not in config/ (which is identity state, prefixed
 # at genesis, and edited for the life of the project).
-BIRTH_RECORD = os.path.join("archive", "ARCH_BUILD.txt")
+#
+# The folder is arch/ and NOT archive/ because everything in it is live: the
+# licence that governs the code, the version the instance runs, the packaging an
+# adopter still reads. "Archive" says dead, and a folder whose name misdescribes
+# its contents at first contact teaches the reader to skip it. Names inside are
+# bare — arch/README.md, not arch/ARCH_README.md — since the prefix existed only
+# to disambiguate these files AT ROOT, and the folder now does that job.
+BIRTH_RECORD = os.path.join("arch", "BUILD.txt")
 
 
 def _norm(data):
@@ -148,12 +162,28 @@ def read_version(root):
     must never be transcribed. Do not conflate them: the version says what we
     published, the digest says what is actually on this disk.
     """
-    path = os.path.join(root, "VERSION")
+    path = os.path.join(root, "arch", "VERSION")
     if not os.path.exists(path):
         return None
     with open(path, "r", encoding="utf-8") as fh:
         line = fh.readline().strip()
     return line or None
+
+
+def stray_root_version(root):
+    """True when VERSION sits at root and arch/VERSION does not exist.
+
+    The single failure this layout can produce, and it is mute without a name.
+    An instance that copies in new machinery but leaves its old root VERSION
+    behind hashes `arch/VERSION:MISSING`, computes an id no published one will
+    ever match, and reads as permanently not-current — while the file it needs
+    is sitting right there, one directory up. NEVER FALL BACK TO THE ROOT COPY
+    to paper over it: reading it would make the version print correctly while
+    the id stayed wrong, which is the same mismatch with its only symptom
+    removed. Diagnose loudly, fix nothing.
+    """
+    return (not os.path.exists(os.path.join(root, "arch", "VERSION"))
+            and os.path.exists(os.path.join(root, "VERSION")))
 
 
 def read_birth_record(root):
@@ -223,6 +253,7 @@ def main():
     bid = build_id(digests, missing)
     version = read_version(root)
     born = read_birth_record(root)
+    stray = stray_root_version(root)
 
     if args.write_birth_record:
         path = write_birth_record(root, bid, len(digests), missing, version)
@@ -240,6 +271,7 @@ def main():
             "born_version": (born or {}).get("version"),
             "born_build": (born or {}).get("build"),
             "modified_since_genesis": (born is not None and born["build"] != bid),
+            "stray_root_version": stray,
             "digests": digests,
         }, indent=2, sort_keys=True))
         return
@@ -255,6 +287,12 @@ def main():
         print("%s — MACHINERY MODIFIED since genesis" % headline)
     print("  build %s · %d/%d machinery files" % (bid, len(digests), len(MACHINERY)))
 
+    if stray:
+        print("  ! VERSION is at your root; ARCH reads it from arch/VERSION.")
+        print("    You took new machinery without moving it. Until you do, this id")
+        print("    hashes arch/VERSION as MISSING and will never match a published")
+        print("    one — you will read as not-current forever. Fix: move VERSION")
+        print("    into arch/. Nothing else changes.")
     if missing:
         print("  ! missing: %s" % ", ".join(missing))
         print("    A missing machinery file changes the build id by design — a partial")

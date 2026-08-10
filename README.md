@@ -161,8 +161,10 @@ and neither are the root documents; this is provenance for the identity stack, n
 project-wide rename.
 
 **Genesis also clears our packaging out of your root.** `README.md`, `EXAMPLE.md` and
-`LICENSE` move into `archive/` as `ARCH_README.md`, `ARCH_EXAMPLE.md` and
-`ARCH_LICENSE.md` — still tracked, never ignored. That matters most for the license:
+`LICENSE` move into `arch/`, keeping their names — still tracked, never ignored. The
+folder is already there before genesis runs, holding `arch/VERSION`, and it is called
+`arch/` rather than `archive/` because nothing in it is dead: the licence governs the
+code, the version is the one you are running, and the packaging is still worth reading. That matters most for the license:
 left at root, `LICENSE` is what GitHub reads as *your* repo's license the moment you run
 `git init`, so your work would show up as FSL-licensed under our copyright notice. Moved,
 it still travels with the code it covers, which is what the license actually asks for.
@@ -703,7 +705,7 @@ python scripts/arch_build.py --json   # machine-readable
 ```
 
 It prints a short id computed from the machinery files **on disk right now**, plus
-what your instance was born with if genesis recorded it (`archive/ARCH_BUILD.txt`).
+what your instance was born with if genesis recorded it (`arch/BUILD.txt`).
 Line-ending and final-newline differences are normalized away, so the id doesn't
 change just because a file was checked out on a different platform.
 
@@ -736,7 +738,7 @@ is what left the gap this section closes.
 
 ## Getting help — `SUPPORT.md`
 
-`SUPPORT.md` (moved to `archive/ARCH_SUPPORT.md` by genesis) holds a prompt you paste
+`SUPPORT.md` (moved to `arch/SUPPORT.md` by genesis) holds a prompt you paste
 into a session running inside your own instance. It produces one read-only report
 describing that instance — its layout, its measurements from `meter.py` / `actuals.py` /
 `rotate.py`, its protocol health, and which machinery build it is running per

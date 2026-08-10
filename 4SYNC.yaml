@@ -98,7 +98,7 @@ bootstrap:
       an `agents` block here; if none named, omit it (ABBA/LANDING_QUEUE stay, inert)
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
     - verify every authored YAML: [eof_sentinel, yaml_parse]
-    - archive the seed verbatim → archive/SEED_<date>.md, then set the archived
+    - archive the seed verbatim → arch/SEED_<date>.md, then set the archived
       file READ-ONLY (attrib +R / chmod a-w — the birth record is preserved,
       never edited) + CANON_INDEX pointer row
     - add the archived seed to CLAUDE.md's load list, on-demand only —
@@ -118,17 +118,19 @@ bootstrap:
       Claude Code finds by exact name, and the root documents. This is provenance for
       the identity stack, not a project-wide rename
     - CLEAR THE PACKAGING OUT OF ROOT — move README.md, EXAMPLE.md, TIPS.md,
-      ADOPTING.md, LICENSE, SUPPORT.md and RELEASE_NOTES.md to archive/ as
-      ARCH_README.md, ARCH_EXAMPLE.md, ARCH_TIPS.md, ARCH_ADOPTING.md,
-      ARCH_LICENSE.md, ARCH_SUPPORT.md, ARCH_RELEASE_NOTES.md.
-      That is the PRODUCT's packaging, not this project's, and at
+      ADOPTING.md, LICENSE, SUPPORT.md and RELEASE_NOTES.md into arch/ KEEPING
+      THEIR NAMES — the folder says whose they are, so a prefix would only stutter.
+      arch/ already exists (VERSION ships in it), so this is a move into a folder,
+      never a rename of one. REFUSE IF arch/ HOLDS ANYTHING ARCH DID NOT SHIP —
+      the name is common for architecture notes and genesis must not merge into
+      someone's. That is the PRODUCT's packaging, not this project's, and at
       root LICENSE is what GitHub reads as the new repo's own license the moment the
       user runs git init — their work would appear FSL-licensed under someone else's
       copyright. Keep all seven
-      TRACKED and never ignore archive/, since the license must travel with the code
+      TRACKED and never ignore arch/, since the license must travel with the code
       it covers and the archived seed is the birth record. .gitignore STAYS at root
     - RECORD THE BUILD THIS INSTANCE WAS BORN WITH — run
-      `python scripts/arch_build.py --write-birth-record`. Writes archive/ARCH_BUILD.txt
+      `python scripts/arch_build.py --write-birth-record`. Writes arch/BUILD.txt
       ONCE and refuses to overwrite — it holds the only claim in the instance that
       cannot be recomputed later. The build you are RUNNING is always computed live
       from the machinery on disk, so it is never transcribed and cannot go stale

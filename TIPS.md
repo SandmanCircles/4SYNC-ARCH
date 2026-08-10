@@ -9,6 +9,19 @@ The README is the manual. This is what's worth knowing as the person using it.
 - If you'd rather not fill in the seed, just start a session. It'll interview you.
 - Nothing to install. If you moved the folder somewhere, say so — that breaks it quietly.
 
+## Opening a session — say anything
+
+It boots either way. What you open with just aims it.
+
+- **"Hi"** — oriented and waiting. Perfectly fine.
+- **"Load the task list"** — shows you everything open before you decide anything.
+- **"Open #22"** — that one task, nothing else loaded.
+- **"Status"** — where things stand: what's live, what's blocked, what's in flight.
+- **"What changed since yesterday?"** — reads back the last sessions' journal.
+- **"Pick up the ball and run"** — and see what happens. Might want to keep an eye on it.
+
+There's no command vocabulary to learn, and no wrong opener. Plain English gets there.
+
 ## Every session
 
 - Say "wrap up" when you're done. Don't just close the window — an unclosed session leaves its work undeposited.

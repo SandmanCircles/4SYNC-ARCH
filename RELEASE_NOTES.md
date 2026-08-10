@@ -43,6 +43,47 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.3
+
+**Machinery: replace root `VERSION` only.** Nothing under `hooks/` or `scripts/` changed in this
+release — not one byte. If you are on v1.0.2 and you only care about machinery, you are already
+current and can stop reading here.
+
+**Manifest: no change required for an existing instance.** The only edit is inside the
+`bootstrap:` block, which genesis deletes when it runs — it archives one more packaging file, and
+a stale comment about the guard count was corrected. New adoptions only.
+
+**One NEW file, and it is the point of this release: `ADOPTING.md`.** Copy it in if you want it.
+It is documentation, not machinery — nothing depends on it and nothing breaks if you skip it.
+It covers the three questions the README does not: trialing ARCH in a folder you intend to
+delete, adopting a project that already exists (including reconstructing its history without
+paying for it at every boot), and removing ARCH again if you decide against it.
+
+**Why this is a release at all, since no machinery moved.** A docs-only change is otherwise
+**invisible to the currency check** — the build id is computed from machinery, so an instance
+sitting on v1.0.2 would compute a matching id, be told it was current, and be missing a shipped
+document. Bumping `VERSION` is what makes the release visible, and it works precisely because
+`VERSION` is itself part of the hashed inventory: two trees that differ only in `VERSION` are
+different builds. **If you take nothing else from this release, take `VERSION` — otherwise your
+instance will keep reporting v1.0.2 forever.**
+
+**What changed:**
+
+- **`ADOPTING.md` is new** — see above. The load-bearing distinction in it, for anyone about to
+  set up a trial: *disposable* and *unreachable* are not the same property. A trial folder should
+  be one you delete afterwards, not a scratchpad a second session cannot open — because state
+  surviving from one session to the next is the only thing a trial can actually demonstrate, and
+  a folder nothing else can reach cannot demonstrate it.
+- **`TIPS.md` rewritten**, with a comparison of what a session on your machine can do versus one
+  in a cloud container: git, hooks, the debt row, and how work gets handed back. Same content,
+  written to be read rather than scanned.
+- **`README.md`** points at `ADOPTING.md`.
+- **The manifest's genesis packaging step** archives `ADOPTING.md` alongside the rest, and its
+  guard-count comment now reads seven rather than six — `g7` shipped in v1.0.2 and the comment
+  was not updated with it.
+
+---
+
 ## v1.0.2
 
 **Machinery:** replace all files under `hooks/` and `scripts/`, plus root `VERSION`.

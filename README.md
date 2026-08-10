@@ -643,6 +643,10 @@ command across all six. Converted; see MP#47/D6.)*
 
 ## Staying current — "am I running the latest machinery?"
 
+> **Updating? Read [`RELEASE_NOTES.md`](RELEASE_NOTES.md) first.** It lists what to replace
+> per release, states the manifest change each one needs, and carries a paste-able prompt
+> that walks a session through the whole update — machinery, manifest, parse check, suites.
+
 **There is no update command, and the reason is structural rather than an oversight.**
 ARCH is copied, not installed: genesis renames your stack, rewrites the manifest with
 your `instance.root`, and moves this README and the license out of your root so
@@ -661,6 +665,10 @@ So sort the files into three buckets, because only one of them is ever "updated"
 - **The manifest** — the awkward one. It carries your `instance.root` and your
   project's name, but its `boot:` / `close:` / `integrity:` *structure* is product
   shape. A new close step has to be **merged in by hand**; it cannot be copied over.
+  **[`RELEASE_NOTES.md`](RELEASE_NOTES.md) states the manifest change for every
+  release**, and carries a paste-able prompt that walks a session through applying
+  an update — machinery, manifest, parse check, suites. That is the answer to this
+  category: precise per-release instructions, not a migration tool.
 
 To check the first bucket today, clone fresh to a scratch path and compare:
 

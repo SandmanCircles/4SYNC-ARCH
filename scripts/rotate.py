@@ -1582,6 +1582,72 @@ def report_boot_growth(root, manifest_name=None, run_meter=True, pct=BOOT_GROWTH
     return now, prev
 
 
+# ── Manifest compliance AT REST ────────────────────────────────────────────────
+
+# g5 judges a WRITE. Nothing judged the file sitting on disk, and the two are not
+# the same question: a manifest can arrive non-compliant through any path the hook
+# does not cover — a Bash redirect (g5 can only `ask` there, and `ask` resolves to
+# ALLOW where no prompt can be shown), hooks unwired, an edit made on another
+# machine, or a file that was already wrong before the rule existed. The failure is
+# silent until the NEXT write is refused, and it then reads as "the guard is
+# broken" rather than "this file is non-compliant" — which is exactly how the
+# original write-lock episode was misdiagnosed (MP#54).
+#
+# The file's own recorded lesson, one rule over: a guard on the door says nothing
+# about what is already in the room.
+_DATE_RE = re.compile(r"\b(20\d\d-[01]\d-[0-3]\d)\b")
+
+
+def report_manifest_at_rest(root, manifest_name=None):
+    """Check every reachable manifest for the rules g5 enforces on write.
+
+    Two checks, both cheap and both things g5 cannot see from the door:
+      - does it still PARSE (when PyYAML is available)
+      - if it declares declaration_only, is it free of calendar dates
+
+    Reports; never blocks. Returns a list of (relpath, problem) findings."""
+    found = []
+    for rel, _size, _cap in discover_manifests(root, manifest_name):
+        p = os.path.join(root, rel.replace("/", os.sep))
+        try:
+            text = read(p)
+        except OSError:
+            continue
+
+        parsed_ok = None
+        try:
+            import yaml  # type: ignore
+            try:
+                yaml.safe_load(text)
+                parsed_ok = True
+            except Exception as exc:  # noqa: BLE001 — the finding, not a reason to skip
+                parsed_ok = False
+                mark = getattr(exc, "problem_mark", None)
+                where = (" line %d" % (mark.line + 1)) if mark is not None else ""
+                found.append((rel, "does NOT parse as YAML%s — %s"
+                              % (where, (getattr(exc, "problem", None) or "invalid").strip())))
+        except Exception:  # noqa: BLE001 — PyYAML absent; the date check still runs
+            pass
+
+        if parsed_ok is not False and re.search(r"(?m)^\s*declaration_only:\s*true\b", text):
+            m = _DATE_RE.search(text)
+            if m:
+                line = text[:m.start()].count(chr(10)) + 1
+                found.append((rel, "declares declaration_only but carries the date %s on line %d "
+                                   "— g5 will refuse the NEXT write to this file, whoever makes it"
+                              % (m.group(1), line)))
+
+    if not found:
+        print("manifest-at-rest: all reachable manifests compliant "
+              "(parse + declaration_only) ✓")
+    else:
+        for rel, problem in found:
+            print("  ! manifest-at-rest  %s %s" % (rel, problem))
+        print("manifest-at-rest: %d finding(s). g5 guards WRITES; this is the file on disk. "
+              "(Reported, not blocked.)" % len(found))
+    return found
+
+
 def report_findings(root, findings_name=FINDINGS_FILENAME):
     """Measure FINDINGS.md and flag entries with no `Trigger:` line.
 
@@ -1709,6 +1775,7 @@ def main():
     report_status_size(d)
     report_status_facts(d, run_meter=not args.no_meter)
     report_boot_growth(d, run_meter=not args.no_meter)
+    report_manifest_at_rest(d)
     report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 

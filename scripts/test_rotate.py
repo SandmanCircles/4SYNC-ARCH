@@ -1726,6 +1726,95 @@ class TestBootGrowthAlert(unittest.TestCase):
         self.assertIsNone(got)
         self.assertIn("skipped", out)
 
+try:
+    import yaml as _yaml_probe  # noqa: F401
+    _HAS_YAML = True
+except Exception:  # noqa: BLE001 — absent from every fresh Python; the default case
+    _HAS_YAML = False
+
+
+class TestManifestAtRest(unittest.TestCase):
+    """g5 judges a WRITE; nothing judged the file on disk.
+
+    A manifest can arrive non-compliant through any path the hook does not cover —
+    a Bash redirect where g5 can only `ask`, hooks unwired, an edit from another
+    machine, or a file that predates the rule. The failure stays silent until the
+    NEXT write is refused, and then reads as "the guard is broken" rather than
+    "this file is non-compliant" (MP#54's original misdiagnosis)."""
+
+    CLEAN = (
+        "sync_version: \"1.0\"\n"
+        "instance:\n"
+        "  name: \"T\"\n"
+        "integrity:\n"
+        "  manifest_rules:\n"
+        "    max_bytes: 16384\n"
+        "    declaration_only: true\n"
+    )
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rot-atrest-")
+        prev = os.environ.get("ARCH_MANIFEST")
+        os.environ["ARCH_MANIFEST"] = "4SYNC.yaml"
+
+        def restore():
+            if prev is None:
+                os.environ.pop("ARCH_MANIFEST", None)
+            else:
+                os.environ["ARCH_MANIFEST"] = prev
+            shutil.rmtree(self.root, ignore_errors=True)
+
+        self.addCleanup(restore)
+
+    def _put(self, text):
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def _run(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            found = rotate.report_manifest_at_rest(self.root)
+        return found, buf.getvalue()
+
+    def test_clean_manifest_reports_compliant(self):
+        self._put(self.CLEAN)
+        found, out = self._run()
+        self.assertEqual(found, [])
+        self.assertIn("compliant", out)
+
+    def test_a_date_at_rest_is_found(self):
+        self._put(self.CLEAN.replace("sync_version:", "# touched 2026-08-09\nsync_version:"))
+        found, out = self._run()
+        self.assertEqual(len(found), 1)
+        self.assertIn("2026-08-09", out)
+
+    def test_the_finding_names_the_line(self):
+        """The original episode was misdiagnosed because the refusal said WHICH
+        date but never WHERE, and the author of the refused write is usually not
+        the author of the offending line."""
+        self._put(self.CLEAN.replace("sync_version:", "# touched 2026-08-09\nsync_version:"))
+        _, out = self._run()
+        self.assertIn("line 1", out)
+
+    def test_a_date_without_declaration_only_is_not_a_finding(self):
+        """The rule is the manifest's own declaration, not our preference."""
+        self._put(self.CLEAN.replace("    declaration_only: true\n", "")
+                            .replace("sync_version:", "# touched 2026-08-09\nsync_version:"))
+        found, _ = self._run()
+        self.assertEqual(found, [])
+
+    @unittest.skipUnless(_HAS_YAML, "parse check at rest requires PyYAML")
+    def test_an_unparseable_manifest_at_rest_is_found(self):
+        self._put("boot:\n  - a line that wraps\n    and says this: breaking it\n")
+        found, out = self._run()
+        self.assertEqual(len(found), 1)
+        self.assertIn("does NOT parse", out)
+
+    def test_absent_manifest_is_not_a_finding(self):
+        found, _ = self._run()
+        self.assertEqual(found, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

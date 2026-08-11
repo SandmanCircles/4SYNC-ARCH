@@ -1,5 +1,7 @@
 # 4SYNC ARCH
 
+[![tests](https://github.com/SandmanCircles/4SYNC-ARCH/actions/workflows/ci.yml/badge.svg)](https://github.com/SandmanCircles/4SYNC-ARCH/actions/workflows/ci.yml)
+
 **A Return on Context Harness.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 

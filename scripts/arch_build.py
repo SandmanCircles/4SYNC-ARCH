@@ -108,7 +108,7 @@ MACHINERY = [
 # at genesis, and edited for the life of the project).
 #
 # The folder is arch/ and NOT archive/ because everything in it is live: the
-# licence that governs the code, the version the instance runs, the packaging an
+# license that governs the code, the version the instance runs, the packaging an
 # adopter still reads. "Archive" says dead, and a folder whose name misdescribes
 # its contents at first contact teaches the reader to skip it. Names inside are
 # bare — arch/README.md, not arch/ARCH_README.md — since the prefix existed only

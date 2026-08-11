@@ -163,7 +163,7 @@ project-wide rename.
 **Genesis also clears our packaging out of your root.** `README.md`, `EXAMPLE.md` and
 `LICENSE` move into `arch/`, keeping their names — still tracked, never ignored. The
 folder is already there before genesis runs, holding `arch/VERSION`, and it is called
-`arch/` rather than `archive/` because nothing in it is dead: the licence governs the
+`arch/` rather than `archive/` because nothing in it is dead: the license governs the
 code, the version is the one you are running, and the packaging is still worth reading. That matters most for the license:
 left at root, `LICENSE` is what GitHub reads as *your* repo's license the moment you run
 `git init`, so your work would show up as FSL-licensed under our copyright notice. Moved,

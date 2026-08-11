@@ -64,10 +64,10 @@ def git_root(path):
 def settings_root(instance):
     """Where Claude Code will ACTUALLY read settings for a session in this instance.
 
-    THE DEFECT THIS EXISTS FOR (MP#64, field-reported by Chris Kennan 2026-08-10).
+    THE DEFECT THIS EXISTS FOR (MP#64, field-reported 2026-08-10).
     This script used to write `.claude/settings.local.json` at the INSTANCE root and
     stop there. That is right only when the instance is also the repository root.
-    Put ARCH in a subfolder of an existing codebase — `new-crm/ops/`, the shape of
+    Put ARCH in a subfolder of an existing codebase — `myapp/ops/`, the shape of
     every adoption that adds ARCH to a project rather than starting from an empty
     folder — and the file lands somewhere nothing ever reads. The tool reported
     success, the adopter believed they were wired, and no guard ever fired.

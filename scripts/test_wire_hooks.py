@@ -191,8 +191,8 @@ class TestSettingsRoot(unittest.TestCase):
         self.assertIn("repository root", why)
 
     def test_nested_instance_resolves_to_the_repository_root(self):
-        """Chris Kennan's layout, 2026-08-10: ARCH at `ops/` under a framework app."""
-        proj = self._git_init(os.path.join(self.root, "new-crm"))
+        """A real adopter layout, 2026-08-10: ARCH at `ops/` under a framework app."""
+        proj = self._git_init(os.path.join(self.root, "myapp"))
         ops = os.path.join(proj, "ops")
         os.makedirs(ops)
         sroot, why = wh.settings_root(ops)

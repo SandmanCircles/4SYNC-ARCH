@@ -873,7 +873,7 @@ def _instance_root(cwd, strict=False, require_kernel=False):
     test made every such repo an instance: sessions doing ordinary app work dropped
     a `.session_debt.tsv`, carrying session ids and absolute local paths, into
     repositories that had never adopted ARCH and did not gitignore it. Reproduced
-    2026-08-10 from Chris Kennan's field report.
+    2026-08-10 from an adopter's field report.
 
     RECORDING AND FENCING WANT DIFFERENT ANSWERS TO "is this an instance?", and
     treating them as one question is what produced the defect. g6 keeps the bare

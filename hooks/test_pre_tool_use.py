@@ -717,9 +717,9 @@ class TestDebtRecorderScope(unittest.TestCase):
 
     def test_pinning_still_overrides_everything(self):
         """ARCH_DEBT_FILE is the containment an adopter reached for before this fix
-        existed (Chris Kennan, 2026-08-10) and it keeps working. Its companion in
-        that field report, ARCH_INSTANCE_ROOT, never existed — no code has ever read
-        it — which is why the fix is code and not a documented pinning pattern."""
+        existed (2026-08-10) and it keeps working. Its companion in that field
+        report, ARCH_INSTANCE_ROOT, never existed — no code has ever read it —
+        which is why the fix is code and not a documented pinning pattern."""
         laravel = os.path.join(self.root, "pinned-app")
         os.makedirs(os.path.join(laravel, hooks.CONFIG_DIR))
         pinned = os.path.join(self.root, "elsewhere.tsv")

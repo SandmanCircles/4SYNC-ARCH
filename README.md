@@ -714,7 +714,7 @@ diff against, the filenames no longer line up, and most of the content is *yours
 So sort the files into three buckets, because only one of them is ever "updated":
 
 - **Machinery** — `hooks/pre_tool_use.py`, `hooks/session_start.py`, their two suites,
-  and `scripts/*.py` with theirs: **fifteen files, listed canonically in
+  and `scripts/*.py` with theirs: **seventeen files, listed canonically in
   `scripts/arch_build.py`.** Generic, never renamed, not meant to be edited by you.
   **Updating means replacing the file**; byte-identical is the correct outcome.
 - **Your instance** — the `config/` stack, the ledger, naming conventions, journal,
@@ -774,9 +774,18 @@ declares **9**. They answer different questions: `check_sync` asks *has the silo
 drifted from the product*, comparing two directories that both exist on the
 maintainer's machine, and correctly omits `meter.py`, `actuals.py`, their suites and
 `wire_hooks.py`, because the silo keeps no second copy of those and a file with one
-copy cannot drift. From your position all fifteen are machinery alike: copied in,
+copy cannot drift. From your position all seventeen are machinery alike: copied in,
 never renamed, replaced wholesale by an update. Treating those two questions as one
 is what left the gap this section closes.
+
+**The count went 15 → 17 at v1.0.8**, when `arch_build.py` and its suite turned out to
+be missing from their own inventory. A release changing only that file moved no build
+id, so you could have skipped it, computed an id that matched the release, and been
+told you were current while missing the change. Adding them means **every id published
+before v1.0.8 now recomputes to something else** — permanent, not a defect, and the
+same one-time effect the `arch/VERSION` move had at v1.0.5. Compare against the current
+release; older ids were verified when they shipped and cannot be re-derived by code of
+a later generation.
 
 ## Getting help — `SUPPORT.md`
 

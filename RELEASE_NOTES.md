@@ -44,6 +44,68 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.8
+
+**Machinery: replace `scripts/rotate.py` and `scripts/arch_build.py`, and their two test
+files.**
+
+**Manifest: nothing to change.**
+
+**Read this before you compare ids — the machinery list grew, and every id published before
+this release now recomputes to something else.** `arch_build.py` and its own suite were
+missing from `MACHINERY`, from v1.0.0 through v1.0.7, for no recorded reason. Adding them takes
+the inventory 15 → 17. That is permanent, it is not a defect, and it is not repairable: a build
+id is anchored to a tag for file CONTENT but to the RUNNING CODE for the INVENTORY, so ids are
+only ever comparable within a generation. This is the second and, we expect, last time —
+the `arch/VERSION` move did the same thing at v1.0.5. **Compare against the current release
+and disregard older ids.**
+
+**Why it mattered, because it is the reason to take this one:** a release that changed only
+`arch_build.py` moved no build id. So you could have skipped that file, computed an id that
+**matched the release**, and been told you were current while missing the change. An identity
+that omits a file an update replaces confirms a currency you do not have — in the script whose
+entire job is preventing exactly that. From v1.0.8 the id covers every file an update replaces,
+which is the first release where *"take machinery wholesale or not at all"* is actually backed
+by the number.
+
+**New: your ledger's status legend now defines the tally's vocabulary.** If your ledger uses a
+status mark beyond the shipped five, **declare it in your own status legend and `rotate.py`
+will count it.** Both legend forms are read — the prose `**Status:** ✅ completed · …` line and
+a `| Symbol | Status | Meaning |` table — so nothing in your ledger has to change shape. An
+**undeclared** mark still reports and blocks the Tally rewrite, unchanged and deliberate: a
+total that silently omits rows is worse than a stale one. **If you added no marks, nothing
+changes** — your Tally line is byte-identical to every previous run.
+
+Found on a real instance: two rows in a sixth status made every one of them `unknown`, which
+blocked the rewrite, which left a hand-maintained count stranded with the mechanism that
+repairs it switched off.
+
+**What changed:**
+
+- **`scripts/rotate.py` — status marks are read from the ledger's own legend.** The five
+  shipped marks remain the base and the legend only adds; a legend entry reusing a base symbol
+  or name is dropped rather than merged, so a second spelling of one status cannot
+  double-count. A legend needs at least three entries to be read as one, so a stray
+  symbol-headed table row in a journal block cannot mint a status.
+- **`scripts/arch_build.py` — the report now names the update instructions.** It points at
+  `RELEASE_NOTES.md` and at the published `llms.txt`, at the one moment you are already asking
+  what you are running. It still refuses to tell you whether you are *current*: that needs an
+  upstream comparison point this script does not have and will not invent.
+- **`scripts/arch_build.py` — `MACHINERY` 15 → 17**, as above.
+- **`README.md` gains *"The byte cap is yours."*** `integrity.manifest_rules.max_bytes` is
+  your number: the guard reads it from your manifest, and **no release will ever ship you a
+  value or ask you to change one.** The section carries the discipline that makes a cap worth
+  having — raise it only when a real declaration will not fit, trim prose otherwise — and the
+  distinction to use when bytes are scarce: a line a session *executes* is load-bearing, a line
+  that only *documents* is the first to drop.
+- **`RELEASE_NOTES.md` — v1.0.4's optional manifest line gained one addendum:** if it does not
+  fit, leave it out, and do not read the refusal as being behind on a release.
+
+**Suites:** `rotate` 176 → 188, `arch_build` 35 → 40. 372 under `scripts/`, 157 under `hooks/`,
+green with and without PyYAML.
+
+---
+
 ## v1.0.7
 
 **Machinery: replace `hooks/pre_tool_use.py` and `scripts/wire_hooks.py`, and their two

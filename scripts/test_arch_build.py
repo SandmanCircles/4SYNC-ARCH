@@ -45,8 +45,18 @@ class TempInstance(unittest.TestCase):
 
 
 class TestInventory(unittest.TestCase):
-    def test_inventory_is_fifteen_files(self):
-        self.assertEqual(len(arch_build.MACHINERY), 15)
+    def test_inventory_is_seventeen_files(self):
+        self.assertEqual(len(arch_build.MACHINERY), 17)
+
+    def test_inventory_includes_this_script_and_its_suite(self):
+        """MP#69. Absent from v1.0.0 through v1.0.7 with no recorded reason. A
+        release changing only arch_build.py moved no build id, so an adopter
+        could skip the file, compute an id that MATCHED the release, and be told
+        they were current while missing the change — an identity omitting a file
+        an update replaces. Named so a future tidy-up of "the script hashing
+        itself looks odd" has to read why it is there."""
+        self.assertIn("scripts/arch_build.py", arch_build.MACHINERY)
+        self.assertIn("scripts/test_arch_build.py", arch_build.MACHINERY)
 
     def test_inventory_includes_the_version_file(self):
         """A release number is part of the build, not metadata about it."""
@@ -129,7 +139,12 @@ class TestBuildId(TempInstance):
         os.remove(os.path.join(self.root, "scripts", "meter.py"))
         digests, missing = arch_build.file_digests(self.root)
         self.assertEqual(missing, ["scripts/meter.py"])
-        self.assertEqual(len(digests), 14)
+        # DERIVED, not a literal. This read 14 beside a 15-file list and broke
+        # the moment the inventory moved — a second copy of a count that the
+        # list one import away already holds. TestInventory asserts the number
+        # ONCE, on purpose, as the canary for an accidental inventory change;
+        # everywhere else derives it, so only the deliberate assertion fails.
+        self.assertEqual(len(digests), len(arch_build.MACHINERY) - 1)
 
     def test_two_different_missing_files_give_different_ids(self):
         """Missing files participate by NAME, not merely by count."""

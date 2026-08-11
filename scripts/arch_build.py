@@ -66,11 +66,13 @@ import sys
 #     a sound reason: the silo carries no copy of those — it runs them out of the
 #     nested product folder — and a file with exactly one copy cannot drift.
 #
-#   arch_build.py (15 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
-#     adopter's position those five are machinery exactly like the other nine:
+#   arch_build.py (17 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
+#     adopter's position those files are machinery exactly like the other nine:
 #     copied in, never renamed, replaced wholesale by an update. Omitting them
-#     would produce a build identity that silently ignores five files an update
-#     changes.
+#     would produce a build identity that silently ignores files an update
+#     changes. 15 → 17 at v1.0.8: this script and its suite were missing from
+#     their own list, which is the same error one level in. See the note beside
+#     them below.
 #
 # Treating those two questions as one is what left the gap. Keep both lists, keep
 # them honest, and keep this comment next to whichever one you edit.
@@ -91,6 +93,26 @@ MACHINERY = [
     "hooks/session_start.py",
     "hooks/test_session_start.py",
     "hooks/claude-settings.example.json",
+    # THIS FILE IS IN ITS OWN INVENTORY, added at v1.0.8 (MP#69). It was absent
+    # from v1.0.0 through v1.0.7 for no recorded reason — the comment above spends
+    # eighteen lines reconciling this list against check_sync.py's and never
+    # mentions the omission. By its own stated test it always belonged: copied in,
+    # never renamed, replaced wholesale by an update.
+    #
+    # THE FAILURE IT ALLOWED, caught while cutting v1.0.8. A release changing only
+    # this file moved no build id, so an adopter could skip it, compute an id that
+    # MATCHED the release, and be told they were current while missing the change.
+    # An identity that omits a file an update replaces confirms a currency nobody
+    # has — which is the exact defect this script exists to prevent, in the script
+    # that prevents it.
+    #
+    # Hashing itself is not circular: it digests bytes on disk, and it never reads
+    # its own digest. The id is anchored to a tag for CONTENT but to the running
+    # code for the INVENTORY, so ids are only ever comparable within a generation —
+    # already on record from the v1.0.5 arch/ move, and this addition has the same
+    # one-time effect on tags cut before it.
+    "scripts/arch_build.py",
+    "scripts/test_arch_build.py",
     "scripts/rotate.py",
     "scripts/test_rotate.py",
     "scripts/meter.py",

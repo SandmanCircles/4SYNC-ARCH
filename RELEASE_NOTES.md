@@ -44,6 +44,56 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.6
+
+**Machinery: replace `scripts/wire_hooks.py` and `hooks/claude-settings.example.json`, and
+add the new `scripts/test_wire_hooks.py`.** Nothing under `hooks/` that actually runs
+changed. No `VERSION` move this time — if you took v1.0.5, `arch/VERSION` is already where
+it belongs.
+
+**Manifest: nothing to change.**
+
+**Check this one thing if you wired from the example file rather than the README:** the
+example was missing its `SessionStart` block entirely, so a settings file copied from it
+wires the guards and **not** the boot receipt. Open your `settings.json` and look for
+`SessionStart`. If it is absent, you have been running without the receipt — no boot
+verification, no session-debt reading at boot, and since v1.0.5 no boot-growth report either.
+The README always carried the block; the example never did, and the two disagreed.
+
+**What changed:**
+
+- **`wire_hooks.py` now prints the `SessionStart` block for you, with your real paths
+  already filled in.** It still does not write it, and that is deliberate rather than
+  unfinished: this script writes **project-level** `.claude/settings.local.json`, while the
+  receipt belongs at **user level**. The sessions that skip boot are the ones launched
+  *outside* your instance, and those never read project settings at all — so wiring the
+  receipt at project level would put it exactly where it is least needed while letting you
+  believe you were covered.
+  - What it removes is the step that actually goes wrong: hand-substituting an interpreter
+    path and a hook path into a template full of `/full/path/to/python`. The script has
+    already verified your interpreter by executing it, so it prints both paths filled in,
+    ready to paste.
+  - `~/.claude/settings.json` stays yours. Its contents run on **every tool call in every
+    project on the machine**, which is too much reach for a script to claim on your behalf.
+- **The example settings file gained the `SessionStart` block** and now says **seven**
+  structural guards rather than six — the seventh, STATUS-stale-write, has shipped since
+  v1.0.1 and this file never mentioned it.
+- **`scripts/test_wire_hooks.py` is new — 19 tests, the first suite this script has ever
+  had.** It was the only script in the product without one, and it was also the one shipping
+  half its wiring. Those two facts arriving together is a place to look, not a coincidence.
+- **Spelling:** "licence" → "license" in `README.md` and one `arch_build.py` string.
+
+> **One gap recorded rather than quietly shipped.** `scripts/test_wire_hooks.py` ships, but
+> it is **not** in the hashed machinery inventory — every other script is paired with its
+> test there; this one was the exception only because no test existed until now. So if that
+> file goes missing or gets edited in your instance, **the build id will not notice.** Adding
+> it is a one-line change with an outsized side effect — changing the inventory retroactively
+> changes what every past tag computes — so it is deliberately held for a release that is
+> already moving the inventory. Until then: the build id tells you your *running* machinery
+> matches a release. It does not vouch for that one test file.
+
+---
+
 ## v1.0.5
 
 **Machinery: replace `hooks/session_start.py`, `hooks/test_session_start.py`,

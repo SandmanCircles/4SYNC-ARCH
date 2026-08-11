@@ -486,7 +486,7 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
     return None
 
 
-def g5_boring_guard(tool, path, text, cmd, full=None):
+def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
     """Keep the instance manifest BORING — pure declaration. The manifest declares
     its OWN policy in `integrity.manifest_rules`; this guard reads that policy from
     the resulting content (so a deliberate policy change in the same write is
@@ -578,9 +578,18 @@ def g5_boring_guard(tool, path, text, cmd, full=None):
             # edit was three lines away and blameless — which is exactly how the
             # original write-lock episode was misdiagnosed (MP#54). Compare against
             # the file on disk and say which case this is.
+            # `path` arrives LOWERCASED for matching; the real path is only in ctx.
+            # Opening the lowercased one succeeds on Windows and raises on any
+            # case-sensitive filesystem whenever the target has a capital in it —
+            # and the shipped manifest is named `4SYNC.yaml`, so on Linux/macOS that
+            # was EVERY refusal, always, silently downgraded to the hedged message
+            # by the except below. The attribution this function exists for was
+            # therefore inert for every non-Windows adopter (MP#70). g7 already had
+            # this right; g5 predated it and was not revisited.
             was_there = None
+            target = (ctx or {}).get("raw_path") or path
             try:
-                with open(path, encoding="utf-8") as fh:
+                with open(target, encoding="utf-8") as fh:
                     was_there = date in fh.read()
             except Exception:  # noqa: BLE001 — unreadable path: claim neither
                 was_there = None

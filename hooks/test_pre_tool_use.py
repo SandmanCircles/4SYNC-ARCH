@@ -444,6 +444,56 @@ class TestBoringGuardDateAttribution(GuardCase):
         self.assertIn("ALREADY IN THE FILE", reason)
         self.assertIn("did not introduce it", reason)
 
+    def test_the_origin_check_opens_the_raw_path_not_the_lowercased_one(self):
+        """MP#70, pinned so it holds on a case-INsensitive filesystem too.
+
+        `_extract` lowercases the path for matching; the origin check then has to
+        READ the file. Opening the lowercased name raises on any case-sensitive
+        filesystem whenever the target has a capital in it — and the shipped
+        manifest is `4SYNC.yaml` — so the except below it silently downgraded
+        every refusal to the hedged message. The feature was inert on Linux and
+        macOS from the day it shipped.
+
+        WHY THIS TEST EXISTS RATHER THAN JUST THE TWO ABOVE: on Windows the
+        lowercased open succeeds, so a test asserting only on the MESSAGE cannot
+        see the bug. The two tests above are green here and red on Linux, which
+        is precisely why this shipped through v1.0.7 and v1.0.8 — the suite was
+        only ever run on the filesystem that hides it. Assert the path itself and
+        the platform stops mattering."""
+        import builtins
+        opened = []
+        real_open = builtins.open
+
+        def spy(file, *a, **kw):
+            opened.append(file)
+            return real_open(file, *a, **kw)
+
+        builtins.open = spy
+        try:
+            reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                                  'name: "Test Instance"  # 2026-08-09'))
+        finally:
+            builtins.open = real_open
+
+        self.assertIsNotNone(reason)
+        self.assertIn("This write introduces it", reason)
+
+        # COMPARE NORMALISED. `_extract` does BOTH `.replace("\\","/")` and
+        # `.lower()`, so on Windows the mangled path differs from the raw one in
+        # separators as well as case. A first cut of this test compared against
+        # `self.manifest.lower()` — still backslashed — which matched nothing, so
+        # it passed against the unfixed guard. Normalise separators on both sides
+        # and let CASE be the only thing under test.
+        seen = [str(p).replace("\\", "/") for p in opened]
+        raw = self.manifest.replace("\\", "/")
+        self.assertIn(raw, seen)
+        # The discriminating half: pre-fix, g5's own open() put the lowercased
+        # path in this list alongside the raw one _resulting_content reads.
+        if raw != raw.lower():
+            self.assertNotIn(raw.lower(), seen,
+                             "g5 opened the LOWERCASED path — MP#70 has regressed, and "
+                             "on a case-sensitive filesystem attribution is inert again")
+
     def test_a_clean_manifest_edit_still_passes(self):
         reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
                                               'name: "Renamed"'))

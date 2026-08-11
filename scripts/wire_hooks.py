@@ -31,6 +31,7 @@ import subprocess
 import sys
 
 HOOK_REL = "hooks/pre_tool_use.py"
+BOOT_HOOK_REL = "hooks/session_start.py"
 SETTINGS_REL = os.path.join(".claude", "settings.local.json")
 LOG_REL = ".claude/arch_hooks_warn.log"
 MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash"
@@ -109,6 +110,47 @@ def merge(existing, exe, hook_path, root, mode):
     return out
 
 
+def boot_hook_block(exe, boot_hook_path):
+    """The user-level SessionStart wiring, rendered with REAL paths.
+
+    THIS SCRIPT DOES NOT WRITE IT, and that is a decision rather than a gap. It
+    writes PROJECT-level settings, and the sessions that skip boot are precisely
+    the ones launched OUTSIDE the instance — which never read project settings at
+    all. Wiring the receipt here would put it exactly where it is least needed and
+    let an adopter believe they were covered. `~/.claude/settings.json` is also the
+    one file whose contents run on every tool call in every project on the machine,
+    so it stays a deliberate paste rather than something a script does to you.
+
+    What is removed is the step that actually goes wrong: hand-substituting an
+    interpreter path and a hook path into a template of `/full/path/to/python`.
+    Both are already known here and the interpreter has been EXECUTED, so they are
+    printed filled in. No `matcher` — SessionStart is not a tool event."""
+    return json.dumps(
+        {"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command",
+                        "command": '"%s" "%s"' % (exe, boot_hook_path)}]}]}},
+        indent=2)
+
+
+def print_boot_hook_guidance(root, exe):
+    """Print the paste-ready SessionStart block, or say why there is none."""
+    boot_hook = os.path.join(root, *BOOT_HOOK_REL.split("/")).replace("\\", "/")
+    print()
+    if not os.path.isfile(boot_hook):
+        print("NOTE: no %s in this checkout — nothing to say about the boot receipt."
+              % BOOT_HOOK_REL)
+        return
+    print("── The boot receipt is NOT wired by this script. Paste this yourself: ──")
+    print()
+    print(boot_hook_block(exe, boot_hook))
+    print()
+    print("Into ~/.claude/settings.json (USER level), merging into any 'hooks' block")
+    print("already there — do not replace the file. Project level would not help: the")
+    print("sessions that skip boot are the ones launched OUTSIDE this folder, and those")
+    print("never read project settings at all. Paths above are this script's own")
+    print("verified interpreter and hook, already filled in.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Wire the 4SYNC ARCH guard hooks into Claude Code.")
     ap.add_argument("--dir", default=None,
@@ -168,15 +210,17 @@ def main():
 
     if not args.write:
         print("DRY RUN — nothing written. Re-run with --write to apply.")
-        return 0
+    else:
+        os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        with open(settings_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(rendered + "\n")
+        print("WROTE %s" % settings_path)
+        print("Now reload: open /hooks once, or restart the session. A .claude/ folder that")
+        print("did not exist when the session started is not watched mid-session.")
+        print("Add .claude/settings.local.json and the warn log to .gitignore — they are local.")
 
-    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
-    with open(settings_path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(rendered + "\n")
-    print("WROTE %s" % settings_path)
-    print("Now reload: open /hooks once, or restart the session. A .claude/ folder that")
-    print("did not exist when the session started is not watched mid-session.")
-    print("Add .claude/settings.local.json and the warn log to .gitignore — they are local.")
+    # Printed in BOTH modes: it is advice, not an effect of writing.
+    print_boot_hook_guidance(root, exe)
     return 0
 
 

@@ -44,6 +44,71 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.5
+
+**Machinery: replace `hooks/session_start.py`, `hooks/test_session_start.py`,
+`scripts/rotate.py` and `scripts/test_rotate.py` — and MOVE your `VERSION` file from your
+instance root to `arch/VERSION`.** The move is the only step in this release that needs your
+hands. Everything else is additive.
+
+> **Move it, do not copy it.** A `VERSION` left behind at the root while machinery updates is
+> the one failure this layout can produce, and it is quiet: `arch_build.py` folds
+> `arch/VERSION: MISSING` into the id, so you get a build that matches no release and a
+> currency check that cannot tell you why. `stray_root_version()` now names that exact case
+> if you hit it. Why the file moved at all: the rel key is hashed alongside the digest, so a
+> file at a different path hashes under a different key — one fixed location is what lets any
+> instance match a published id at all.
+
+**Manifest: nothing to change.** No new keys, no edits.
+
+**What changed:**
+
+- **The boot receipt now tells you which boot file grew, and it tells you on arrival.**
+  `meter.py --log` has been appending per-file boot sizes to `metrics/roc_series.jsonl` at
+  every close since it shipped, and nothing had ever read that series at boot. Now the
+  receipt compares against the last logged close and names the files that grew. **The point
+  is the timing, not the measurement:** on the instance this was built from, a *close-time*
+  size report fired at every close for five days, named the right file and prescribed the
+  right fix, while that file grew 72% — because a warning delivered to a session that is
+  trying to finish loses to finishing. The same sentence at boot reaches a session with the
+  whole session still ahead of it.
+  - Two gates, both must trip: **≥1,024 B and ≥10%**. A small file that doubled is not news
+    and a large file drifting by a line is not either. `ARCH_BOOT_GROWTH_PCT` overrides.
+  - **Silent if you have never run `meter.py --log`** — no series, no baseline, no alarm.
+  - A **scanned** bulletin is excluded from the comparison. It has no comparable baseline:
+    the meter logs its scan estimate while the receipt sees the whole file, and comparing
+    the two reported a 1,135% jump on a file nobody had touched. That was found on the
+    feature's first live run, and no dry run could have surfaced it.
+
+- **`rotate.py` flags STATUS entries whose ledger references are all closed rows.** A closed
+  task's outcome is still *true*, so it survives every staleness check ever written and sits
+  in your boot path forever. This asks the other question. It scans **every** top-level list
+  field rather than one field by name, so a `blockers:` entry whose task closed is caught
+  too.
+  - Only `MP#<n>`-style references count. A bare `#22` is prose, not a citation.
+  - An entry citing **nothing** is never flagged, and an entry citing a mix of open and
+    closed rows is left alone. Silence is not evidence; this check would rather miss than
+    accuse. Reported, never blocking.
+
+- **The STATUS template now carries the test that governs it:** *if the fact would still be
+  true a year from now, it is not state.* It belongs in `FINDINGS.md` (with a `Trigger:` and
+  an `Exit:`), in your KERNEL invariants, or in history. Written into the `in_flight:` block
+  itself so you meet it before your first entry rather than after the file has grown.
+
+- **Tests 160 → 176 (`rotate`) and 37 → 51 (`session_start`)**, green with and without
+  PyYAML.
+
+> **One consequence recorded rather than quietly shipped.** Moving `VERSION` changed the
+> machinery *inventory*, and build ids are anchored to a tag for file CONTENT but to the
+> running code for the INVENTORY. So every tag cut before this one now recomputes to
+> something other than the id it published — `v1.0.4` was verified at release and no longer
+> reproduces. Nothing about those releases changed; the question being asked of them did.
+> **The general form, which outlives this instance: a published pair can only be re-verified
+> by code of its own generation.** If you are updating from any earlier release, verify
+> against *this* one and disregard the older ids.
+
+---
+
 ## v1.0.4
 
 **Machinery: replace `hooks/pre_tool_use.py` and `hooks/test_pre_tool_use.py`, plus root

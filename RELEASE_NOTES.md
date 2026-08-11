@@ -44,6 +44,62 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.7
+
+**Machinery: replace `hooks/pre_tool_use.py` and `scripts/wire_hooks.py`, and their two
+test files.** Unlike v1.0.6, a hook that actually runs did change this time.
+
+**Manifest: nothing to change.**
+
+**Check this one thing — run it, don't estimate it.** From inside your instance:
+
+```bash
+git rev-parse --show-toplevel
+```
+
+If that prints your instance folder, or fails because you are not in a git repository,
+this release changes nothing about your wiring and there is nothing to do.
+
+If it prints a folder **above** your instance — ARCH lives in a subfolder of a larger
+repository — then your settings were written to `<instance>/.claude/settings.local.json`,
+which Claude Code never reads. Claude Code resolves settings to the root of the git
+repository. Re-run `python scripts/wire_hooks.py --write` (it now targets the right
+place and tells you which root it chose), then **delete the old
+`<instance>/.claude/settings.local.json`.** Deleting it is the part worth doing rather
+than skipping: a settings file sitting where you expect one is the reason this went
+unnoticed in the first place.
+
+**What changed:**
+
+- **`wire_hooks.py` resolves where Claude Code actually reads settings, instead of
+  assuming the instance root.** It uses `git rev-parse --show-toplevel`, prints the root
+  it chose and why, and warns when that is outside the instance. Two cases keep the file
+  with the instance: you are not in a git repository, or the repository root is your home
+  directory. A nested repository that is *its own* repository — the shape of a vendored
+  or embedded checkout — is its own settings root and is left alone.
+  - Previously it always wrote to the instance root and reported success. For a nested
+    layout that produced a settings file nothing loads: no guards, no boot receipt, and
+    a file on disk saying otherwise.
+- **`wire_hooks.py` sets `ARCH_MANIFEST` when your manifest has been renamed.** Genesis
+  renames the manifest per project and merges the variable into `.claude/settings.json`;
+  if the file Claude Code loads is a different one, that merge never reaches it. The
+  script now finds the manifest by content rather than by name and fills the blank,
+  without overwriting a value you already set.
+- **The session-debt recorder no longer treats any folder with a `config/` directory as
+  an ARCH instance.** It now requires a loader-stack KERNEL inside that directory.
+  Nothing to do — this is a behaviour change with no migration.
+  - What it fixes: Laravel, Symfony, Drupal and others put `config/` at the project root.
+    With the hooks wired at user level, as this project recommends, every session working
+    in such a project — including sessions with no connection to ARCH — wrote a
+    `.session_debt.tsv` at that project's root. The file carries session ids and absolute
+    local paths, and nothing in those repositories gitignores it.
+  - Write fencing is deliberately unchanged and still treats a bare `config/` as an
+    instance. Fencing and recording want different answers to "is this an instance?":
+    over-identifying costs a declined write you can approve, while under the recorder it
+    costs a file in somebody else's repository.
+
+---
+
 ## v1.0.6
 
 **Machinery: replace `scripts/wire_hooks.py` and `hooks/claude-settings.example.json`, and

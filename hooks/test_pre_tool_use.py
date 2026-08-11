@@ -655,20 +655,78 @@ class TestDebtRecorderScope(unittest.TestCase):
         return {"tool_name": "Write", "session_id": "s-test", "cwd": cwd,
                 "tool_input": {"file_path": os.path.join(cwd, "note.txt"), "content": "x"}}
 
+    @staticmethod
+    def _instance(path, kernel="KERNEL.yaml"):
+        """An ARCH instance is a config dir WITH a KERNEL in it (MP#63). Every test
+        here builds one through this helper, so the marker cannot drift out of the
+        fixtures unnoticed — a bare config dir is now a deliberate, separate case."""
+        cfg = os.path.join(path, hooks.CONFIG_DIR)
+        os.makedirs(cfg, exist_ok=True)
+        with open(os.path.join(cfg, kernel), "w", encoding="utf-8") as fh:
+            fh.write("meta:\n  role: identity-kernel\n")
+        return path
+
     def test_records_inside_an_instance(self):
-        inst = os.path.join(self.root, "myproject")
-        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR))
+        inst = self._instance(os.path.join(self.root, "myproject"))
         hooks._record_debt(self._write_payload(inst))
         self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
 
     def test_records_from_a_subfolder_at_the_instance_root(self):
-        inst = os.path.join(self.root, "myproject")
+        inst = self._instance(os.path.join(self.root, "myproject"))
         sub = os.path.join(inst, "web", "src")
-        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR))
         os.makedirs(sub)
         hooks._record_debt(self._write_payload(sub))
         self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
         self.assertFalse(os.path.exists(os.path.join(sub, hooks.DEBT_FILENAME)))
+
+    def test_a_bare_config_dir_is_not_an_instance(self):
+        """MP#63, reproduced from the field before it was fixed. Laravel, Symfony
+        and Drupal ship `config/` at the project root. Under the USER-LEVEL wire
+        this product recommends, that made every such repo an instance, so ordinary
+        app-dev sessions with no ARCH involvement dropped a .session_debt.tsv —
+        session ids and absolute local paths — into a repo that does not gitignore
+        it. The file materialising in somebody else's application repo is the
+        defect; the mis-identification is only how it got there."""
+        laravel = os.path.join(self.root, "laravel-app")
+        os.makedirs(os.path.join(laravel, hooks.CONFIG_DIR))
+        os.makedirs(os.path.join(laravel, "app"))
+        hooks._record_debt(self._write_payload(laravel))
+        self.assertFalse(
+            os.path.exists(os.path.join(laravel, hooks.DEBT_FILENAME)),
+            "a framework's config/ dir must not make its repo a debt-recording instance")
+
+    def test_walks_past_a_bare_config_dir_to_a_real_instance(self):
+        """A bare config/ is no longer an ANSWER, so the walk must continue rather
+        than stop there — otherwise the fix would trade littering for losing the
+        row of a session genuinely working inside an instance."""
+        inst = self._instance(os.path.join(self.root, "real-instance"))
+        nested = os.path.join(inst, "vendor-app")
+        os.makedirs(os.path.join(nested, hooks.CONFIG_DIR))
+        hooks._record_debt(self._write_payload(nested))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+        self.assertFalse(os.path.exists(os.path.join(nested, hooks.DEBT_FILENAME)))
+
+    def test_the_marker_survives_the_genesis_prefix(self):
+        """Genesis renames the stack per project (`config/4SHIELD_KERNEL.yaml`), so
+        the marker is matched as a SUFFIX. An exact-filename test would have worked
+        on this repo and failed on every instance that had actually run genesis."""
+        inst = self._instance(os.path.join(self.root, "prefixed"),
+                              kernel="4SHIELD_KERNEL.yaml")
+        hooks._record_debt(self._write_payload(inst))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+
+    def test_pinning_still_overrides_everything(self):
+        """ARCH_DEBT_FILE is the containment an adopter reached for before this fix
+        existed (Chris Kennan, 2026-08-10) and it keeps working. Its companion in
+        that field report, ARCH_INSTANCE_ROOT, never existed — no code has ever read
+        it — which is why the fix is code and not a documented pinning pattern."""
+        laravel = os.path.join(self.root, "pinned-app")
+        os.makedirs(os.path.join(laravel, hooks.CONFIG_DIR))
+        pinned = os.path.join(self.root, "elsewhere.tsv")
+        os.environ["ARCH_DEBT_FILE"] = pinned
+        hooks._record_debt(self._write_payload(laravel))
+        self.assertTrue(os.path.exists(pinned))
+        self.assertFalse(os.path.exists(os.path.join(laravel, hooks.DEBT_FILENAME)))
 
     def test_writes_nothing_outside_an_instance(self):
         """The regression this exists for: with a user-level wire, the cwd fallback
@@ -679,7 +737,7 @@ class TestDebtRecorderScope(unittest.TestCase):
         self.assertEqual(os.listdir(plain), [], "no instance => no file, anywhere")
 
     def _seed(self, inst, rows):
-        os.makedirs(os.path.join(inst, hooks.CONFIG_DIR), exist_ok=True)
+        self._instance(inst)
         path = os.path.join(inst, hooks.DEBT_FILENAME)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(hooks.DEBT_HEADER + "\n")
@@ -756,6 +814,17 @@ class TestDebtRecorderScope(unittest.TestCase):
         self.assertIsNone(hooks._instance_root(plain, strict=True))
         self.assertEqual(hooks._instance_root(plain), os.path.abspath(plain))
 
+    def test_require_kernel_is_the_only_thing_that_separates_the_two_readings(self):
+        """Pins the split itself. The same directory is an instance to the fencing
+        reading and not to the recording one — that disagreement is the design
+        (MP#63), not a bug to reconcile later."""
+        laravel = os.path.join(self.root, "framework-root")
+        os.makedirs(os.path.join(laravel, hooks.CONFIG_DIR))
+        self.assertEqual(hooks._instance_root(laravel, strict=True),
+                         os.path.abspath(laravel))
+        self.assertIsNone(
+            hooks._instance_root(laravel, strict=True, require_kernel=True))
+
 
 class TestG6RootFence(unittest.TestCase):
     """MP#21 — flag a write into a DIFFERENT ARCH instance than the session is in.
@@ -817,6 +886,38 @@ class TestG6RootFence(unittest.TestCase):
         self.assertIsNotNone(reason, "the cross-instance write MUST be flagged")
         self.assertIn("CROSS-INSTANCE", reason)
         self.assertIn("InstanceB", reason)
+
+    def test_g6_still_resolves_a_bare_config_dir_as_an_instance(self):
+        """DELIBERATE NON-CHANGE, named so it cannot be 'tidied up' later (MP#63).
+        The debt recorder now demands a KERNEL; g6 does not, and must not. For
+        FENCING, over-identifying is conservative — the cost of a false positive is
+        one declined write the human can approve. For RECORDING it is not
+        conservative at all, because the cost lands as a file in somebody else's
+        repository. Same heuristic, opposite risk profiles.
+
+        Every instance in this class is a bare config/ dir with no KERNEL, so if
+        require_kernel ever leaks into g6 this whole class goes silent at once."""
+        self.assertFalse(hooks._has_kernel(self.inst_a),
+                         "fixture guard: these instances carry no KERNEL")
+        reason = self._fence(self.inst_a, os.path.join(self.inst_b, "MERGE_PLAN.md"))
+        self.assertIsNotNone(reason, "g6 keeps the bare config/ reading on purpose")
+
+    def test_intra_project_write_under_a_nested_instance_is_never_refused(self):
+        """MP#63 severity refinement, verified rather than assumed. With ARCH nested
+        at `ops/` under a framework root that also ships config/, MULTI_PROJECT
+        §0.1 predicted constant friction. It is wrong about the frequency and right
+        about the mechanism: containment means every intra-PROJECT write is one
+        tree, so the misleading message appears only on genuine cross-project
+        writes. This is why the g6 message was NOT touched."""
+        framework = os.path.join(self.root, "laravel-app")
+        ops = os.path.join(framework, "ops")
+        os.makedirs(os.path.join(framework, hooks.CONFIG_DIR))
+        os.makedirs(os.path.join(ops, hooks.CONFIG_DIR))
+        for target in ("app/Models/User.php", "config/app.php", "ops/notes.md"):
+            self.assertIsNone(self._fence(ops, os.path.join(framework, target)),
+                              f"intra-project write to {target} must not be refused")
+        self.assertIsNotNone(self._fence(ops, os.path.join(self.inst_b, "MERGE_PLAN.md")),
+                             "a genuine cross-project write is still refused")
 
     def test_write_into_a_non_arch_project_is_silent(self):
         """What makes a machine-wide wire safe: no instance at the target => not

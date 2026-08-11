@@ -827,8 +827,30 @@ DEBT_HEADER = ("# 4SYNC session-debt — unwrapped sessions; an explicit close c
 # is the same warning that would flag a genuinely stranded session.
 DEBT_MAX_AGE_DAYS = 14
 
+# The marker that separates an ARCH instance from any project that merely ships a
+# `config/` dir. Matched as a case-insensitive SUFFIX so it survives genesis, which
+# prefixes the stack per project (`config/4SHIELD_KERNEL.yaml`).
+KERNEL_SUFFIX = "kernel.yaml"
 
-def _instance_root(cwd, strict=False):
+
+def _has_kernel(root):
+    """True when root's config dir holds a loader-stack KERNEL file.
+
+    WHY THE KERNEL AND NOT THE MANIFEST (MP#63). The obvious marker is the instance
+    manifest, but its filename is per-project after genesis and this hook learns it
+    from ARCH_MANIFEST — ONE value, set once, at the USER level where the hook is
+    designed to be wired. A machine running both `4sync.yaml` and `4cite.yaml`
+    cannot name both, so manifest-matching would mis-identify every instance but
+    one. The KERNEL sits at a known path inside the config dir already being
+    tested and needs no environment agreement, so it holds for N instances."""
+    try:
+        names = os.listdir(os.path.join(root, CONFIG_DIR))
+    except OSError:  # unreadable dir — "not an instance", never raise at a caller
+        return False
+    return any(n.lower().endswith(KERNEL_SUFFIX) for n in names)
+
+
+def _instance_root(cwd, strict=False, require_kernel=False):
     """Nearest ancestor of cwd that contains the loader-stack config dir.
 
     Keeps the debt file at ONE known place (the instance root) regardless of which
@@ -840,11 +862,30 @@ def _instance_root(cwd, strict=False):
     wired at USER level so its guards protect every ARCH instance on the machine
     regardless of where a session launched — and at that scope the cwd fallback
     would drop a .session_debt.tsv into every unrelated project the session ever
-    writes to. No instance means no debt to record."""
+    writes to. No instance means no debt to record.
+
+    require_kernel=True additionally demands a KERNEL inside that config dir, and
+    KEEPS WALKING when one is absent rather than stopping — a bare `config/` is no
+    longer an answer, so an ARCH instance further up is still found.
+
+    WHY THIS IS A PARAMETER AND NOT THE RULE (MP#63). Laravel, Symfony and Drupal
+    all put `config/` at the project root, so under a user-level wire the bare-dir
+    test made every such repo an instance: sessions doing ordinary app work dropped
+    a `.session_debt.tsv`, carrying session ids and absolute local paths, into
+    repositories that had never adopted ARCH and did not gitignore it. Reproduced
+    2026-08-10 from Chris Kennan's field report.
+
+    RECORDING AND FENCING WANT DIFFERENT ANSWERS TO "is this an instance?", and
+    treating them as one question is what produced the defect. g6 keeps the bare
+    `config/` test deliberately: for FENCING, over-identifying is conservative —
+    it declines a write that might have crossed an instance boundary. For
+    RECORDING it is not conservative at all, because the cost lands as a file in
+    somebody else's repository. So only the recorder passes require_kernel."""
     start = os.path.abspath(cwd or ".")
     cur = start
     while True:
-        if os.path.isdir(os.path.join(cur, CONFIG_DIR)):
+        if os.path.isdir(os.path.join(cur, CONFIG_DIR)) and (
+                not require_kernel or _has_kernel(cur)):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:
@@ -882,7 +923,7 @@ def _record_debt(payload):
     cwd = payload.get("cwd") or os.getcwd()
     debtfile = os.environ.get("ARCH_DEBT_FILE")
     if not debtfile:
-        root = _instance_root(cwd, strict=True)
+        root = _instance_root(cwd, strict=True, require_kernel=True)
         if root is None:
             return          # not inside an ARCH instance — record nothing, litter nothing
         debtfile = os.path.join(root, DEBT_FILENAME)

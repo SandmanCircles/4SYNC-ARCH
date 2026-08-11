@@ -377,6 +377,25 @@ and merges without disturbing settings you already have. Then **reload** — ope
 `/hooks` once, or restart the session; a `.claude/` folder that didn't exist when the
 session started isn't watched mid-session.
 
+**If your instance is a subfolder of a larger project, it writes one level out — and
+says so.** Claude Code reads settings from the root of the **git repository** (through
+worktrees to the main checkout), so one file covers sessions started in any
+subdirectory. Put ARCH at `myapp/ops/` and the settings belong at `myapp/.claude/`, not
+`myapp/ops/.claude/`. The script resolves this with `git rev-parse --show-toplevel`,
+prints the root it chose and why, and warns you when that is outside the instance. Two
+cases keep the file with the instance instead: you are not in a git repository, or the
+repository root is your home directory. A nested repo that is **its own** repository is
+its own settings root and is left alone. *(Before v1.0.7 the script always wrote to the
+instance root, so a nested layout got a settings file nothing ever read — reported as
+success. If you wired a nested instance on an earlier version, re-run this and delete
+the stranded `<instance>/.claude/settings.local.json`.)*
+
+**It also wires `ARCH_MANIFEST` for you when your manifest has been renamed.** Genesis
+renames the manifest per project and merges the variable into `.claude/settings.json`;
+if the file Claude Code actually loads is a different one, that merge never reaches it.
+The script finds the manifest by content, not by name, and fills the blank — without
+overwriting a value you already set.
+
 Prefer to do it by hand? Copy `hooks/claude-settings.example.json` →
 `.claude/settings.local.json` and fix the two paths. Forward slashes work on Windows;
 use the *full* Python path if bare `python` is shadowed by the Store stub.

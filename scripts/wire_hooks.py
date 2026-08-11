@@ -39,10 +39,87 @@ NOTE = ("Local machine-specific wiring for the 4SYNC ARCH guard + session-debt h
         "(gitignored). Flip ARCH_HOOKS_MODE to enforce after a clean stretch, off to disable.")
 
 
+DEFAULT_MANIFEST = "4sync.yaml"
+
+
 def instance_root():
     """This script lives at <root>/scripts/wire_hooks.py, so the root is two up.
     Derived, never guessed — the path being wrong is the whole failure mode here."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def git_root(path):
+    """The git repository root containing `path`, or None if there isn't one."""
+    try:
+        p = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+    except Exception:  # noqa: BLE001 — no git, or it hung; treat as "cannot tell"
+        return None
+    if p.returncode != 0:
+        return None
+    out = p.stdout.decode("utf-8", "replace").strip()
+    return os.path.abspath(out) if out else None
+
+
+def settings_root(instance):
+    """Where Claude Code will ACTUALLY read settings for a session in this instance.
+
+    THE DEFECT THIS EXISTS FOR (MP#64, field-reported by Chris Kennan 2026-08-10).
+    This script used to write `.claude/settings.local.json` at the INSTANCE root and
+    stop there. That is right only when the instance is also the repository root.
+    Put ARCH in a subfolder of an existing codebase — `new-crm/ops/`, the shape of
+    every adoption that adds ARCH to a project rather than starting from an empty
+    folder — and the file lands somewhere nothing ever reads. The tool reported
+    success, the adopter believed they were wired, and no guard ever fired.
+
+    THE RESOLUTION IS THE GIT REPOSITORY ROOT, NOT THE "PROJECT ROOT". That
+    distinction is the whole reason this is mechanical rather than a guess: Claude
+    Code resolves settings to the root of the git repository (through worktrees to
+    the main checkout), so one file covers sessions started in any subdirectory.
+    "Project root" has no definition a script can test; a repository root does, and
+    `git rev-parse --show-toplevel` answers it exactly.
+
+    It also classifies the awkward case correctly without a special rule: a nested
+    repo that is its own repository — like the product repo inside this silo — is
+    its own settings root, so it is left alone rather than being treated as a
+    misplaced instance.
+
+    Two documented exceptions keep the file where the instance is: outside a git
+    repository, and when the repository root is the user's home directory."""
+    instance = os.path.abspath(instance)
+    top = git_root(instance)
+    if top is None:
+        return instance, "not a git repository — settings stay with the instance"
+    if os.path.normcase(top) == os.path.normcase(instance):
+        return instance, "the instance is the repository root"
+    if os.path.normcase(top) == os.path.normcase(os.path.abspath(os.path.expanduser("~"))):
+        return instance, ("the repository root is your home directory — Claude Code keeps "
+                          "settings where the session starts")
+    return top, ("the instance is nested inside this repository, and Claude Code reads "
+                 "settings from the repository root")
+
+
+def find_manifest(instance):
+    """The instance manifest's filename, or None if it cannot be identified.
+
+    A manifest is a root-level `*.yaml` that declares `sync_version:` and `boot:`.
+    Matched by CONTENT rather than by name because genesis renames it per project
+    (`CRM.yaml`), which is precisely the case that needs ARCH_MANIFEST set."""
+    try:
+        names = sorted(os.listdir(instance))
+    except OSError:
+        return None
+    for name in names:
+        if not name.lower().endswith((".yaml", ".yml")):
+            continue
+        try:
+            with open(os.path.join(instance, name), encoding="utf-8") as fh:
+                head = fh.read(4096)
+        except Exception:  # noqa: BLE001
+            continue
+        if "sync_version:" in head and "\nboot:" in head:
+            return name
+    return None
 
 
 def diagnose(exe):
@@ -77,10 +154,17 @@ def build_hook_entry(exe, hook_path):
     }
 
 
-def merge(existing, exe, hook_path, root, mode):
+def merge(existing, exe, hook_path, root, mode, manifest=None):
     """Merge our wiring into whatever is already there. Preserves every unrelated key,
     every unrelated hook, and any env value the user already set — this script fills
-    blanks, it does not overwrite decisions."""
+    blanks, it does not overwrite decisions.
+
+    `manifest` sets ARCH_MANIFEST when the instance manifest is not the default name.
+    Genesis already merges it into `.claude/settings.json`, so this is not a universal
+    gap — it bites when the settings file Claude Code actually loads is not the one
+    genesis wrote, which is the same nested layout `settings_root` exists for. Without
+    it, g5 stops guarding the manifest, the boot receipt and meter cannot find it, and
+    rotate falls back to a default journal cap."""
     out = dict(existing) if isinstance(existing, dict) else {}
     out.setdefault("//", NOTE)
 
@@ -106,6 +190,8 @@ def merge(existing, exe, hook_path, root, mode):
     env = dict(out.get("env") or {})
     env.setdefault("ARCH_HOOKS_MODE", mode)
     env.setdefault("ARCH_HOOKS_LOG", (root + "/" + LOG_REL).replace("\\", "/"))
+    if manifest and manifest.lower() != DEFAULT_MANIFEST:
+        env.setdefault("ARCH_MANIFEST", manifest)
     out["env"] = env
     return out
 
@@ -185,7 +271,9 @@ def main():
               "       Pass a working one with --python <full path>." % exe)
         return 2
 
-    settings_path = os.path.join(root, SETTINGS_REL)
+    sroot, why_root = settings_root(root)
+    manifest = find_manifest(root)
+    settings_path = os.path.join(sroot, SETTINGS_REL)
     existing = {}
     if os.path.isfile(settings_path):
         try:
@@ -197,13 +285,22 @@ def main():
                   % (settings_path, exc))
             return 2
 
-    merged = merge(existing, exe, hook_path, root, args.mode)
+    merged = merge(existing, exe, hook_path, sroot, args.mode, manifest)
     rendered = json.dumps(merged, indent=2)
 
     print("instance root : %s" % root)
     print("interpreter   : %s  (verified: runs)" % exe)
     print("hook          : %s" % hook_path)
+    print("settings root : %s" % sroot)
+    print("                %s" % why_root)
     print("settings      : %s%s" % (settings_path, "" if existing else "   (will be created)"))
+    if manifest and manifest.lower() != DEFAULT_MANIFEST:
+        print("manifest      : %s  (non-default — wiring ARCH_MANIFEST)" % manifest)
+    if os.path.normcase(sroot) != os.path.normcase(root):
+        print()
+        print("NOTE: this writes OUTSIDE the instance, into the repository root above it.")
+        print("      That is where Claude Code reads settings from, so it is the only")
+        print("      place the wiring takes effect for sessions in this project.")
     print()
     print(rendered)
     print()

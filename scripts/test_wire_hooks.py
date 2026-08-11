@@ -159,5 +159,116 @@ class TestInterpreterRefusals(unittest.TestCase):
         self.assertTrue(wh.interpreter_works(exe))
 
 
+class TestSettingsRoot(unittest.TestCase):
+    """MP#64 — where Claude Code ACTUALLY reads settings for this instance.
+
+    The defect: this script wrote to the instance root unconditionally, which is
+    right only when the instance is also the repository root. ARCH in a subfolder
+    of an existing codebase — the shape of every adoption that adds ARCH to a
+    project rather than starting from an empty folder — got a settings file
+    nothing ever reads, reported as success."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="wire_root_")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    @staticmethod
+    def _git_init(path):
+        import subprocess
+        os.makedirs(path, exist_ok=True)
+        subprocess.run(["git", "init", "-q", path],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return path
+
+    def test_instance_that_is_the_repo_root_stays_put(self):
+        """The common case, and the one that must not regress: an instance which is
+        its own repository keeps writing exactly where it always did."""
+        inst = self._git_init(os.path.join(self.root, "solo"))
+        sroot, why = wh.settings_root(inst)
+        self.assertEqual(os.path.normcase(sroot), os.path.normcase(inst))
+        self.assertIn("repository root", why)
+
+    def test_nested_instance_resolves_to_the_repository_root(self):
+        """Chris Kennan's layout, 2026-08-10: ARCH at `ops/` under a framework app."""
+        proj = self._git_init(os.path.join(self.root, "new-crm"))
+        ops = os.path.join(proj, "ops")
+        os.makedirs(ops)
+        sroot, why = wh.settings_root(ops)
+        self.assertEqual(os.path.normcase(sroot), os.path.normcase(proj))
+        self.assertIn("nested", why)
+
+    def test_a_nested_repo_of_its_own_is_left_alone(self):
+        """The case that would look identical to a naive 'is it the top folder?'
+        test and must not: the product repo sits inside this silo and IS its own
+        repository, so it is its own settings root. Resolving by GIT ROOT gets this
+        right with no special case; resolving by 'project root' could not."""
+        outer = self._git_init(os.path.join(self.root, "outer"))
+        inner = self._git_init(os.path.join(outer, "PRODUCT-REPO"))
+        sroot, _ = wh.settings_root(inner)
+        self.assertEqual(os.path.normcase(sroot), os.path.normcase(inner))
+
+    def test_outside_a_git_repo_settings_stay_with_the_instance(self):
+        """A documented exception, not a fallback: outside a repository Claude Code
+        keeps settings in the directory the session starts from."""
+        inst = os.path.join(self.root, "no-git")
+        os.makedirs(inst)
+        sroot, why = wh.settings_root(inst)
+        self.assertEqual(os.path.normcase(sroot), os.path.normcase(inst))
+        self.assertIn("not a git repository", why)
+
+
+class TestManifestWiring(unittest.TestCase):
+    """MP#64 — ARCH_MANIFEST is wired only when the manifest is not the default.
+
+    Genesis already merges it into `.claude/settings.json`, so this is not a
+    universal gap. It bites when the file Claude Code loads is not the one genesis
+    wrote — the same nested layout above."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="wire_manifest_")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _manifest(self, name):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as fh:
+            fh.write('sync_version: "1.0"\ninstance:\n  name: "X"\nboot:\n  - config/K.yaml\n')
+        return name
+
+    def test_finds_a_renamed_manifest_by_content(self):
+        """Genesis renames the manifest per project, so it cannot be found by name
+        — which is exactly the case that needs ARCH_MANIFEST set."""
+        self._manifest("CRM.yaml")
+        self.assertEqual(wh.find_manifest(self.root), "CRM.yaml")
+
+    def test_ignores_yaml_that_is_not_a_manifest(self):
+        with open(os.path.join(self.root, "docker-compose.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("services:\n  web:\n    image: nginx\n")
+        self.assertIsNone(wh.find_manifest(self.root))
+
+    def test_default_named_manifest_is_not_wired(self):
+        """Wiring ARCH_MANIFEST=4SYNC.yaml would be a no-op that reads as a
+        decision — the hook already defaults to it."""
+        merged = wh.merge({}, "py", "/h.py", "/r", "warn", "4SYNC.yaml")
+        self.assertNotIn("ARCH_MANIFEST", merged["env"])
+
+    def test_renamed_manifest_is_wired(self):
+        merged = wh.merge({}, "py", "/h.py", "/r", "warn", "CRM.yaml")
+        self.assertEqual(merged["env"]["ARCH_MANIFEST"], "CRM.yaml")
+
+    def test_an_existing_manifest_choice_is_never_overwritten(self):
+        """Same contract as every other env key here: this script fills blanks, it
+        does not overwrite decisions."""
+        existing = {"env": {"ARCH_MANIFEST": "MINE.yaml"}}
+        merged = wh.merge(existing, "py", "/h.py", "/r", "warn", "CRM.yaml")
+        self.assertEqual(merged["env"]["ARCH_MANIFEST"], "MINE.yaml")
+
+    def test_no_manifest_found_wires_nothing(self):
+        merged = wh.merge({}, "py", "/h.py", "/r", "warn", None)
+        self.assertNotIn("ARCH_MANIFEST", merged["env"])
+
+
 if __name__ == "__main__":
     unittest.main()

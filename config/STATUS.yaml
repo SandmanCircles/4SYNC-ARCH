@@ -46,7 +46,29 @@ codebase_state:
 active_focus: "[The single most important thing in flight right now — one line.]"
 
 in_flight:
-  - "[Task currently being worked — reference its ledger id]"
+  # WHAT BELONGS HERE: facts that are TRUE NOW **and gate future work** — the
+  # kind a session needs ON ARRIVAL, at a glance.
+  #
+  # THE TEST, applied to every entry: IF THE FACT WOULD STILL BE TRUE A YEAR FROM
+  # NOW, IT IS NOT STATE. It is a finding (durable knowledge needed at a MOMENT →
+  # FINDINGS.md, which demands a Trigger: and an Exit:), doctrine (→ KERNEL
+  # invariants), or history (→ tasks/closed/, the journal). State is what a
+  # session needs on arrival; a finding is what it needs on reaching a specific
+  # moment. Both are worth keeping. Only one is worth loading every session.
+  #
+  # WHY THE TEST EXISTS. This section is the one part of this file that grows,
+  # and it grows for a structural reason rather than a careless one: THE WRITE
+  # MODE ABOVE IS A SCALAR RULE. "Overwrite the fact" works on `active_focus` or
+  # a version string — a new value displaces the old one. A LIST has no fact to
+  # overwrite, so every entry is an append and nothing ever says REMOVE. It is
+  # also the only durable store in an ARCH instance with no eviction mechanism:
+  # the journal has KEEP-5 + overflow, task docs rotate to closed/, FINDINGS
+  # demands an Exit:, session debt ages out, the bulletin archives. This has
+  # none — and every close writes here.
+  # A closed task's outcome still passes "is it true?", which is why the test is
+  # "would it still be true in a year?" and not "is it stale?". Measured on the
+  # instance that ships this: 17 entries, of which 3 were state.
+  - "[A fact that is true NOW and gates future work — and would NOT be true in a year]"
 
 blockers:
   - "[Anything blocking progress — or remove this section if none]"

@@ -1510,6 +1510,110 @@ class TestPickupReady(unittest.TestCase):
         self.assertIn("pending but not named: #7", out)
 
 
+class TestStatusClosedRefs(StatusFactsCase):
+    """MP#62 — the admission test was the leak.
+
+    STATUS asks for facts that are true now AND gate future work, and nothing
+    tested the second half: a closed task's outcome is still TRUE, so it sails
+    past any staleness check and stays in the boot path forever. Six of eighteen
+    entries were closed-task outcomes while a size report fired at every close.
+    Size says the file is big; it never says which entry to cut. 'Every row this
+    entry cites is closed' does, and it is mechanically decidable."""
+
+    LEDGER = ("# L\n\n## Summary table\n\n"
+              "| ID | Status | Subject | Blocked by | Owner |\n"
+              "|---|---|---|---|---|\n"
+              "| 1 | ✅ | done | — | — |\n"
+              "| 2 | ❌ | dropped | — | — |\n"
+              "| 3 | ⏳ | pending | — | — |\n"
+              "| 4 | 🔄 | in progress | — | — |\n")
+
+    def refs(self, status_text, ledger_text=None):
+        self.write(status_text)
+        led = os.path.join(self.root, "MERGE_PLAN.md")
+        with open(led, "w", encoding="utf-8") as f:
+            f.write(self.LEDGER if ledger_text is None else ledger_text)
+        return _capture(rotate.report_status_closed_refs, self.root, led)
+
+    def test_an_entry_citing_only_closed_rows_is_flagged(self):
+        found, out = self.refs('in_flight:\n  - "outcome of MP#1, shipped"\n')
+        self.assertEqual([(f[0], f[3]) for f in found], [("in_flight", [1])])
+        self.assertIn("MP#1", out)
+
+    def test_a_dropped_row_counts_as_closed(self):
+        found, _ = self.refs('in_flight:\n  - "per MP#2"\n')
+        self.assertEqual(len(found), 1)
+
+    def test_an_entry_citing_an_open_row_is_left_alone(self):
+        found, _ = self.refs('in_flight:\n  - "waiting on MP#3"\n')
+        self.assertEqual(found, [])
+
+    def test_a_mix_of_open_and_closed_is_live_work(self):
+        found, _ = self.refs('in_flight:\n  - "MP#1 shipped, MP#4 still running"\n')
+        self.assertEqual(found, [])
+
+    def test_an_entry_citing_nothing_is_never_flagged(self):
+        """Silence is not evidence. This check would rather miss than accuse."""
+        found, _ = self.refs('in_flight:\n  - "the site is live at example.com"\n')
+        self.assertEqual(found, [])
+
+    def test_an_unknown_row_id_cannot_be_judged(self):
+        found, _ = self.refs('in_flight:\n  - "see MP#99"\n')
+        self.assertEqual(found, [])
+
+    def test_a_bare_hash_number_is_not_a_reference(self):
+        """`Benefit #22` is a sentence. A checker that guesses at prose produces
+        findings nobody trusts — the REACH discipline, applied on purpose."""
+        found, _ = self.refs('in_flight:\n  - "Benefit #1 was approved as shipped"\n')
+        self.assertEqual(found, [])
+
+    def test_every_list_field_is_scanned_not_just_in_flight(self):
+        """A blocker whose task closed is not a blocker. Keying on the field NAME
+        would also repeat the hardcoded-filename defect MP#40 is open about."""
+        found, _ = self.refs('blockers:\n  - "blocked by MP#1"\n')
+        self.assertEqual([f[0] for f in found], ["blockers"])
+
+    def test_a_scalar_field_is_not_treated_as_a_list(self):
+        found, _ = self.refs('active_focus: "MP#1 is done"\nin_flight:\n  - "MP#3"\n')
+        self.assertEqual(found, [])
+
+    def test_comments_are_not_entries(self):
+        found, _ = self.refs('in_flight:\n  # MP#1 is closed, see below\n  - "MP#3"\n')
+        self.assertEqual(found, [])
+
+    def test_a_folded_continuation_line_stays_with_its_entry(self):
+        found, _ = self.refs('in_flight:\n  - "opened under MP#3\n    and closed by MP#1"\n')
+        self.assertEqual(found, [])
+
+    def test_reports_the_line_number_so_you_can_go_straight_there(self):
+        found, out = self.refs('meta:\n  file: S\nin_flight:\n  - "MP#1"\n')
+        self.assertEqual(found[0][2], 4)
+        self.assertIn(":4", out)
+
+    def test_a_clean_file_says_so(self):
+        found, out = self.refs('in_flight:\n  - "MP#4 is running"\n')
+        self.assertEqual(found, [])
+        self.assertIn("✓", out)
+
+    def test_the_advice_names_the_test_not_just_the_finding(self):
+        _, out = self.refs('in_flight:\n  - "MP#1"\n')
+        self.assertIn("YEAR FROM NOW", out)
+        self.assertIn("FINDINGS.md", out)
+
+    def test_no_summary_table_is_skipped_not_crashed(self):
+        found, out = self.refs('in_flight:\n  - "MP#1"\n', ledger_text="# no table here\n")
+        self.assertEqual(found, [])
+        self.assertIn("skipped", out)
+
+    def test_no_status_file_is_skipped_not_crashed(self):
+        empty = tempfile.mkdtemp(prefix="arch_norefs_")
+        self.addCleanup(shutil.rmtree, empty, True)
+        found, out = _capture(rotate.report_status_closed_refs, empty,
+                              os.path.join(empty, "MERGE_PLAN.md"))
+        self.assertEqual(found, [])
+        self.assertIn("skipped", out)
+
+
 class TestStatusSizeReport(StatusFactsCase):
     """MP#48 — the fourth place the growth went.
 

@@ -224,6 +224,99 @@ class TestReceipt(InstanceCase):
         self.assertIn("Do not re-read", self._receipt("inject"))
 
 
+class TestBootGrowth(InstanceCase):
+    """MP#62. A close-time size report fired at every close for five days while
+    the file it named grew 72%, and it was never acted on — a warning delivered
+    to a session that is trying to finish loses to finishing. The same sentence
+    at boot reaches a session with the whole session ahead of it."""
+
+    LEDGER = 40_000        # fixed sizes so both gates are exercised deterministically
+
+    def setUp(self):
+        super().setUp()
+        self._write("MERGE_PLAN.md", "x" * self.LEDGER)
+
+    def _series(self, files, ts="2026-08-10T12:00:47"):
+        self._write(os.path.join("metrics", "roc_series.jsonl"),
+                    json.dumps({"ts": ts, "files": files}) + "\n")
+
+    def test_growth_past_both_gates_is_named(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER // 2})     # +20,000 B, +100%
+        r = self._receipt()
+        self.assertIn("BOOT FILES GREW", r)
+        self.assertIn("MERGE_PLAN.md", r)
+
+    def test_no_series_is_silent(self):
+        """An adopter who has never run the meter has no series. A check they
+        cannot satisfy is a false alarm they learn to ignore."""
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_shrinkage_is_never_reported_as_growth(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER * 2})
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_identical_size_is_silent(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER})
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_small_absolute_growth_is_not_news(self):
+        """Both gates must trip. A file that grew 100 B is noise at any percent."""
+        self._series({"MERGE_PLAN.md": self.LEDGER - 100})
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_large_absolute_but_small_percent_is_not_news(self):
+        """+1,500 B clears the byte gate; 3.9% does not clear the percent gate."""
+        self._series({"MERGE_PLAN.md": self.LEDGER - 1500})
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_env_can_lower_the_percent_gate(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER - 1500})
+        with mock.patch.dict(os.environ, {ss.GROWTH_PCT_ENV: "0.1"}):
+            self.assertIn("BOOT FILES GREW", self._receipt())
+
+    def test_junk_env_value_does_not_lose_the_check(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER // 2})
+        with mock.patch.dict(os.environ, {ss.GROWTH_PCT_ENV: "banana"}):
+            self.assertIn("BOOT FILES GREW", self._receipt())
+
+    def test_corrupt_series_never_fails_the_boot(self):
+        self._write(os.path.join("metrics", "roc_series.jsonl"), "{not json\n")
+        r = self._receipt()
+        self.assertIn("BOOT RECEIPT", r)
+        self.assertNotIn("BOOT FILES GREW", r)
+
+    def test_last_row_wins(self):
+        self._write(os.path.join("metrics", "roc_series.jsonl"),
+                    json.dumps({"ts": "old",
+                                "files": {"MERGE_PLAN.md": self.LEDGER}}) + "\n"
+                    + json.dumps({"ts": "new",
+                                  "files": {"MERGE_PLAN.md": self.LEDGER // 2}}) + "\n")
+        self.assertIn("BOOT FILES GREW", self._receipt())
+
+    def test_a_file_absent_from_the_baseline_is_not_growth(self):
+        """No baseline means no comparison, never a 100% jump."""
+        self._series({"config/KERNEL.yaml": 10})
+        self.assertNotIn("BOOT FILES GREW", self._receipt())
+
+    def test_the_scanned_bulletin_is_never_compared(self):
+        """REGRESSION, found on the first live run. meter.py logs the bulletin at
+        its SCAN estimate; the receipt knows only the whole-file size. Comparing
+        them reported +1135% on a file nobody had touched. A scanned file has no
+        comparable baseline, so it is excluded rather than approximated."""
+        self._write("ABBA.md", "y" * 40_000)
+        self._series({"ABBA.md": 1_322, "MERGE_PLAN.md": self.LEDGER})
+        r = self._receipt()
+        self.assertNotIn("BOOT FILES GREW", r)
+
+    def test_the_timestamp_of_the_baseline_travels(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER // 2}, ts="2026-08-10T12:00:47")
+        self.assertIn("2026-08-10T12:00:47", self._receipt())
+
+    def test_the_advice_names_the_remedy_not_just_the_number(self):
+        self._series({"MERGE_PLAN.md": self.LEDGER // 2})
+        self.assertIn("ON-DEMAND", self._receipt())
+
+
 class TestDebtReadings(InstanceCase):
     def _debt(self, rows):
         body = ss.DEBT_HEADER if hasattr(ss, "DEBT_HEADER") else "# header"

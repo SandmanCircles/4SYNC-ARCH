@@ -54,6 +54,15 @@ MANIFEST_DEFAULT = "4SYNC.yaml"
 BYTES_PER_TOKEN = 4
 LIVE_WITHIN_DEFAULT_MIN = 15
 
+# Per-file boot growth since the last logged close. BOTH gates must trip, so a
+# 40-byte file that doubled is not news and a large file drifting up by a line
+# is not either. Env overrides keep the knob discoverable next to the others.
+SERIES_REL = os.path.join("metrics", "roc_series.jsonl")
+GROWTH_MIN_PCT = 10.0
+GROWTH_MIN_BYTES = 1024
+GROWTH_PCT_ENV = "ARCH_BOOT_GROWTH_PCT"
+GROWTH_NAMED_MAX = 3
+
 
 def _instance_root(cwd):
     """Nearest ancestor of cwd holding the loader-stack config dir, or None.
@@ -170,6 +179,93 @@ def check_sentinel(path):
         return None
 
 
+def read_last_series(root):
+    """Per-file boot bytes from the last logged close, or None.
+
+    `meter.py --log` appends one row per close to metrics/roc_series.jsonl,
+    carrying a per-file `files` map. NOTHING HAS EVER READ IT AT BOOT — the
+    series was built to answer "which file grew?" after the fact, and the
+    session best placed to act on that answer is the one that just PAID for the
+    growth, not the one trying to leave.
+
+    Returns ({relpath: bytes}, ts) or None. Silent on every failure: an adopter
+    who has never run the meter has no series, and a check an adopter cannot
+    satisfy is a false alarm they learn to ignore."""
+    path = os.path.join(root, SERIES_REL)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            last = ""
+            for line in fh:                     # the series is append-only and small
+                if line.strip():
+                    last = line
+        if not last:
+            return None
+        row = json.loads(last)
+        files = row.get("files")
+        if not isinstance(files, dict) or not files:
+            return None
+        clean = {k: v for k, v in files.items() if isinstance(v, int)}
+        return (clean, row.get("ts")) if clean else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def boot_growth_lines(root, sizes):
+    """Report per-file growth since the last logged close. [] when nothing to say.
+
+    THE FAILURE THIS EXISTS TO CATCH, observed in this instance: config/STATUS.yaml
+    was trimmed to 16,420 B and stood at 28,174 B five days later, +72%. A
+    close-time size report fired at EVERY ONE of those closes, named the right
+    file, and prescribed the right fix — and it scrolled past, because a warning
+    delivered to a session that is trying to finish competes with finishing and
+    loses. The same sentence at boot reaches a session with the whole session
+    ahead of it. (MP#62.)
+
+    Reports; never blocks. `sizes` is {relpath: current_bytes} for the stack."""
+    prev = read_last_series(root)
+    if not prev:
+        return []
+    before, ts = prev
+    try:
+        pct_min = float(os.environ.get(GROWTH_PCT_ENV) or GROWTH_MIN_PCT)
+    except ValueError:                          # a junk env value must not lose the check
+        pct_min = GROWTH_MIN_PCT
+
+    grown = []
+    for rel, now in sizes.items():
+        was = before.get(rel)
+        if not isinstance(was, int) or was <= 0 or now <= was:
+            continue
+        delta = now - was
+        pct = delta * 100.0 / was
+        if delta >= GROWTH_MIN_BYTES and pct >= pct_min:
+            grown.append((delta, pct, rel, was, now))
+    if not grown:
+        return []
+    grown.sort(reverse=True)
+
+    total_was = sum(v for k, v in before.items() if k in sizes)
+    total_now = sum(sizes[k] for k in sizes if k in before)
+    stack = ""
+    if total_was > 0 and total_now != total_was:
+        d = total_now - total_was
+        stack = (" Stack %s B (~%s tok) overall."
+                 % (format(d, "+,"), format(d // BYTES_PER_TOKEN, "+,")))
+
+    out = ["", "⚠ BOOT FILES GREW since the last logged close%s:%s"
+           % (" (%s)" % ts if ts else "", stack)]
+    for delta, pct, rel, was, now in grown[:GROWTH_NAMED_MAX]:
+        out.append("    · %s  %s → %s B  (+%s B, +%.0f%%)"
+                   % (rel, format(was, ","), format(now, ","),
+                      format(delta, ","), pct))
+    if len(grown) > GROWTH_NAMED_MAX:
+        out.append("    · … and %d more" % (len(grown) - GROWTH_NAMED_MAX))
+    out.append("  A boot file that grows every session is carrying something that "
+               "belongs in an ON-DEMAND file. You pay this on arrival, every session, "
+               "forever — cutting it is cheapest RIGHT NOW, before the work starts.")
+    return out
+
+
 def build_receipt(root, manifest_name, manifest_text, mode):
     """The context block. Returns (text, boot_files)."""
     boot = parse_boot_list(manifest_text)
@@ -190,6 +286,7 @@ def build_receipt(root, manifest_name, manifest_text, mode):
     ]
 
     total = 0
+    sizes = {}
     for i, rel in enumerate(stack, 1):
         p = os.path.join(root, rel)
         if not os.path.isfile(p):
@@ -197,6 +294,7 @@ def build_receipt(root, manifest_name, manifest_text, mode):
             continue
         n = os.path.getsize(p)
         total += n
+        sizes[rel] = n
         sent = check_sentinel(p)
         flag = "" if sent is not False else "  ⚠ EOF SENTINEL ABSENT — read may be CLIPPED"
         lines.append(f"  {i}. {rel}  ({n:,} B, ~{n // BYTES_PER_TOKEN:,} tok){flag}")
@@ -204,11 +302,21 @@ def build_receipt(root, manifest_name, manifest_text, mode):
         p = os.path.join(root, bulletin)
         n = os.path.getsize(p) if os.path.isfile(p) else 0
         total += n
+        # DELIBERATELY NOT in `sizes`: the bulletin is SCANNED, not read, and
+        # meter.py logs it at its scan estimate while this figure is the whole
+        # file. Comparing the two reports a ~1100% jump on a file that did not
+        # change. Caught on the growth check's first live run — a dry run could
+        # not have shown it, because the two numbers only meet in the series.
         lines += ["",
                   f"  + {bulletin} — SCAN the '### [n] … To: … Status:' headers and open only "
                   f"the bodies addressed to you ({n:,} B if read whole; do not).",
                   "    On a header-count mismatch, fall back to a full read AND SAY SO."]
     lines += ["", f"Boot stack: {total:,} B (~{total // BYTES_PER_TOKEN:,} tokens)."]
+
+    try:
+        lines += boot_growth_lines(root, sizes)
+    except Exception:                           # noqa: BLE001 — never fail a boot over a report
+        pass
 
     if live:
         lines += ["",

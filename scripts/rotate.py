@@ -755,6 +755,106 @@ def report_status_size(root, soft_max=None):
     return total, [(n, b) for n, b in fields]
 
 
+STATUS_REF_RE = re.compile(r"\bMP#(\d+)")
+
+
+def _status_list_entries(text):
+    """[(field, index, line_no, entry_text)] for every top-level LIST field.
+
+    Not keyed to a field NAME on purpose. The shipped template calls the list
+    `in_flight:`, but genesis-era instances rename freely and a second list
+    (`blockers:`) has the same failure mode — a blocker whose task closed is not
+    a blocker. Hardcoding the name would also repeat the defect MP#40 is open
+    about, one file over.
+
+    Line-based rather than YAML-parsed because this must work on a box with no
+    PyYAML, which is the modal fresh install."""
+    out, field, idx, cur = [], None, 0, None
+
+    def flush():
+        if cur is not None:
+            out.append((field, idx, cur[0], " ".join(cur[1])))
+
+    for n, line in enumerate(text.splitlines(), 1):
+        top = re.match(r"^([A-Za-z_][\w-]*):\s*$", line)
+        if top:
+            flush()
+            field, idx, cur = top.group(1), 0, None
+            continue
+        if re.match(r"^[A-Za-z_][\w-]*:", line):    # a scalar field ends any list
+            flush()
+            field, cur = None, None
+            continue
+        if field is None or not line.strip() or line.lstrip().startswith("#"):
+            continue
+        item = re.match(r"^\s+-\s+(.*)$", line)
+        if item:
+            flush()
+            idx += 1
+            cur = (n, [item.group(1)])
+        elif cur is not None:                       # a folded continuation line
+            cur[1].append(line.strip())
+    flush()
+    return out
+
+
+def report_status_closed_refs(root, ledger_path, manifest_name=None):
+    """Flag STATUS entries whose ONLY ledger references are terminal rows.
+
+    THE ADMISSION TEST IS THE LEAK (MP#62). The section asks for facts that are
+    true now AND gate future work, and nothing tests the second half — a closed
+    task's outcome is still TRUE, so it sails past any staleness check and sits
+    in the boot path forever. Measured on this instance: SIX of eighteen entries
+    were closed-task outcomes, and the file had regrown 72% in five days with a
+    size report firing at every close.
+
+    Size was the wrong signal for it. Bytes say the file is big; they never say
+    WHICH entry to cut, and the honest answer to that is not mechanical — but
+    "every row this entry cites is closed" is, and it selects almost exactly the
+    population that needed cutting. Deliberately narrow, per the reach discipline
+    in FINDINGS.md: only `MP#<n>` counts as a reference. A bare `#58` is not
+    matched, because "Benefit #22" is a sentence and a checker that guesses at
+    prose produces findings nobody trusts. An entry citing NOTHING is never
+    flagged — silence is not evidence, and this check would rather miss than
+    accuse.
+
+    Reports; never blocks. Returns [(field, idx, line, [ids])]."""
+    path = find_status_file(root, manifest_name)
+    if not path or not os.path.isfile(path):
+        print("status-refs: no STATUS file declared or found — skipped")
+        return []
+    try:
+        rows = parse_summary_table(read(ledger_path))
+    except OSError:
+        rows = None
+    if not rows:
+        print("status-refs: no '## Summary table' found — skipped")
+        return []
+
+    found = []
+    for field, idx, line, body in _status_list_entries(read(path)):
+        ids = [int(m.group(1)) for m in STATUS_REF_RE.finditer(body)]
+        known = [i for i in ids if i in rows]
+        # An id absent from the table cannot be judged; an entry mixing open and
+        # closed rows is live work. Both are left alone.
+        if known and all(rows[i] for i in known):
+            found.append((field, idx, line, sorted(set(known))))
+
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    if not found:
+        print("status-refs: no entry cites only closed rows ✓")
+        return []
+    for field, idx, line, ids in found:
+        print("  ! status-refs  %s:%d  %s[%d] cites only closed row(s): %s"
+              % (rel, line, field, idx, ", ".join("MP#%d" % i for i in ids)))
+    print("status-refs: %d entry(ies) cite only closed rows. A closed row's outcome is "
+          "still TRUE, which is why it survives a staleness check — ask the other "
+          "question: WOULD IT STILL BE TRUE A YEAR FROM NOW? If yes it is a finding "
+          "(→ FINDINGS.md, with a Trigger: and an Exit:) or doctrine (→ KERNEL), not "
+          "state. (Reported, not blocked.)" % len(found))
+    return found
+
+
 # ── size report ──────────────────────────────────────────────────────────────
 
 JOURNAL_MAX_DEFAULT = 12288
@@ -1772,6 +1872,7 @@ def main():
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max)
         report_pickup_ready(ledger)
+        report_status_closed_refs(d, ledger)
     report_status_size(d)
     report_status_facts(d, run_meter=not args.no_meter)
     report_boot_growth(d, run_meter=not args.no_meter)

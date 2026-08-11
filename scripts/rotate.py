@@ -475,6 +475,115 @@ STATUS_MARKS = (
 TALLY_RE = re.compile(r"^\*\*Tally:\*\*[^\n]*$", re.M)
 
 
+# ── the ledger's own status legend (MP#68) ───────────────────────────────────
+# STATUS_MARKS above is the PRODUCT's vocabulary and stays the base. What
+# follows lets an instance ADD to it, and nothing more.
+#
+# WHY. A task taxonomy is instance state — the bucket no update touches — but
+# this file hardcoded the vocabulary, so a sixth status made every row carrying
+# it `unknown`, and unknown rows BLOCK the Tally rewrite (see reconcile_tally).
+# Measured on a real adopter: two rows in a sixth state left a hand-written
+# "85 tasks total, 63 completed" stranded against a computed 126/93, with the
+# mechanism that repairs it switched off. MP#39 made the Tally derived so a
+# hand-kept number could not drift; one unrecognized glyph turned that off
+# permanently. The block is right for a typo and wrong for a vocabulary, and it
+# could not tell them apart.
+#
+# THE DISCRIMINATOR, which is the whole design: a mark the ledger DECLARES in
+# its own legend is a vocabulary and gets counted; a mark declared nowhere is a
+# typo and still reports and blocks. Nothing new to declare — every ledger
+# already carries a legend, so this asks no adopter to change a file (MP#66)
+# and adds nothing to the manifest (MP#67).
+
+LEGEND_PROSE_RE = re.compile(r"^\*\*Status:\*\*[ \t]*(.+)$", re.M)
+# A legend TABLE row: symbol cell, then the status word.
+LEGEND_TABLE_RE = re.compile(r"^\|\s*([^|\s]+)\s*\|\s*([^|]+?)\s*\|", re.M)
+_LEGEND_TRAILER_RE = re.compile(r"[,(].*$", re.S)
+MIN_LEGEND_ROWS = 3          # a legend declares a vocabulary, not one status
+
+
+def _legend_name(raw):
+    """'pending, pickup-ready' → 'pending'; 'pending (open)' → 'pending';
+    'in progress' → 'in_progress'. The gloss after a comma or paren is prose
+    written for a human and must never become part of a count's key."""
+    name = _LEGEND_TRAILER_RE.sub("", raw).strip().lower()
+    name = re.sub(r"[\s\-]+", "_", name)
+    return name if re.fullmatch(r"[a-z][a-z0-9_]*", name or "") else None
+
+
+def _legend_entry(raw):
+    """'✅ completed' → ('✅', 'completed'), or None if this is not a legend
+    entry. The variation selector is stripped for the same reason STATUS_MARKS
+    stores base codepoints: ⏸️ is U+23F8 U+FE0F and a ledger may write either."""
+    parts = raw.strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    mark = parts[0].replace("️", "")
+    if not mark or ord(mark[0]) <= 127:      # a word, not a symbol
+        return None
+    name = _legend_name(parts[1])
+    return (mark, name) if name else None
+
+
+def parse_legend_marks(ledger_text):
+    """Return [(mark, name), …] that the ledger declares for itself.
+
+    TWO FORMATS ON PURPOSE, because the only two instances that exist use two:
+    the shipped template writes a prose line (`**Status:** ✅ completed · …`)
+    and a real adopter writes a `| Symbol | Status | Meaning |` table. Picking
+    one and making the other migrate would need an instruction to REACH an
+    adopter, which is the open problem in MP#66 — so parse both and require
+    nobody to change anything.
+
+    The summary table is CUT OUT before scanning: its rows are `| id | mark |`
+    and would otherwise read as legend entries with the id as the symbol."""
+    span = summary_table_span(ledger_text)
+    text = ledger_text if span is None else ledger_text[:span[0]] + ledger_text[span[1]:]
+
+    found, seen = [], set()
+
+    def add(entry):
+        if entry and entry[0] not in seen:
+            seen.add(entry[0])
+            found.append(entry)
+
+    m = LEGEND_PROSE_RE.search(text)
+    if m:
+        for seg in m.group(1).split("·"):
+            add(_legend_entry(seg))
+
+    # A legend DECLARES a vocabulary, so it declares several at once. Requiring
+    # a run of MIN_LEGEND_ROWS is what separates a legend from a stray table
+    # row in a journal block that happens to start with a symbol — without it,
+    # "declared" would mean "appears in any table anywhere," which is not the
+    # discriminator this was built on and would let narrative mint a status.
+    for block in re.split(r"\n(?:[^|\n].*)?\n", text):
+        entries = [e for e in
+                   (_legend_entry(r.group(1) + " " + r.group(2))
+                    for r in LEGEND_TABLE_RE.finditer(block)) if e]
+        if len(entries) >= MIN_LEGEND_ROWS:
+            for entry in entries:
+                add(entry)
+
+    return found
+
+
+def effective_marks(ledger_text):
+    """The product's five, plus any SIXTH the ledger declares.
+
+    Base first and in base order, so a ledger using exactly the five renders a
+    Tally line byte-identical to every previous run — only an instance that
+    added something sees a longer one. A legend entry that reuses a base symbol
+    OR a base name is dropped rather than merged: a second spelling of an
+    existing status would double-count or key-collide, and the row staying
+    `unknown` reports the conflict instead of burying it in a number."""
+    base_marks = {mark for mark, _ in STATUS_MARKS}
+    base_names = {name for _, name in STATUS_MARKS}
+    extra = tuple((mark, name) for mark, name in parse_legend_marks(ledger_text)
+                  if mark not in base_marks and name not in base_names)
+    return STATUS_MARKS + extra
+
+
 def compute_tally(ledger_text):
     """Count summary-table rows by status mark. Returns (counts, unknown).
 
@@ -485,11 +594,12 @@ def compute_tally(ledger_text):
     table = summary_table_section(ledger_text)
     if table is None:
         return None, None
-    counts = {name: 0 for _, name in STATUS_MARKS}
+    marks = effective_marks(ledger_text)
+    counts = {name: 0 for _, name in marks}
     unknown = []
     for r in TABLE_ROW_RE.finditer(table):
         cell = r.group(2).replace("️", "")
-        hit = [name for mark, name in STATUS_MARKS if mark in cell]
+        hit = [name for mark, name in marks if mark in cell]
         if len(hit) == 1:
             counts[hit[0]] += 1
         else:
@@ -502,8 +612,11 @@ def compute_tally(ledger_text):
 
 def render_tally(counts):
     """The one place the Tally sentence is spelled. Matches the shipped format
-    exactly, so a reconciled ledger diffs on the NUMBERS and never on wording."""
-    parts = ", ".join(f"{counts[name]} {name}" for _, name in STATUS_MARKS)
+    exactly, so a reconciled ledger diffs on the NUMBERS and never on wording.
+
+    Order comes from `counts`, which compute_tally builds in effective_marks
+    order — base five first. A five-mark ledger is unchanged, byte for byte."""
+    parts = ", ".join(f"{counts[name]} {name}" for name in counts)
     return f"**Tally:** {sum(counts.values())} tasks total — {parts}."
 
 
@@ -536,7 +649,7 @@ def reconcile_tally(ledger_path, apply_):
 
     total = sum(counts.values())
     print(f"tally: {total} rows — " +
-          ", ".join(f"{counts[n]} {n}" for _, n in STATUS_MARKS))
+          ", ".join(f"{counts[n]} {n}" for n in counts))
 
     for tid, cell in unknown[:10]:
         print(f"  ! row #{tid} has no recognized status mark (cell: {cell!r}) — not counted")

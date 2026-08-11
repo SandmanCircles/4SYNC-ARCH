@@ -232,6 +232,11 @@ it clears every debt file under the instance root.
 > variable. This is the same shape as a known open issue where the manifest declares the
 > ledger filename three ways and two scripts ignore all three, and it is recorded here
 > rather than quietly shipped.
+>
+> **If it does not fit, leave it out.** An instance on a tight `max_bytes` should skip this
+> line rather than spend its last bytes on one that is read by nothing — and should not read
+> the refusal as being behind on a release. The cap is your number, never ours; see the
+> README's *"The byte cap is yours."*
 
 **What changed:**
 

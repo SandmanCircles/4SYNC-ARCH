@@ -139,6 +139,29 @@ integrity rules run through everything:
   concurrent sessions while STATUS does not. **This is the single confirmed way
   to lose data in ARCH.**
 
+### The byte cap is yours
+
+`integrity.manifest_rules.max_bytes` is **your number.** The boring-guard reads it
+out of your own manifest and enforces whatever it finds — there is no product-wide
+constant, and **no release will ever ship you a value or ask you to change one.**
+The cap you were born with is a starting point, not a spec.
+
+What matters is not the size but how you move it: **a cap you raise on reflex is
+not a cap.** This project's own manifest went 8192 → 10240 → 12288 → 16384 across
+its life, each raise made in the same edit that hit the ceiling, and every one of
+them bought new *capability* — more declarations, a genesis step, two more close
+scripts. Narrative got cut instead. Raise it when a real declaration will not fit;
+trim it when what is filling it is prose. Doing neither and reading the refusal as
+a bug is the only wrong answer.
+
+**A tight cap is a full budget, not an error state** — but know which kind of line
+you are dropping. A line a session *executes* (a boot file, a close step) is
+load-bearing and skipping it changes behaviour. A line that only *documents* is
+not: `session_debt.max_age` is the live example — the hook reads that window from
+its own constant and `ARCH_DEBT_MAX_AGE_DAYS`, never from the manifest, so writing
+`max_age: 30d` changes nothing and omitting it costs nothing. **If bytes are
+scarce, the documentary lines are the ones to leave out.**
+
 Close fires only on the user's explicit signal — a pause is not an ending, and
 paused sessions resume rather than wrap. (An unattended run has no pause: finishing
 its declared task *is* its signal. It journals and deposits, but never overwrites

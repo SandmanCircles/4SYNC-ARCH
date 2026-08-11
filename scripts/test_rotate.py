@@ -951,6 +951,129 @@ class TestTallyReconcile(unittest.TestCase):
         rotate.reconcile_tally(self.ledger, False)
 
 
+# Both legends below are VERBATIM from the only two ARCH instances that exist —
+# the shipped template's prose line and a real adopter's table. They are copied
+# rather than invented because MP#68 is a defect that only showed up against
+# real text, and a fixture written to suit the parser proves nothing.
+PROSE_LEGEND = ("**Status:** ✅ completed · 🔄 in progress · ⏳ pending, pickup-ready · "
+                "⏸️ blocked (see Blocked by) · ❌ dropped, kept as audit trail")
+
+TABLE_LEGEND = """| Symbol | Status | Meaning |
+|---|---|---|
+| ✅ | completed | shipped, in production or merged |
+| 🔄 | in_progress | actively being worked, owner assigned or about to be |
+| ⏳ | pending (open) | pickup-ready, no blockers |
+| ⏸️ | blocked | waiting on upstream tasks (see Blocked by column) |
+| ❌ | dropped | deliberately removed from scope; preserved as audit trail |"""
+
+
+class TestLegendDerivedMarks(unittest.TestCase):
+    """MP#68. An instance's task taxonomy is instance state, but rotate.py
+    hardcoded the vocabulary — so a sixth status made its rows `unknown`, and
+    unknown rows block the Tally rewrite. Measured on a real adopter: two rows
+    in a sixth state left a hand-written count stranded with the mechanism that
+    repairs it switched off. The fix is a discriminator, not a longer tuple."""
+
+    def _ledger(self, legend="", rows=""):
+        return ("# Ledger\n\n" + legend + "\n\n---\n\n## Summary table\n\n"
+                "| ID | Status | Subject | Blocked by | Owner |\n|---|---|---|---|---|\n"
+                "| 1 | ✅ | done | — | — |\n| 2 | ⏳ | open | — | — |\n" + rows +
+                "\n**Tally:** stale\n\n---\n")
+
+    # ── the two formats ─────────────────────────────────────────────────────
+    def test_prose_legend_is_parsed(self):
+        marks = dict(rotate.parse_legend_marks(self._ledger(PROSE_LEGEND)))
+        self.assertEqual(marks["✅"], "completed")
+        self.assertEqual(marks["🔄"], "in_progress")   # "in progress" → underscored
+        self.assertEqual(marks["⏳"], "pending")        # gloss after the comma dropped
+
+    def test_table_legend_is_parsed(self):
+        marks = dict(rotate.parse_legend_marks(self._ledger(TABLE_LEGEND)))
+        self.assertEqual(marks["✅"], "completed")
+        self.assertEqual(marks["⏳"], "pending")        # "pending (open)" → pending
+        self.assertEqual(marks["⏸"], "blocked")         # selector stripped
+
+    def test_neither_header_nor_separator_becomes_an_entry(self):
+        marks = dict(rotate.parse_legend_marks(self._ledger(TABLE_LEGEND)))
+        self.assertNotIn("Symbol", marks)
+        self.assertNotIn("---", marks)
+
+    def test_summary_rows_are_not_read_as_legend_entries(self):
+        """The summary table is `| id | mark |`, the same shape as a legend row.
+        It is cut out before scanning, or every row id becomes a symbol."""
+        marks = dict(rotate.parse_legend_marks(self._ledger()))
+        self.assertEqual(marks, {})
+
+    # ── a declared sixth mark counts ────────────────────────────────────────
+    def test_prose_declared_sixth_mark_is_counted(self):
+        text = self._ledger(PROSE_LEGEND + " · 🔮 future",
+                            "| 3 | 🔮 | someday thing | — | — |\n")
+        counts, unknown = rotate.compute_tally(text)
+        self.assertEqual(unknown, [])
+        self.assertEqual(counts["future"], 1)
+
+    def test_table_declared_sixth_mark_is_counted(self):
+        text = self._ledger(TABLE_LEGEND + "\n| 🔮 | future | not yet on the runway |",
+                            "| 3 | 🔮 | someday thing | — | — |\n")
+        counts, unknown = rotate.compute_tally(text)
+        self.assertEqual(unknown, [])
+        self.assertEqual(counts["future"], 1)
+
+    def test_declared_mark_renders_after_the_base_five(self):
+        text = self._ledger(PROSE_LEGEND + " · 🔮 future",
+                            "| 3 | 🔮 | someday thing | — | — |\n")
+        counts, _ = rotate.compute_tally(text)
+        self.assertEqual(
+            rotate.render_tally(counts),
+            "**Tally:** 3 tasks total — 1 completed, 0 in_progress, 1 pending, "
+            "0 blocked, 0 dropped, 1 future.")
+
+    # ── the behaviours this must NOT break ──────────────────────────────────
+    def test_an_UNDECLARED_mark_still_blocks_the_rewrite(self):
+        """NAMED FOR THE NON-BEHAVIOUR IT PROTECTS. The block is correct for a
+        typo and was only ever wrong for a vocabulary. A refactor that makes
+        every unrecognized glyph countable removes the guard MP#39 relies on:
+        a confidently wrong total is worse than a stale one."""
+        text = self._ledger(PROSE_LEGEND, "| 3 | 🔮 | undeclared | — | — |\n")
+        counts, unknown = rotate.compute_tally(text)
+        self.assertEqual([tid for tid, _ in unknown], [3])
+        self.assertNotIn("future", counts)
+
+    def test_a_five_mark_ledger_is_byte_identical_to_before(self):
+        """The shipped Tally sentence must not move for anyone who added
+        nothing — otherwise every adopter's ledger diffs on cosmetics."""
+        text = self._ledger(PROSE_LEGEND)
+        counts, _ = rotate.compute_tally(text)
+        self.assertEqual(
+            rotate.render_tally(counts),
+            "**Tally:** 2 tasks total — 1 completed, 0 in_progress, 1 pending, "
+            "0 blocked, 0 dropped.")
+
+    def test_no_legend_falls_back_to_the_hardcoded_five(self):
+        """A ledger whose legend cannot be found keeps today's behaviour. This
+        fix must never hand an adopter the failure it exists to remove."""
+        self.assertEqual(rotate.effective_marks(self._ledger()), rotate.STATUS_MARKS)
+
+    def test_a_stray_table_row_in_prose_does_not_mint_a_status(self):
+        """'Declared' means a legend, not 'appears in any table anywhere'. A
+        journal block quoting one symbol-headed row must not create a status —
+        that would let narrative extend the vocabulary silently, which is the
+        same class of defect as the one this whole row fixes."""
+        stray = "2026-08-10 [agent] — notes.\n\n| 🔮 | future | a passing mention |\n"
+        text = self._ledger(PROSE_LEGEND + "\n\n" + stray,
+                            "| 3 | 🔮 | someday thing | — | — |\n")
+        counts, unknown = rotate.compute_tally(text)
+        self.assertEqual([tid for tid, _ in unknown], [3])
+        self.assertNotIn("future", counts)
+
+    def test_a_legend_reusing_a_base_name_is_dropped(self):
+        """A second spelling of an existing status would key-collide and
+        double-count. Dropping it leaves the row `unknown`, which reports the
+        conflict instead of burying it inside a number."""
+        text = self._ledger(PROSE_LEGEND + " · 🔮 pending")
+        self.assertEqual(rotate.effective_marks(text), rotate.STATUS_MARKS)
+
+
 class TestSummaryTableSpan(unittest.TestCase):
     """summary_table_section() is now defined in terms of summary_table_span();
     these lock that the refactor kept the bound identical, since every row scan

@@ -307,6 +307,17 @@ def main():
     print("  This says what you are RUNNING, not whether you are CURRENT. Being")
     print("  current needs the upstream repo as a comparison point — clone it and")
     print("  compare this id, or use the README's diff recipe.")
+    # MP#66. This is the ONE moment an updater is already asking the question, so
+    # it is where the pointer belongs. Measured, not assumed: an adopter session
+    # replaced every machinery file, verified byte-identity, ran the suites and
+    # reported "safe for close" — having never opened RELEASE_NOTES.md, which is
+    # where the manifest edits and the live wiring checks live. Copying is
+    # self-evidencing and reading is not, so a session optimising for a
+    # demonstrable result does the demonstrable half. Naming the file here costs
+    # two lines and asserts nothing this script cannot support.
+    print("    Published release: https://www.4sync.ai/llms.txt — one fetch, no clone.")
+    print("    Taking an update? RELEASE_NOTES.md carries what each release needs")
+    print("    done BEYOND copying files. Copying machinery is not the whole update.")
 
 
 if __name__ == "__main__":

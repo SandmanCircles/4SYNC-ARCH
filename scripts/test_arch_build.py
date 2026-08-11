@@ -6,8 +6,12 @@ suite counts against test_<name>.py, and a hand-rolled harness cannot be counted
 so it gets reported as unchecked rather than verified.
 """
 
+import contextlib
+import io
+import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -241,6 +245,55 @@ class TestBirthRecord(TempInstance):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("# a record with no build line\n")
         self.assertIsNone(arch_build.read_birth_record(self.root))
+
+
+class TestUpdatePointer(TempInstance):
+    """MP#66. The human-readable report is the one moment an updater is already
+    asking "what am I running?", so it is where the update instructions get
+    named. Measured, not assumed: an adopter session replaced every machinery
+    file, verified byte-identity, ran the suites and reported "safe for close"
+    — having never opened RELEASE_NOTES.md, where the manifest edits and the
+    live wiring checks live. These pin the pointer so a later tidy-up cannot
+    quietly remove it and leave the report looking complete again."""
+
+    def _report(self):
+        buf = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["arch_build.py", "--dir", self.root]
+        try:
+            with contextlib.redirect_stdout(buf):
+                arch_build.main()
+        finally:
+            sys.argv = argv
+        return buf.getvalue()
+
+    def test_report_names_the_release_notes(self):
+        self.assertIn("RELEASE_NOTES.md", self._report())
+
+    def test_report_names_the_published_release_url(self):
+        self.assertIn("llms.txt", self._report())
+
+    def test_report_still_refuses_to_claim_currency(self):
+        """The pointer must not turn into a currency claim. This script has no
+        upstream and must never compute "you are up to date" from local data —
+        that is a lie with a checkmark on it."""
+        out = self._report()
+        self.assertIn("not whether you are CURRENT", out)
+
+    def test_json_output_carries_no_prose_pointer(self):
+        """--json is consumed by tooling. A human-facing sentence in it would be
+        a field nobody declared."""
+        buf = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["arch_build.py", "--dir", self.root, "--json"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                arch_build.main()
+        finally:
+            sys.argv = argv
+        payload = json.loads(buf.getvalue())
+        self.assertNotIn("RELEASE_NOTES.md", buf.getvalue())
+        self.assertIn("build", payload)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rotate  # noqa: E402
 
 
+@contextlib.contextmanager
+def no_pyyaml():
+    """Run a block as if PyYAML were not installed, on any box.
+
+    Same mechanism as the inline patch in test_declaration_is_read_without_pyyaml,
+    lifted out because MP#73 needed it in several places. PyYAML is absent from
+    every fresh Python — "the modal fresh install" — so this is the DEFAULT adopter
+    configuration, not an edge case, and the regex path it forces is the one most
+    adopters actually execute."""
+    real_import = builtins.__import__
+
+    def _no_yaml(name, *a, **k):
+        if name == "yaml":
+            raise ImportError("PyYAML not installed")
+        return real_import(name, *a, **k)
+
+    with mock.patch.object(builtins, "__import__", _no_yaml):
+        yield
+
+
 KEEP_COMMENT = """<!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
      At session close: PREPEND your new block here. If that makes 6 blocks, move the
      oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. -->"""
@@ -355,6 +375,37 @@ class TestSizeReport(ManifestEnvCase):
 
     def test_manifest_absent_falls_back_to_default(self):
         self.assertEqual(rotate.manifest_journal_max(self.root), rotate.JOURNAL_MAX_DEFAULT)
+
+    def test_four_space_indent_is_read_not_silently_defaulted(self):
+        """MP#73, and this is the sharpest instance of it.
+
+        The regex fallback anchored on EXACTLY two spaces. Reindented to four, the
+        block was not found and this returned JOURNAL_MAX_DEFAULT — so a manifest
+        DECLARING 16384 was silently governed by 12288, with no error anywhere.
+        A cap that quietly differs from the declared one is worse than an absent
+        key, because it is trusted.
+
+        Forced through the PyYAML-absent path on purpose: that path is the modal
+        fresh install, so it is the one most adopters actually execute."""
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("close:\n    journal:\n        keep: 5\n        max_bytes: 4096\n")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_journal_max(self.root), 4096)
+
+    def test_tab_indent_is_read_too(self):
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("close:\n\tjournal:\n\t\tkeep: 5\n\t\tmax_bytes: 4096\n")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_journal_max(self.root), 4096)
+
+    def test_a_sibling_block_does_not_donate_its_max_bytes(self):
+        """The scoping half of the old regex was correct and must survive the
+        loosening: `max_bytes` under `manifest_rules` is not the journal's."""
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("close:\n    journal:\n        keep: 5\n"
+                     "integrity:\n    manifest_rules:\n        max_bytes: 999\n")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_journal_max(self.root), rotate.JOURNAL_MAX_DEFAULT)
 
 
 OVERFLOW_MANIFEST = """\

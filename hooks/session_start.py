@@ -109,6 +109,48 @@ def parse_boot_list(manifest_text):
     return out
 
 
+def _block_under(text, key):
+    """The body of a nested `key:` block at ANY indent, or None if absent.
+
+    INDENT-AGNOSTIC ON PURPOSE (MP#73). This replaced `^\\s{2}<key>:` — an anchor on
+    EXACTLY two spaces, which is simply what this project's manifests happen to use.
+    Reindent a manifest to four spaces (any YAML formatter, most editor defaults) and
+    every lookup built on that anchor silently returned its built-in default: a
+    declared `journal.max_bytes` of 16384 came back as 12288, and a bulletin declared
+    `check_at_boot: true` came back as "no bulletin", with no error anywhere.
+
+    That is the failure class this project has already named twice — a
+    parsed-but-not-honored manifest key is "worse than an absent one, because it is
+    trusted". And it is not a rare path: PyYAML is absent from every fresh Python,
+    which this codebase calls "the modal fresh install", so for most adopters these
+    regexes ARE the parser. In THIS file there is no PyYAML path at all, so it is
+    the only parser for everybody.
+
+    Requires at least one space of indent, preserving the original intent that these
+    keys are nested (under `close:`) rather than top-level.
+
+    DUPLICATED DELIBERATELY in scripts/meter.py and scripts/rotate.py. Machinery
+    modules never import one another — each is copied and wired standalone — so a
+    shared module would have to join MACHINERY and could be copied without its
+    dependents. Keep the three byte-identical."""
+    ind = None
+    body = []
+    for line in text.splitlines():
+        if ind is None:
+            m = re.match(r"^([ \t]+)" + re.escape(key) + r":", line)
+            if m:
+                ind = len(m.group(1).expandtabs(8))
+            continue
+        if not line.strip():
+            body.append(line)
+            continue
+        depth = len(re.match(r"^[ \t]*", line).group(0).expandtabs(8))
+        if depth <= ind:
+            break
+        body.append(line)
+    return "\n".join(body) if ind is not None else None
+
+
 def parse_bulletin_at_boot(manifest_text):
     """Bulletin file IF the manifest says it is checked at boot, else None.
 
@@ -118,10 +160,9 @@ def parse_bulletin_at_boot(manifest_text):
     only `boot:` reproduces the same undercount, and then the meter and the
     receipt disagree about what boot IS. Two tools measuring one thing must agree
     or neither is trusted."""
-    m = re.search(r"(?ms)^\s{2}bulletin:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", manifest_text)
-    if not m:
+    block = _block_under(manifest_text, "bulletin")
+    if block is None:
         return None
-    block = m.group(1)
     if not re.search(r"(?m)^\s*check_at_boot:\s*true\b", block):
         return None
     f = re.search(r"(?m)^\s*file:\s*[\"']?([^\"'\s#]+)", block)

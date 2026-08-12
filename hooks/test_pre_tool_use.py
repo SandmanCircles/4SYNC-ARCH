@@ -1299,6 +1299,79 @@ class TestDeprecatedOverride(GuardCase):
             self.assertIn("DEPRECATED override honoured", fh.read())
 
 
+class TestRelativePathReplay(GuardCase):
+    """A relative file_path must resolve against the SESSION's cwd (MP#73).
+
+    Resolved against the hook PROCESS's cwd it is a different file, and the
+    failure mode is the quiet one: the replay reads nothing, returns None, and
+    every content guard skips by contract — so g4 and g5 stop inspecting anything
+    while the log stays empty and the mode still says enforce. g6 already got this
+    right. Payloads seen in practice carry absolute paths; these pin the behaviour
+    so that staying true is not a matter of luck."""
+
+    def test_relative_path_resolves_against_the_session_cwd(self):
+        self._put(os.path.join(self.root, "mp73-fixture.yaml"), "focus: original\n")
+        content = hooks._resulting_content(
+            "Edit", {"file_path": "mp73-fixture.yaml",
+                     "old_string": "focus: original", "new_string": "focus: replaced"},
+            self.root)
+        self.assertIsNotNone(content)
+        self.assertIn("focus: replaced", content)
+
+    def test_the_process_cwd_can_resolve_to_a_DIFFERENT_REAL_FILE(self):
+        """The hazard, and it is worse than reading nothing.
+
+        Written first as "without a cwd it returns None" — which failed, and the
+        failure was the point: the relative path resolved to a REAL file under the
+        repo the suite was run from. A wrong file that parses is far worse than an
+        unreadable one, because the guards do not skip — they judge another
+        instance's content and report on it with full confidence.
+
+        BUILDS BOTH SIDES ITSELF. The first version of this test read whatever
+        `config/STATUS.yaml` happened to sit under the process cwd, so it passed in
+        the product repo (whose copy is the TEMPLATE) and FAILED in the silo (whose
+        copy is AUTHORITATIVE, so the replay found no anchor and both sides came
+        back None). This file is machinery and ships byte-identical to both repos
+        and to every adopter — a test that depends on the tree it runs in is the
+        exact defect ManifestEnvCase exists to prevent, one directory over."""
+        decoy = os.path.join(self.root, "decoy")
+        os.makedirs(os.path.join(decoy, "config"))
+        self._put(os.path.join(decoy, "config", "STATUS.yaml"),
+                  "meta:\n  status: AUTHORITATIVE\nowner: DECOY\n")
+        self._put(self.status, STATUS_YAML.replace("focus:", "owner: SESSION\nfocus:"))
+
+        here = os.getcwd()
+        os.chdir(decoy)
+        self.addCleanup(os.chdir, here)
+
+        payload = {"file_path": os.path.join("config", "STATUS.yaml"),
+                   "old_string": "meta:", "new_string": "meta:  # touched"}
+        theirs = hooks._resulting_content("Edit", dict(payload))
+        ours = hooks._resulting_content("Edit", dict(payload), self.root)
+
+        self.assertIsNotNone(theirs)
+        self.assertIsNotNone(ours)
+        self.assertNotEqual(theirs, ours)
+        self.assertIn("DECOY", theirs)          # process cwd — the wrong instance
+        self.assertNotIn("DECOY", ours)
+        self.assertIn("SESSION", ours)          # session cwd — the right one
+
+    def test_the_cwd_parameter_is_optional(self):
+        """Defaults to None so an adopter's own caller keeps working unchanged."""
+        self.assertIsNone(hooks._resulting_content(
+            "Edit", {"file_path": "no-such-file-anywhere-mp73.yaml",
+                     "old_string": "x", "new_string": "y"}))
+
+    def test_an_absolute_path_ignores_the_cwd(self):
+        content = hooks._resulting_content(
+            "Edit", {"file_path": self.status,
+                     "old_string": 'focus: "harden the guard hooks"',
+                     "new_string": 'focus: "ship it"'},
+            os.path.join(self.root, "nowhere"))
+        self.assertIsNotNone(content)
+        self.assertIn('focus: "ship it"', content)
+
+
 class TestCrashedGuardIsLoud(GuardCase):
     """A guard that throws is a guard that DID NOT RUN (MP#72).
 

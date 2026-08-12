@@ -116,6 +116,30 @@ class TestBulletinAtBoot(unittest.TestCase):
     def test_absent_bulletin_block_is_none(self):
         self.assertIsNone(ss.parse_bulletin_at_boot("instance:\n  name: x\n"))
 
+    def test_indent_does_not_decide_whether_the_manifest_is_read(self):
+        """MP#73. This lookup anchored on EXACTLY two spaces of indent — which is
+        only what this project's own manifests happen to use.
+
+        Reindent to four (any YAML formatter, most editor defaults) and the block
+        was simply not found: the receipt reported no bulletin, silently, for a
+        manifest that declares one. THIS FILE HAS NO PyYAML PATH AT ALL, so the
+        regex is not a degraded fallback here — it is the only parser, for every
+        adopter, always.
+
+        Tabs are included because a manifest that mixes them is exactly the kind
+        of thing a formatter produces and nobody inspects."""
+        four = MANIFEST.replace("\n  ", "\n    ")
+        tabs = MANIFEST.replace("\n  ", "\n\t")
+        self.assertEqual(ss.parse_bulletin_at_boot(four), "ABBA.md")
+        self.assertEqual(ss.parse_bulletin_at_boot(tabs), "ABBA.md")
+
+    def test_a_deeper_key_is_still_scoped_to_its_own_block(self):
+        """Loosening the anchor must not let the search wander into a sibling
+        block — the scoping was the half of the old regex that was right."""
+        m = MANIFEST.replace("\n  ", "\n    ")
+        self.assertIsNone(ss.parse_bulletin_at_boot(
+            m.replace("check_at_boot: true", "check_at_boot: false")))
+
 
 class TestLiveWithin(unittest.TestCase):
     def test_minutes(self):

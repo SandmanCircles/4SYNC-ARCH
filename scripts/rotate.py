@@ -974,6 +974,47 @@ JOURNAL_MAX_DEFAULT = 12288
 JOURNAL_HISTORY_DEFAULT = "JOURNAL_HISTORY.md"
 
 
+def _block_under(text, key):
+    """The body of a nested `key:` block at ANY indent, or None if absent.
+
+    INDENT-AGNOSTIC ON PURPOSE (MP#73). This replaced `^\\s{2}<key>:` — an anchor on
+    EXACTLY two spaces, which is simply what this project's manifests happen to use.
+    Reindent a manifest to four spaces (any YAML formatter, most editor defaults) and
+    every lookup built on that anchor silently returned its built-in default: a
+    declared `journal.max_bytes` of 16384 came back as 12288, and a bulletin declared
+    `check_at_boot: true` came back as "no bulletin", with no error anywhere.
+
+    That is the failure class this project has already named twice — a
+    parsed-but-not-honored manifest key is "worse than an absent one, because it is
+    trusted". And it is not a rare path: PyYAML is absent from every fresh Python,
+    which this codebase calls "the modal fresh install", so for most adopters these
+    regexes ARE the parser rather than a fallback.
+
+    Requires at least one space of indent, preserving the original intent that these
+    keys are nested (under `close:`) rather than top-level.
+
+    DUPLICATED DELIBERATELY in hooks/session_start.py and scripts/meter.py. Machinery
+    modules never import one another — each is copied and wired standalone — so a
+    shared module would have to join MACHINERY and could be copied without its
+    dependents. Keep the three byte-identical."""
+    ind = None
+    body = []
+    for line in text.splitlines():
+        if ind is None:
+            m = re.match(r"^([ \t]+)" + re.escape(key) + r":", line)
+            if m:
+                ind = len(m.group(1).expandtabs(8))
+            continue
+        if not line.strip():
+            body.append(line)
+            continue
+        depth = len(re.match(r"^[ \t]*", line).group(0).expandtabs(8))
+        if depth <= ind:
+            break
+        body.append(line)
+    return "\n".join(body) if ind is not None else None
+
+
 def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     """close.journal.overflow_to from the manifest, or the default filename.
 
@@ -994,9 +1035,9 @@ def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
             return os.path.basename(v.strip())
     except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
         pass
-    m = re.search(r"(?ms)^\s{2}journal:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", text)
-    if m:
-        ov = re.search(r"^\s*overflow_to:\s*[\"']?([^\"'\s#]+)", m.group(1), re.M)
+    block = _block_under(text, "journal")
+    if block is not None:
+        ov = re.search(r"^\s*overflow_to:\s*[\"']?([^\"'\s#]+)", block, re.M)
         if ov:
             return os.path.basename(ov.group(1))
     return JOURNAL_HISTORY_DEFAULT
@@ -1018,9 +1059,9 @@ def manifest_journal_max(root, manifest_name="4SYNC.yaml"):
             return v
     except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
         pass
-    m = re.search(r"(?ms)^\s{2}journal:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", text)
-    if m:
-        mb = re.search(r"^\s*max_bytes:\s*(\d+)", m.group(1), re.M)
+    block = _block_under(text, "journal")
+    if block is not None:
+        mb = re.search(r"^\s*max_bytes:\s*(\d+)", block, re.M)
         if mb:
             return int(mb.group(1))
     return JOURNAL_MAX_DEFAULT
@@ -1567,10 +1608,10 @@ def manifest_meter_script(root, manifest_name=None):
     p = os.path.join(root, name)
     if not os.path.exists(p):
         return None
-    m = re.search(r"(?ms)^\s{2}meter:[^\n]*\n(.*?)(?=^\s{0,2}\S|\Z)", read(p))
-    if not m:
+    block = _block_under(read(p), "meter")
+    if block is None:
         return None
-    s = re.search(r"^\s*script:\s*([^\s#]+)", m.group(1), re.M)
+    s = re.search(r"^\s*script:\s*([^\s#]+)", block, re.M)
     return s.group(1) if s else None
 
 

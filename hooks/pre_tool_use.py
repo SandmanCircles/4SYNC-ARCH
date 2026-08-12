@@ -121,8 +121,17 @@ CONFIG_DIR = os.environ.get("ARCH_CONFIG_DIR", "config").strip("/").lower()
 # see the truth must stay quiet, not guess.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _resulting_content(tool, ti):
-    """The full file content this call will produce, or None if undeterminable."""
+def _resulting_content(tool, ti, cwd=None):
+    """The full file content this call will produce, or None if undeterminable.
+
+    `cwd` is the SESSION's working directory, from the payload. A relative
+    `file_path` resolved against the HOOK PROCESS's cwd is a different file, and
+    the failure is silent in the worst way: the replay reads the wrong file (or
+    nothing), returns None, and every content guard SKIPS — so g4 and g5 quietly
+    stop inspecting anything while the log stays empty and mode still says
+    enforce. g6 already resolves against the session cwd for exactly this reason
+    (MP#73). Payloads seen in practice carry absolute paths; this costs nothing
+    if that never changes and closes the hole if it does."""
     if tool == "Write":
         c = ti.get("content")
         return c if isinstance(c, str) else None
@@ -134,6 +143,8 @@ def _resulting_content(tool, ti):
         edits = [ti]                    # single Edit: the input itself is the edit
 
     raw = ti.get("file_path") or ti.get("path") or ""
+    if raw and cwd and not os.path.isabs(raw):
+        raw = os.path.join(cwd, raw)
     try:
         with open(raw, encoding="utf-8") as fh:
             content = fh.read()
@@ -1013,8 +1024,21 @@ def main():
 
     tool, path, text, cmd = _extract(payload)
 
+    # Context for guards that must reason about WHERE the write lands rather than
+    # what it contains. `path` from _extract is lowercased for content matching,
+    # which is fine on Windows and wrong on a case-sensitive filesystem — so the
+    # raw target is carried here, unmodified, for anything touching the filesystem.
+    # BUILT BEFORE the replay below, not after: `_resulting_content` needs the
+    # session cwd to resolve a relative file_path, and resolving it against the
+    # hook process's cwd instead reads a different file (MP#73).
+    ti = payload.get("tool_input") or {}
+    ctx = {
+        "cwd": payload.get("cwd") or os.getcwd(),
+        "raw_path": ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or "",
+    }
+
     try:
-        full = _resulting_content(tool, payload.get("tool_input") or {})
+        full = _resulting_content(tool, ti, ctx["cwd"])
     except Exception:  # noqa: BLE001 — reconstruction is best-effort; None = skip
         # DELIBERATELY UNLOGGED, unlike the guard loop below (MP#72). "I could not
         # reconstruct the resulting file" is a designed, expected outcome — every
@@ -1030,16 +1054,6 @@ def main():
         # blocks nothing; the cost of the guard loop failing is an unenforced rule.
         # Do not "fix" these three uniformly — only one of them is a bypass.
         pass
-
-    # Context for guards that must reason about WHERE the write lands rather than
-    # what it contains. `path` from _extract is lowercased for content matching,
-    # which is fine on Windows and wrong on a case-sensitive filesystem — so the
-    # raw target is carried here, unmodified, for anything touching the filesystem.
-    ti = payload.get("tool_input") or {}
-    ctx = {
-        "cwd": payload.get("cwd") or os.getcwd(),
-        "raw_path": ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or "",
-    }
 
     for guard in GUARDS:
         try:

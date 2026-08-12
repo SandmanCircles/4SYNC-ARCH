@@ -295,6 +295,24 @@ close:
     check_at_boot: false
 """
 
+    def test_indent_does_not_decide_whether_the_board_is_counted(self):
+        """MP#73. `_bulletin_from_lines` anchored on EXACTLY two spaces of indent.
+
+        Reindent the manifest to four and the board vanished from the boot count —
+        silently, which is the same undercount MP#17 and MP#30 were each opened to
+        fix, arriving by a third route. This is the dependency-free path, and
+        PyYAML-absent is the modal fresh install, so it is the path most adopters
+        run."""
+        four = self.LIVE.replace("\n  ", "\n    ")
+        tabs = self.LIVE.replace("\n  ", "\n\t")
+        self.assertEqual(meter._bulletin_from_lines(four), "ABBA.md")
+        self.assertEqual(meter._bulletin_from_lines(tabs), "ABBA.md")
+
+    def test_indent_does_not_decide_scan_mode(self):
+        scan = self.LIVE.replace("check_at_boot: true",
+                                 "check_at_boot: true\n    mode: scan_headers")
+        self.assertTrue(meter.bulletin_scan_enabled(scan.replace("\n  ", "\n    ")))
+
     def test_live_board_is_detected(self):
         self.assertEqual(meter.bulletin_boot_file(self.LIVE), "ABBA.md")
 

@@ -388,5 +388,9 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception:  # noqa: BLE001 — a boot receipt never fails a session start
+        # DELIBERATELY UNLOGGED, unlike pre_tool_use's guard loop (MP#72). This
+        # hook only PRINTS; a crash costs a receipt, never an unenforced rule —
+        # and there is no session left to tell. The guard loop is the one place
+        # where swallowing an exception means a check did not happen.
         sys.exit(0)
 # ═══ EOF session_start.py ═══

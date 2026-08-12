@@ -1016,11 +1016,19 @@ def main():
     try:
         full = _resulting_content(tool, payload.get("tool_input") or {})
     except Exception:  # noqa: BLE001 — reconstruction is best-effort; None = skip
+        # DELIBERATELY UNLOGGED, unlike the guard loop below (MP#72). "I could not
+        # reconstruct the resulting file" is a designed, expected outcome — every
+        # content guard skips on None by contract — so it is not an anomaly and
+        # logging it would fill the log with normal operation.
         full = None
 
     try:
         _record_debt(payload)
     except Exception:  # noqa: BLE001 — recorder is best-effort, never fatal to the call
+        # DELIBERATELY UNLOGGED, same as above and unlike the guard loop (MP#72).
+        # The cost of this failing is one missing row in a visibility tracker that
+        # blocks nothing; the cost of the guard loop failing is an unenforced rule.
+        # Do not "fix" these three uniformly — only one of them is a bypass.
         pass
 
     # Context for guards that must reason about WHERE the write lands rather than
@@ -1045,7 +1053,20 @@ def main():
                 reason = guard(tool, path, text, cmd, full)
             else:
                 reason = guard(tool, path, text, cmd)
-        except Exception:  # noqa: BLE001 — a buggy guard must never break the tool call
+        except Exception as exc:  # noqa: BLE001 — a buggy guard must never break the tool call
+            # ...BUT IT MUST NOT DO SO SILENTLY (MP#72). The rationale above is
+            # right and unchanged: a crash here still allows the call. What was
+            # missing is the other half. A guard that throws is a guard that did
+            # not run, and an unlogged skip is exactly the SILENT BYPASS this file
+            # spends hundreds of lines converting into loud ones — "Bash coverage
+            # converts a SILENT bypass into a LOUD one" is the same argument. The
+            # portability note at the top warns at length that an ADOPTER's
+            # appended guard can silently never run; this seam let a SHIPPED one
+            # do it, and said nothing. Enforce mode is where it bites: the write
+            # lands, settings still say enforce, and the log still fills with
+            # other guards' catches, so nothing looks wrong.
+            _log("[%s] CRASHED: %r  tool=%s path=%s"
+                 % (getattr(guard, "__name__", guard), exc, tool, path or cmd))
             continue
         kind, reason = _verdict(reason)
         if reason:

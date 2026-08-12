@@ -1299,6 +1299,90 @@ class TestDeprecatedOverride(GuardCase):
             self.assertIn("DEPRECATED override honoured", fh.read())
 
 
+class TestCrashedGuardIsLoud(GuardCase):
+    """A guard that throws is a guard that DID NOT RUN (MP#72).
+
+    The dispatcher swallows guard exceptions so a buggy guard can never break the
+    user's tool call — correct, and unchanged. What was missing is the other half:
+    it did it silently, which is the SILENT BYPASS this file spends hundreds of
+    lines converting into loud ones. Under enforce the write lands, settings still
+    say enforce, and the log still fills with other guards' catches, so nothing
+    looks wrong from any angle.
+
+    Both halves are asserted here on purpose. A test that only checked the call
+    still proceeds would have passed before this change and after it."""
+
+    def setUp(self):
+        super().setUp()
+        self.logfile = os.path.join(self.root, "crash.log")
+        for k, v in (("ARCH_HOOKS_LOG", self.logfile),
+                     ("ARCH_HOOKS_MODE", "enforce"),
+                     ("ARCH_DEBT", "0")):
+            prev = os.environ.get(k)
+            os.environ[k] = v
+            self.addCleanup(self._restore_env, k, prev)
+
+    @staticmethod
+    def _restore_env(key, prev):
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
+
+    def _run_main(self, payload):
+        """Drive main() in-process so a raising guard can be injected.
+
+        The subprocess runner used elsewhere cannot reach GUARDS in the child."""
+        import io
+        import json as _json
+        payload = dict(payload, cwd=self.root)
+        prev_stdin = sys.stdin
+        sys.stdin = io.StringIO(_json.dumps(payload))
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                hooks.main()
+        finally:
+            sys.stdin = prev_stdin
+        return caught.exception.code
+
+    def _install_exploding_guard(self):
+        def g99_exploding_guard(tool, path, text, cmd):
+            raise RuntimeError("guard exploded")
+
+        prev = list(hooks.GUARDS)
+        hooks.GUARDS.insert(0, g99_exploding_guard)
+        self.addCleanup(lambda: hooks.GUARDS.__setitem__(slice(None), prev))
+        return g99_exploding_guard
+
+    def _log_text(self):
+        if not os.path.exists(self.logfile):
+            return ""
+        with open(self.logfile, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_crashing_guard_does_not_break_the_tool_call(self):
+        """The original rationale, preserved. This half passed before MP#72 too."""
+        self._install_exploding_guard()
+        code = self._run_main(write_payload(os.path.join(self.root, "notes.md"), "hello"))
+        self.assertEqual(0, code)
+
+    def test_a_crashing_guard_is_logged_by_name(self):
+        """The half that was missing. Without it the skip is indistinguishable
+        from a guard that ran and found nothing."""
+        self._install_exploding_guard()
+        self._run_main(write_payload(os.path.join(self.root, "notes.md"), "hello"))
+        log = self._log_text()
+        self.assertIn("CRASHED", log)
+        self.assertIn("g99_exploding_guard", log)
+        self.assertIn("guard exploded", log)
+
+    def test_a_clean_run_logs_no_crash(self):
+        """The control. A CRASHED line must mean something actually crashed —
+        otherwise the log trains its reader to ignore it."""
+        self._run_main(write_payload(os.path.join(self.root, "notes.md"), "hello"))
+        self.assertNotIn("CRASHED", self._log_text())
+
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_pre_tool_use.py ═══

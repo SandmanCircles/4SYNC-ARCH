@@ -54,8 +54,15 @@ import os
 import sys
 
 # ── The adopter-facing machinery inventory ───────────────────────────────────
-# All 15 shipped machinery files (14 code files plus VERSION). Every adopter gets all of them, so all of them
-# are part of the build identity.
+# Every shipped machinery file — all the code, plus VERSION. Every adopter gets all
+# of them, so all of them are part of the build identity.
+#
+# NO COUNT IN THIS SENTENCE, deliberately. It read "All 15 shipped machinery files
+# (14 code files plus VERSION)" from v1.0.0 until v1.0.9 — through the 15 → 17 move
+# at v1.0.8, which updated the count twelve lines below and not this one. A
+# transcribed count in the file whose own docstring says "a fact which can be
+# computed must never be transcribed" is the joke writing itself. The one number
+# that survives is pinned by a test, where changing it is a deliberate act.
 #
 # THIS LIST IS DELIBERATELY LONGER THAN check_sync.py's, AND THE DIFFERENCE IS
 # NOT AN OVERSIGHT — the two answer different questions and both are correct:
@@ -66,13 +73,17 @@ import sys
 #     a sound reason: the silo carries no copy of those — it runs them out of the
 #     nested product folder — and a file with exactly one copy cannot drift.
 #
-#   arch_build.py (17 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
+#   arch_build.py (18 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
 #     adopter's position those files are machinery exactly like the other nine:
 #     copied in, never renamed, replaced wholesale by an update. Omitting them
 #     would produce a build identity that silently ignores files an update
 #     changes. 15 → 17 at v1.0.8: this script and its suite were missing from
-#     their own list, which is the same error one level in. See the note beside
-#     them below.
+#     their own list, which is the same error one level in. Then 17 → 18 at
+#     v1.0.9 (MP#77), for `scripts/test_wire_hooks.py` — the same omission a
+#     release later, found the same way, by `release.py status` reporting fewer
+#     changed machinery files than had actually changed. See the notes beside
+#     them below, and `test_machinery_lists_every_paired_suite`, which closes the
+#     class so there is no third.
 #
 # Treating those two questions as one is what left the gap. Keep both lists, keep
 # them honest, and keep this comment next to whichever one you edit.
@@ -122,6 +133,23 @@ MACHINERY = [
     "scripts/split_ledger.py",
     "scripts/test_split_ledger.py",
     "scripts/wire_hooks.py",
+    # ADDED v1.0.9 (MP#77). The SAME omission as arch_build.py's own, one release
+    # later and found the same way — `release.py status` reported 3 changed
+    # machinery files against a real 4. Every other script here is paired with its
+    # suite; this one was not, so a release changing only it moved no build id and
+    # an adopter could skip the file, compute a MATCHING id, and be told they were
+    # current.
+    #
+    # WHY MP#69 DID NOT CATCH IT: that row was about arch_build.py specifically and
+    # fixed arch_build.py specifically, without auditing the rest of the list for
+    # the same shape. And the gap did not exist when the list was written —
+    # wire_hooks.py had been here for some time, but its suite was not created until
+    # MP#65 (2026-08-10), and nothing adds a file here when a new suite is born. The
+    # hole opened by ADDING A TEST, which is why no review of this list would have
+    # found it. test_machinery_lists_every_paired_suite in test_arch_build.py now
+    # fails when an entry's suite exists on disk but is absent here — the class,
+    # rather than a third instance of it.
+    "scripts/test_wire_hooks.py",
 ]
 
 # Where genesis records what the instance was born with. Under arch/ because

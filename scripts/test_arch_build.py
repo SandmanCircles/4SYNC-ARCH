@@ -45,8 +45,13 @@ class TempInstance(unittest.TestCase):
 
 
 class TestInventory(unittest.TestCase):
-    def test_inventory_is_seventeen_files(self):
-        self.assertEqual(len(arch_build.MACHINERY), 17)
+    def test_inventory_is_eighteen_files(self):
+        """A PINNED COUNT, and the pin is the point: changing the inventory changes
+        every published build id's recomputation, so it must be a deliberate act
+        rather than a side effect. 15 → 17 at v1.0.8 (MP#69), 17 → 18 at v1.0.9
+        (MP#77). If this test fails, do not just update the number — read
+        RELEASE_NOTES and say what the change does to the back catalogue."""
+        self.assertEqual(len(arch_build.MACHINERY), 18)
 
     def test_inventory_includes_this_script_and_its_suite(self):
         """MP#69. Absent from v1.0.0 through v1.0.7 with no recorded reason. A
@@ -309,6 +314,51 @@ class TestUpdatePointer(TempInstance):
         payload = json.loads(buf.getvalue())
         self.assertNotIn("RELEASE_NOTES.md", buf.getvalue())
         self.assertIn("build", payload)
+
+
+class TestMachineryInventoryIsComplete(unittest.TestCase):
+    """MP#77, and it exists to close a CLASS rather than a third instance.
+
+    Twice now a file has been missing from the inventory that decides what a build
+    IS: `arch_build.py` and its own suite from v1.0.0 through v1.0.7 (MP#69), then
+    `scripts/test_wire_hooks.py` one release later. Both had the same consequence —
+    a release changing only the missing file moves no build id, so an adopter can
+    skip it, compute an id that MATCHES the release, and be told they are current
+    while missing the change.
+
+    THE REASON REVIEWING THE LIST WOULD NEVER HAVE FOUND THE SECOND ONE: the hole
+    was not created by editing this list. `wire_hooks.py` sat here correctly for
+    releases; the gap opened the day MP#65 gave it its first suite, because nothing
+    adds a file to the inventory when a NEW TEST is born. That is a defect of
+    omission triggered by unrelated work, which is precisely the kind a test catches
+    and a reader does not."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_machinery_lists_every_paired_suite(self):
+        missing = []
+        for rel in arch_build.MACHINERY:
+            if not rel.endswith(".py"):
+                continue
+            directory, name = rel.rsplit("/", 1)
+            if name.startswith("test_"):
+                continue
+            suite = "%s/test_%s" % (directory, name)
+            on_disk = os.path.exists(os.path.join(self.ROOT, suite.replace("/", os.sep)))
+            if on_disk and suite not in arch_build.MACHINERY:
+                missing.append(suite)
+        self.assertEqual(missing, [],
+                         "these suites exist on disk but are absent from MACHINERY, so a "
+                         "release changing only them would move no build id: %s" % missing)
+
+    def test_every_listed_file_exists(self):
+        """The mirror image. An entry naming a file that is not there hashes as
+        `<path>:MISSING` — deliberate, so a partial copy cannot impersonate a
+        complete one — but in THIS repo it would mean the list has drifted from the
+        tree, and every adopter would inherit the phantom."""
+        absent = [rel for rel in arch_build.MACHINERY
+                  if not os.path.exists(os.path.join(self.ROOT, rel.replace("/", os.sep)))]
+        self.assertEqual(absent, [], "MACHINERY names files this repo does not have: %s" % absent)
 
 
 if __name__ == "__main__":

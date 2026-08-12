@@ -44,11 +44,15 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
-## v1.0.9 — PREPARED, NOT CUT
+## v1.0.9
 
-*This section is written ahead of the cut on purpose. `release.py` refuses a cut without it, and
-the inventory change below is the kind that must be stated before it ships rather than discovered
-afterwards. Nothing is tagged or published until someone runs the cut deliberately.*
+*Written ahead of the cut on purpose — `release.py` refuses a cut without it, and the inventory
+change below is the kind that must be stated before it ships rather than discovered afterwards.
+Nothing is tagged or published until someone runs the cut deliberately.*
+
+*(The heading is bare `## v1.0.9` because the gate matches it by EXACT equality. It first read
+`## v1.0.9 — PREPARED, NOT CUT`, which was honest and refused the cut — the status marker belongs
+in the body, not in the string a checker keys on.)*
 
 **Machinery: replace all twelve changed files** — `hooks/pre_tool_use.py`,
 `hooks/session_start.py`, `scripts/arch_build.py`, `scripts/meter.py`, `scripts/rotate.py`,

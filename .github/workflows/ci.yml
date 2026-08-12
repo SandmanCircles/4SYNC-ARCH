@@ -40,12 +40,25 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ['3.8', '3.11', '3.13']
         exclude:
-          # setup-python has no 3.8 for the arm64 macOS runners.
+          # NO macOS × 3.8 LEG EXISTS ANY MORE, and this is a statement about
+          # GitHub rather than about us. `setup-python` has no 3.8 build for the
+          # arm64 runners (macos-latest and every macos-14/15), and the x86 image
+          # that did — `macos-13` — has been retired. A job requesting a retired
+          # label is not rejected: it sits QUEUED until the 24-hour timeout and
+          # then fails, so the run never concludes and the badge never goes green.
+          #
+          # Learned the expensive way on the first run this workflow ever had
+          # (2026-08-11): 11 of 12 jobs green in under a minute, and the twelfth —
+          # `macos-13 · py3.8` — never got a runner. The run-level status reads
+          # "queued" while ANY job is unclaimed, so a fully-passing matrix looked
+          # like a stall.
+          #
+          # WHAT THIS COSTS, said plainly rather than papered over: the 3.8 floor
+          # is no longer exercised on macOS anywhere. It is still covered on Linux
+          # and Windows, and macOS is still covered at 3.11 and 3.13 — so both
+          # variables are tested, just not that one combination. If a 3.8-only
+          # macOS bug ever exists, this matrix will not find it.
           - os: macos-latest
-            python: '3.8'
-        include:
-          # ...so the floor still gets a macOS leg, on the x86 runner.
-          - os: macos-13
             python: '3.8'
     steps:
       - uses: actions/checkout@v4

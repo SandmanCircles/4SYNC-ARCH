@@ -44,6 +44,58 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.0.9 — PREPARED, NOT CUT
+
+*This section is written ahead of the cut on purpose. `release.py` refuses a cut without it, and
+the inventory change below is the kind that must be stated before it ships rather than discovered
+afterwards. Nothing is tagged or published until someone runs the cut deliberately.*
+
+**Machinery: replace all twelve changed files** — `hooks/pre_tool_use.py`,
+`hooks/session_start.py`, `scripts/arch_build.py`, `scripts/meter.py`, `scripts/rotate.py`,
+`scripts/wire_hooks.py`, and the six matching `test_*.py` files.
+
+**Manifest: nothing to change.**
+
+**Read this before you compare ids — the machinery list grew again, and every id published before
+this release now recomputes to something else.** `scripts/test_wire_hooks.py` was missing from
+`MACHINERY`, so the inventory goes 17 → 18. **v1.0.8's note said this was "the second and, we
+expect, last time." That expectation was wrong, and this is the third.** It is the same one-time
+effect as the `arch/VERSION` move at v1.0.5 and the `arch_build.py` addition at v1.0.8: a build id
+is anchored to a tag for file CONTENT but to the RUNNING CODE for the INVENTORY, so ids are only
+ever comparable within a generation. **Compare against the current release and disregard older
+ids.** Your own instance is unaffected — you run your generation's `arch_build.py` against your
+own tree.
+
+**What is different this time is that the class is closed, not just the instance.**
+`test_machinery_lists_every_paired_suite` now fails when a machinery entry's suite exists on disk
+but is absent from the inventory. Both previous occurrences were found by a human noticing a
+number was wrong; a fourth would fail the suite instead.
+
+**The bug that most affects you is `g5`, and it has been inert on Linux and macOS since it
+shipped.** The manifest guard's date-origin check opened a lowercased path. On a case-insensitive
+filesystem that succeeds; on a case-sensitive one it raises whenever the path has a capital in it —
+and the shipped manifest is `4SYNC.yaml`. So every date refusal degraded to the hedged "it may
+pre-date your edit" message instead of telling you who introduced the date. The guard still
+blocked; only the attribution was lost. Fixed.
+
+**Also in this release:**
+
+- **A crashing guard is now logged instead of silently skipped.** A guard that raised was passed
+  over with no log line, so a check that never ran was indistinguishable from a check that passed.
+  The tool call still proceeds — that part was deliberate — but it is no longer silent.
+- **The manifest is read at any indent.** Six lookups anchored on exactly two spaces. If your
+  manifest is indented with four spaces or tabs — any YAML formatter, most editor defaults — those
+  lookups silently returned their built-in defaults: a declared `journal.max_bytes` of 16384 was
+  governed by 12288, and a bulletin declaring `check_at_boot: true` read as no bulletin. **If you
+  ever reindented your manifest, this is the release that starts honouring it.**
+- **A relative `file_path` now resolves against the session's working directory**, not the hook
+  process's. Payloads seen in practice are absolute, so this is hardening rather than a fix.
+- **CI**: the suite now runs on Linux, macOS and Windows across three Python versions, with
+  PyYAML-absent as the default configuration. The g5 bug above shipped through two releases behind
+  a suite that already contained the failing tests, on a machine that could not run them.
+
+---
+
 ## v1.0.8
 
 **Machinery: replace `scripts/rotate.py` and `scripts/arch_build.py`, and their two test

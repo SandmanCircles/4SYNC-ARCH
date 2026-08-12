@@ -169,7 +169,23 @@ class TestSettingsRoot(unittest.TestCase):
     nothing ever reads, reported as success."""
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="wire_root_")
+        # REALPATH, NOT JUST mkdtemp (MP#78). `settings_root` reports what git says,
+        # and `git rev-parse --show-toplevel` returns the CANONICAL path. On macOS
+        # `tempfile.mkdtemp()` hands back `/var/folders/...`, where `/var` is a
+        # symlink to `/private/var` — so git answered `/private/var/...`, the
+        # fixture expected `/var/...`, and three tests here failed on every macOS
+        # box while passing on Linux and Windows. Reported by an adopter running a
+        # Laravel app with ARCH in a subfolder, 2026-08-11.
+        #
+        # THE PRODUCTION CODE IS CORRECT AND MUST NOT BE "FIXED": the canonical path
+        # is the one Claude Code resolves settings against, so git's answer is the
+        # right one and the fixture's notion of its own location was wrong.
+        # `os.path.abspath` (which wire_hooks uses) normalises a path but does NOT
+        # resolve symlinks — only `realpath` does. That is the whole bug.
+        #
+        # Canonicalised once here rather than at each assertion, because the defect
+        # belongs to the fixture's root, not to any individual comparison.
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="wire_root_"))
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)

@@ -90,9 +90,16 @@ blocked; only the attribution was lost. Fixed.
   ever reindented your manifest, this is the release that starts honouring it.**
 - **A relative `file_path` now resolves against the session's working directory**, not the hook
   process's. Payloads seen in practice are absolute, so this is hardening rather than a fix.
+- **The suite passes on macOS.** Three `TestSettingsRoot` tests failed on every macOS box and
+  nowhere else: `git rev-parse --show-toplevel` returns the canonical path, `tempfile.mkdtemp()`
+  returns `/var/folders/...`, and `/var` is a symlink to `/private/var`. **The shipped code was
+  always right** — the test fixture compared against a path macOS never returns. If you run macOS
+  and wondered why three tests failed on a clean clone, this is why, and it was never your install.
 - **CI**: the suite now runs on Linux, macOS and Windows across three Python versions, with
-  PyYAML-absent as the default configuration. The g5 bug above shipped through two releases behind
-  a suite that already contained the failing tests, on a machine that could not run them.
+  PyYAML-absent as the default configuration, plus a leg that deliberately symlinks the temp
+  directory so the macOS failure above cannot come back unnoticed. The g5 bug shipped through two
+  releases behind a suite that already contained the failing tests, on a machine that could not run
+  them.
 
 ---
 

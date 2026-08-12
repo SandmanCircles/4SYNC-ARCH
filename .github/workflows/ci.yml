@@ -75,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [with-pyyaml, renamed-manifest]
+        leg: [with-pyyaml, renamed-manifest, symlinked-tmpdir]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -93,6 +93,23 @@ jobs:
       - name: Rename the manifest axis
         if: matrix.leg == 'renamed-manifest'
         run: echo "ARCH_MANIFEST=PROJECT.yaml" >> "$GITHUB_ENV"
+
+      # A SYMLINKED TEMP DIRECTORY, which is macOS's normal state: /var is a
+      # symlink to /private/var, so tempfile.mkdtemp() returns an uncanonicalised
+      # path while `git rev-parse --show-toplevel` returns the real one. Three
+      # tests compared the two and failed on every macOS box while passing here
+      # and on Windows — found by an adopter, not by us (MP#78).
+      #
+      # WHY THIS LEG EXISTS WHEN THE MATRIX ALREADY HAS macOS: it is not knowable
+      # from here whether GitHub's macOS runners set TMPDIR to a symlinked path,
+      # and "the macOS leg will probably catch it" is a hope rather than a check.
+      # This reproduces the mechanism deterministically, on the cheapest runner.
+      - name: Symlinked TMPDIR
+        if: matrix.leg == 'symlinked-tmpdir'
+        run: |
+          mkdir -p "$RUNNER_TEMP/realtmp"
+          ln -s "$RUNNER_TEMP/realtmp" "$RUNNER_TEMP/symtmp"
+          echo "TMPDIR=$RUNNER_TEMP/symtmp" >> "$GITHUB_ENV"
 
       - name: hooks
         run: python -m unittest discover -s hooks -p 'test_*.py' -v

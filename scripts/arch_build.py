@@ -150,6 +150,20 @@ MACHINERY = [
     # fails when an entry's suite exists on disk but is absent here — the class,
     # rather than a third instance of it.
     "scripts/test_wire_hooks.py",
+    # ADDED under MP#80 with its suite, in the same commit, because MP#69 and MP#77
+    # were both the story of a script listed without one — and this pair was asserted
+    # by test_arch_update.py before either line existed here, so the omission failed
+    # a test rather than shipping.
+    #
+    # THIS MOVES THE INVENTORY 18 -> 20 AND RECOMPUTES EVERY PUBLISHED ID, for the
+    # FOURTH time (arch/VERSION at v1.0.5, arch_build.py at v1.0.8, test_wire_hooks
+    # at v1.0.9). That is now unambiguously a property of the design and not an
+    # incident: a build id is anchored to a tag for file CONTENT but to the running
+    # code for the INVENTORY, so ids are only ever comparable within a generation.
+    # It must be stated in the release note BEFORE the cut. Adopters are unaffected —
+    # each runs their own generation's arch_build.py against their own tree.
+    "scripts/arch_update.py",
+    "scripts/test_arch_update.py",
 ]
 
 # Where genesis records what the instance was born with. Under arch/ because

@@ -214,6 +214,10 @@ close:
     trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
     untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount
 
+mail:                      # MP#84: cross-project mail. Nothing shared is created.
+  name: [PROJECT]          # what other instances address you as
+  peers: []                # paths to peer instances; each declares its own name
+
 integrity:
   eof_sentinel: "# ═══ EOF <filename> ═══"
   hooks:                                 # ARCH_HOOKS_MODE: warn | enforce | off

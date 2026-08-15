@@ -73,7 +73,8 @@ import sys
 #     a sound reason: the silo carries no copy of those — it runs them out of the
 #     nested product folder — and a file with exactly one copy cannot drift.
 #
-#   arch_build.py (18 files, SHIPS TO ADOPTERS) asks "what am I running?" From an
+#   arch_build.py (SHIPS TO ADOPTERS — count it from the list, do not read one
+#     here; this line said 18 while the list held 22) asks "what am I running?" From an
 #     adopter's position those files are machinery exactly like the other nine:
 #     copied in, never renamed, replaced wholesale by an update. Omitting them
 #     would produce a build identity that silently ignores files an update
@@ -164,6 +165,12 @@ MACHINERY = [
     # each runs their own generation's arch_build.py against their own tree.
     "scripts/arch_update.py",
     "scripts/test_arch_update.py",
+    # ADDED under MP#84 with its suite, same commit, same reason as the pair
+    # above: MP#69 and MP#77 were both a script listed without one.
+    # INVENTORY 20 -> 22, the FIFTH recompute of every published id. State it in
+    # the release note BEFORE the cut, as v1.1.0 did.
+    "scripts/mail.py",
+    "scripts/test_mail.py",
 ]
 
 # Where genesis records what the instance was born with. Under arch/ because

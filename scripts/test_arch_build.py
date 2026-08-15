@@ -45,11 +45,12 @@ class TempInstance(unittest.TestCase):
 
 
 class TestInventory(unittest.TestCase):
-    def test_inventory_is_twenty_files(self):
+    def test_inventory_is_twenty_two_files(self):
         """A PINNED COUNT, and the pin is the point: changing the inventory changes
         every published build id's recomputation, so it must be a deliberate act
         rather than a side effect. 15 → 17 at v1.0.8 (MP#69), 17 → 18 at v1.0.9
-        (MP#77), 18 → 20 under MP#80 (arch_update.py and its suite). If this test
+        (MP#77), 18 → 20 under MP#80 (arch_update.py and its suite), 20 → 22 under MP#84
+        (mail.py and its suite). If this test
         fails, do not just update the number — read RELEASE_NOTES and say what the
         change does to the back catalogue.
 
@@ -61,7 +62,7 @@ class TestInventory(unittest.TestCase):
         to the tag for file CONTENT but to the running code for the INVENTORY.
         Adopters are untouched; each runs their own generation's arch_build.py
         against their own tree. The next release note must say so BEFORE the cut."""
-        self.assertEqual(len(arch_build.MACHINERY), 20)
+        self.assertEqual(len(arch_build.MACHINERY), 22)
 
     def test_inventory_includes_this_script_and_its_suite(self):
         """MP#69. Absent from v1.0.0 through v1.0.7 with no recorded reason. A

@@ -12,7 +12,23 @@ current published release is in [`llms.txt`](https://www.4sync.ai/llms.txt).
 ## How to apply any update
 
 **Commit first.** Your own git history is the undo, and it is the only safety net in this
-process. Then open a session in your instance and paste this, filling in the two paths:
+process.
+
+**From v1.1.0 onward, use the tool.** Clone the release you are moving to, then run the CLONE's
+updater against your instance — yours is older and does not know about the release it is applying:
+
+```
+python <PATH-TO-CLONE>/scripts/arch_update.py --from <PATH-TO-CLONE> --dir . --expect <build-id>
+```
+
+Dry run by default; `--apply` writes. It touches only the machinery inventory and refuses
+everything outside it, so your `config/` stack, ledger and task documents are not reachable by it.
+Then read the notes for every release between your version and the new one — **copying machinery
+is not the whole update**, and any release with a `**By hand:**` line has something the tool
+cannot do for you.
+
+**If your instance predates v1.1.0**, or you would rather do it yourself, open a session in your
+instance and paste this, filling in the two paths:
 
 ```
 I'm updating 4SYNC ARCH. A fresh upstream clone is at <PATH-TO-CLONE>; my instance
@@ -41,6 +57,68 @@ Stop and ask me if any step is ambiguous rather than guessing.
 
 **Take machinery wholesale or not at all.** Cherry-picking "the useful ones" leaves you on a
 build that matches no release, which nobody — including support — can then reason about.
+
+---
+
+## v1.1.0
+
+*A minor bump rather than v1.0.10, deliberately. This release adds a tool rather than fixing a
+defect, which is what the middle number is for — and `1.0.10` would have been the first two-digit
+component this project has ever produced. `check_sync` sorts semver numerically on purpose
+(a lexical sort puts `v1.0.10` before `v1.0.9`), but that is one parser being careful, and the
+release you least want mis-sorted is the tenth.*
+
+**Machinery: replace all six changed files** — `scripts/arch_build.py`, `scripts/arch_update.py`,
+`scripts/rotate.py`, and the three matching `test_*.py` files.
+
+**Manifest: one optional addition.** Under `close.snapshot`, you may declare where an
+over-threshold field goes:
+
+```yaml
+  snapshot:
+    file: config/STATUS.yaml
+    overflow_to: [FINDINGS.md, config/KERNEL.yaml, tasks/closed/]
+```
+
+Undeclared is fine and changes nothing — you get generic advice instead of your own destinations.
+**These are OUR paths; yours are yours.** Nothing guesses a destination for you, on purpose: routing
+your content somewhere you never declared is the failure this exists to prevent.
+
+**By hand: nothing.**
+
+---
+
+**There is now a tool that applies a release for you, and this is the last update you have to do
+by hand.**
+
+```
+python <PATH-TO-CLONE>/scripts/arch_update.py --from <PATH-TO-CLONE> --dir . --expect <build-id>
+```
+
+**Run the CLONE's copy, not your own** — yours predates this release and does not have the tool.
+It is a dry run by default; add `--apply` to write. It copies only the machinery inventory and
+**refuses to write anything outside it**, so your `config/` stack, your ledger and your task
+documents cannot be touched by it. It verifies the clone against `--expect` *before* writing
+anything, and recomputes your build id afterwards to prove the update landed.
+
+It has been verified end to end against a real v1.0.8 tree. It has not yet been run by anyone
+outside this project — you are its first outside user, and the dry run is there for that reason.
+
+---
+
+**Read this before you compare ids — the machinery list grew again, and every id published before
+this release now recomputes to something else.** `scripts/arch_update.py` and its suite join the
+inventory, so it goes **18 → 20**. This is the **fourth** time (`arch/VERSION` at v1.0.5,
+`arch_build.py` at v1.0.8, `test_wire_hooks.py` at v1.0.9), which retires the word "incident" for
+it: a build id is anchored to a tag for file CONTENT but to the RUNNING CODE for the INVENTORY, so
+ids are only ever comparable within a generation. **Compare against the current release and
+disregard older ids.** Your own instance is unaffected — you run your generation's `arch_build.py`
+against your own tree.
+
+**`rotate.py` stopped telling you to "cut it".** When a boot file went over its threshold, the
+report said *"Cut it"* and named no destination — so trimming collapsed into deleting, and did,
+losing content that existed nowhere else. It now says **TRIM IT BY MOVING, NOT DELETING** and names
+your declared destinations if you have any.
 
 ---
 

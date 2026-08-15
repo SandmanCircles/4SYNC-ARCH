@@ -2094,7 +2094,7 @@ class TestManifestAtRest(unittest.TestCase):
 
 
 
-class TestSnapshotOverflowMap(unittest.TestCase):
+class TestSnapshotOverflowMap(ManifestEnvCase):
     """MP#79. rotate said "Cut it" and named no destination — and when a session
     acted on that, "trim" collapsed into "delete" and grew a rationale that was
     false: 55 of 60 sentences existed nowhere else. The journal never had that
@@ -2102,7 +2102,15 @@ class TestSnapshotOverflowMap(unittest.TestCase):
     so trimming means moving. This generalises that one key to STATUS.
 
     The map is per-instance ON PURPOSE — another adopter's destinations are not
-    ours — so an undeclared map degrades to generic advice, never to a guess."""
+    ours — so an undeclared map degrades to generic advice, never to a guess.
+
+    INHERITS ManifestEnvCase, and the first version of this class did not.
+    CI's renamed-manifest leg (ARCH_MANIFEST=PROJECT.yaml) failed three of
+    these tests while every local run passed: the fixtures write 4SYNC.yaml
+    and the lookup correctly honoured the ambient variable, so it read a file
+    the fixture never wrote. The shipped code was right and the tests were
+    wrong — MP#78's shape exactly, and the base class exists because this has
+    happened before."""
 
     def _manifest(self, *lines):
         root = os.path.realpath(tempfile.mkdtemp(prefix="rot-ovf-"))

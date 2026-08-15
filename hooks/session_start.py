@@ -395,6 +395,14 @@ def build_receipt(root, manifest_name, manifest_text, mode):
 
 
 def main():
+    # Windows consoles default to cp1252; the em dash and tick/cross glyphs in the
+    # output would arrive mangled or raise on print. Reconfigure early. Matches the
+    # form already in meter.py, actuals.py, arch_build.py and wire_hooks.py — this
+    # was the house pattern in four scripts and absent from five (MP#84).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     try:
         raw = sys.stdin.read()
     except (OSError, ValueError):

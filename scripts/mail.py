@@ -250,25 +250,15 @@ def sweep(root, apply=False, manifest_name=None):
     return actions, notes
 
 
-def _utf8_stdout():
-    """Print UTF-8 regardless of the console's default codepage.
-
-    Windows consoles default to cp1252, which has no em dash — so a report line
-    reading "mode: dry-run — pass --apply" arrives as "dry-run ? pass". Reported
-    from a real Windows session on this script's first day. The glyphs are not
-    decoration (`✓`/`✗` carry the verdict in every ARCH report), so the fix is to
-    widen the stream rather than narrow the vocabulary. errors="replace" keeps a
-    weird console from turning a report into a traceback.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):  # pre-3.7, or a stream that cannot
-            pass
-
-
 def main():
-    _utf8_stdout()
+    # Windows consoles default to cp1252; the em dash and tick/cross glyphs in the
+    # output would arrive mangled or raise on print. Reconfigure early. Matches the
+    # form already in meter.py, actuals.py, arch_build.py and wire_hooks.py — this
+    # was the house pattern in four scripts and absent from five (MP#84).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Cross-project mail between ARCH instances.")
     ap.add_argument("command", choices=["pull", "sweep"])
     ap.add_argument("--dir", default=os.path.abspath(

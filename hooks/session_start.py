@@ -132,7 +132,8 @@ def _block_under(text, key):
     DUPLICATED DELIBERATELY in scripts/meter.py and scripts/rotate.py. Machinery
     modules never import one another — each is copied and wired standalone — so a
     shared module would have to join MACHINERY and could be copied without its
-    dependents. Keep the three byte-identical."""
+    dependents. Keep the three CODE-identical — the docstrings name their
+    siblings and so legitimately differ; a byte-diff "failing" here is not drift."""
     ind = None
     body = []
     for line in text.splitlines():

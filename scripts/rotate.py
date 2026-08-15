@@ -1218,43 +1218,6 @@ def manifest_task_prefix(root, manifest_name="4SYNC.yaml"):
     return code or TASK_PREFIX_DEFAULT
 
 
-def manifest_rules_overflow(root, manifest_name="4SYNC.yaml"):
-    """integrity.manifest_rules.overflow_to — where THIS instance says the MANIFEST's
-    own overflow goes.
-
-    MP#79 criterion 2: every boot-path file with a limit needs a declared
-    destination, and after the snapshot key landed this was the last one without.
-    The manifest is boot file zero and its cap is the only HARD one in the stack —
-    g5 refuses the write — so "it is over" is the one overage a session cannot
-    scroll past, and it was still the one with nowhere named to put the excess.
-
-    What goes over is almost always RATIONALE, which `declaration_only: true` says
-    was never supposed to be here: the argument for a rule belongs wherever this
-    instance keeps its reasoning. That is a per-instance answer, so as with the
-    snapshot key, UNDECLARED RETURNS EMPTY AND NEVER A DEFAULT."""
-    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
-    if not os.path.exists(p):
-        return []
-    text = read(p)
-    try:
-        import yaml  # type: ignore
-        v = ((yaml.safe_load(text) or {}).get("integrity", {})
-             .get("manifest_rules", {}).get("overflow_to"))
-        if isinstance(v, str) and v.strip():
-            return [v.strip()]
-        if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
-    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
-        pass
-    block = _block_under(text, "manifest_rules")
-    if block is not None:
-        ov = re.search(r"^\s*overflow_to:\s*(.+)$", block, re.M)
-        if ov:
-            raw = ov.group(1).split("#")[0].strip().strip("[]")
-            return [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
-    return []
-
-
 def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     """close.journal.overflow_to from the manifest, or the default filename.
 
@@ -1715,7 +1678,7 @@ def count_test_methods(path):
     return n or None
 
 
-def _check_caps(text, spans, manifests, findings, notes, root=None, manifest_name=None):
+def _check_caps(text, spans, manifests, findings, notes):
     """Manifest cap claims: `N / M`, where M is a byte cap and N a manifest size.
 
     A pair qualifies as a cap claim only if M is a cap SOME manifest declares, or
@@ -1731,15 +1694,18 @@ def _check_caps(text, spans, manifests, findings, notes, root=None, manifest_nam
             continue
         caps.setdefault(mx, []).append((rel, size))
         if size > mx:
-            dests = manifest_rules_overflow(root, manifest_name or "4SYNC.yaml") if root else []
-            where = ("this instance declares where it goes: " + ", ".join(dests)) if dests else (
-                "a manifest is DECLARATION ONLY, so what is over is rationale — move it "
-                "to wherever this project keeps its reasoning, and declare "
-                "integrity.manifest_rules.overflow_to so this line can name it")
+            # NO DECLARED DESTINATION HERE, and that is a ruling rather than an
+            # omission (Michael, 2026-08-15). The journal and STATUS keys route
+            # CONTENT that legitimately outgrows its file. A manifest over its cap
+            # has no such content: `declaration_only` says what is over was never
+            # supposed to be in it, so a declared home for it would read as
+            # permission for it to exist. The message is the whole fix.
             findings.append(_finding(
                 None, "manifest", rel, f"cap {mx:,} B", f"{size:,} B",
-                "over its own declared manifest_rules.max_bytes — g5 blocks edits to it. "
-                f"TRIM IT BY MOVING, NOT DELETING: {where}"))
+                "over its own declared manifest_rules.max_bytes — g5 blocks edits to "
+                "it. TRIM IT BY MOVING, NOT DELETING: a manifest is DECLARATION ONLY, "
+                "so what is over is rationale — move it to wherever this project keeps "
+                "its reasoning. Do not raise the cap on reflex"))
     for m in CAP_PAIR_RE.finditer(text):
         if _is_quoted(m.start(), spans):
             continue
@@ -1938,8 +1904,7 @@ def report_status_facts(root, manifest_name=None, run_meter=True):
     spans = _quoted_spans(text)
     findings, notes = [], []
 
-    _check_caps(text, spans, discover_manifests(root, manifest_name), findings, notes,
-                root=root, manifest_name=manifest_name)
+    _check_caps(text, spans, discover_manifests(root, manifest_name), findings, notes)
     _check_sizes(root, text, spans, findings)
     _check_shas(text, spans, _git_roots(root), findings)
     _check_suites(root, text, spans, findings, notes)

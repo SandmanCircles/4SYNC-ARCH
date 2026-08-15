@@ -2180,47 +2180,35 @@ class TestSnapshotOverflowMap(ManifestEnvCase):
         self.assertIn("BEFORE cutting it", out)
 
 
-class TestManifestOverflowMap(ManifestEnvCase):
-    """MP#79 criterion 2, the last boot-path limit without a declared destination.
+class TestOverCapManifest(unittest.TestCase):
+    """The manifest gets a MESSAGE and no declared destination — ruled 2026-08-15
+    (Michael), against MP#79's criterion applied mechanically.
 
-    The manifest cap is the only HARD limit in the stack — g5 refuses the write —
-    so it is the one overage nobody can scroll past, and until this it was still
-    told to shrink with nowhere named to put the excess."""
-
-    def _manifest(self, *lines):
-        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-movf-"))
-        self.addCleanup(shutil.rmtree, root, True)
-        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
-            fh.write("".join(l + chr(10) for l in lines))
-        return root
-
-    def test_a_declared_destination_is_read(self):
-        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384",
-                              "    overflow_to: config/REFERENCE.yaml")
-        self.assertEqual(rotate.manifest_rules_overflow(root), ["config/REFERENCE.yaml"])
-
-    def test_a_declared_list_is_read(self):
-        root = self._manifest("integrity:", "  manifest_rules:",
-                              "    overflow_to: [config/REFERENCE.yaml, LEDGER_GUIDE.md]")
-        self.assertEqual(rotate.manifest_rules_overflow(root),
-                         ["config/REFERENCE.yaml", "LEDGER_GUIDE.md"])
-
-    def test_undeclared_is_empty_not_a_guess(self):
-        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384")
-        self.assertEqual(rotate.manifest_rules_overflow(root), [])
+    The journal and snapshot keys route CONTENT that legitimately outgrows its file.
+    A manifest over its cap has none: `declaration_only` says what is over was never
+    supposed to be in it, so a declared home for it would read as permission for it
+    to exist — and the key would cost every adopter bytes in the very file that is
+    over cap, to improve one warning for a case that has never fired."""
 
     def test_an_over_cap_manifest_is_told_to_move_not_to_shrink(self):
         findings, notes = [], []
         rotate._check_caps("", [], [("4SYNC.yaml", 20000, 16384)], findings, notes)
         self.assertEqual(len(findings), 1)
-        self.assertIn("TRIM IT BY MOVING, NOT DELETING", " ".join(str(f) for f in findings))
+        rendered = " ".join(str(f) for f in findings)
+        self.assertIn("TRIM IT BY MOVING, NOT DELETING", rendered)
+        self.assertIn("DECLARATION ONLY", rendered)
 
-    def test_the_finding_names_the_declared_destination(self):
-        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384",
-                              "    overflow_to: config/REFERENCE.yaml")
+    def test_it_does_not_send_anyone_to_a_declared_key(self):
+        """The key does not exist and must not be advertised: a message naming a
+        setting nobody can set is worse than the vague advice it replaced."""
         findings, notes = [], []
-        rotate._check_caps("", [], [("4SYNC.yaml", 20000, 16384)], findings, notes, root=root)
-        self.assertIn("config/REFERENCE.yaml", " ".join(str(f) for f in findings))
+        rotate._check_caps("", [], [("4SYNC.yaml", 20000, 16384)], findings, notes)
+        self.assertNotIn("overflow_to", " ".join(str(f) for f in findings))
+
+    def test_a_manifest_under_its_cap_is_not_a_finding(self):
+        findings, notes = [], []
+        rotate._check_caps("", [], [("4SYNC.yaml", 12000, 16384)], findings, notes)
+        self.assertEqual(findings, [])
 
 
 class TestDeclaredNames(ManifestEnvCase):

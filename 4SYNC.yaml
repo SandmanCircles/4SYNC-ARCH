@@ -241,12 +241,11 @@ integrity:
                              # the real lesson: g5 measures a write, so nothing was
                              # watching the file at rest. rotate.py's status pass now is.
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
-    overflow_to: []          # WHERE the excess goes when this file is over its cap.
-                             # Empty because a destination is per-instance and a guess
-                             # would send your rationale to a path you never declared.
-                             # Name your own reference/canon file(s) and rotate.py's
-                             # over-cap finding says "move it there" instead of the
-                             # useless "shrink it" — the cap is the stack's only HARD
-                             # limit, so it is the one overage nobody can scroll past.
+                             # There is deliberately no overflow_to for this file, the
+                             # way close.journal and close.snapshot have one. Those
+                             # route content that outgrows its file; what goes over
+                             # this cap is rationale that declaration_only says never
+                             # belonged here. Move it to wherever your project keeps
+                             # its reasoning — and do not raise the cap on reflex.
 
 # ═══ EOF 4SYNC.yaml ═══

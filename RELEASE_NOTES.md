@@ -83,7 +83,7 @@ your generation's `arch_build.py` against your own tree.
 `scripts/arch_update.py`, `scripts/rotate.py`, `scripts/split_ledger.py`, the two new
 `scripts/mail.py` + `scripts/test_mail.py`, and the four matching `test_*.py` files.
 
-**Manifest: three additions, all optional.**
+**Manifest: two additions, both optional.**
 
 ```yaml
 mail:                      # cross-project mail. Omit it and nothing changes.
@@ -98,12 +98,6 @@ close:
                            # instances can hear whose row is whose. NOTHING IS RENAMED
                            # when you switch: MP-0NN.md resolves permanently and a
                            # mixed folder is the steady state, not a migration.
-
-integrity:
-  manifest_rules:
-    overflow_to: []        # where THIS file's excess goes when it is over max_bytes.
-                           # Empty is fine — you get generic advice instead of your
-                           # own destinations. Nothing guesses a path for you.
 ```
 
 **By hand:** create `inbox/` and `outbox/` in your instance root if you want mail —

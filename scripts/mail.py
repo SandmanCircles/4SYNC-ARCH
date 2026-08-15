@@ -109,6 +109,26 @@ def manifest_path(root, manifest_name=None):
     return named
 
 
+def _declared(name):
+    """The name, or None when it is still the shipped placeholder.
+
+    `[PROJECT]` means "nobody filled this in". Treating it as a real name is worse
+    than treating it as absent: mail would be addressed FROM a bracketed literal,
+    the filenames would carry it, and the mistake would only surface at the far end
+    of somebody else's inbox. An unfilled placeholder is the shape `rotate.py`
+    already refuses to read as a real value elsewhere.
+
+    BOTH PARSE PATHS GO THROUGH HERE. Before this they disagreed: PyYAML returned
+    `['PROJECT']` (a list) and the regex fallback returned `[PROJECT]` (a string),
+    so the same manifest produced two different names depending on whether a library
+    was installed — and PyYAML-absent is the modal adopter install.
+    """
+    name = (name or "").strip().strip("\"'")
+    if name.startswith("[") and name.endswith("]"):
+        return None
+    return name or None
+
+
 def mail_config(root, manifest_name=None):
     """Return (name, [peer paths]) from the manifest's `mail:` block.
 
@@ -123,10 +143,18 @@ def mail_config(root, manifest_name=None):
         import yaml  # type: ignore
         block = (yaml.safe_load(text) or {}).get("mail") or {}
         name = block.get("name")
+        # A BARE `name: [PROJECT]` IS A YAML LIST, not a string — the shipped
+        # placeholder was written in brackets and parsed as `['PROJECT']`, which is
+        # truthy. NOT unwrapped to its one element: unwrapping would hand back
+        # `PROJECT` with the brackets stripped by the parser, and the evidence that
+        # this was a placeholder would be gone. Nobody declares a LIST as their
+        # instance's name, so a non-string here is not a name.
+        if not isinstance(name, str):
+            name = None
         peers = block.get("peers") or []
         if isinstance(peers, str):
             peers = [peers]
-        return (str(name).strip() if name else None,
+        return (_declared(str(name)) if name else None,
                 [str(x).strip() for x in peers if str(x).strip()])
     except Exception:  # noqa: BLE001 — no PyYAML, or the manifest is not valid yaml
         pass
@@ -138,7 +166,7 @@ def mail_config(root, manifest_name=None):
         body = m.group(1)
         n = re.search(r"^\s+name:\s*[\"']?([^\"'\s#]+)", body, re.M)
         if n:
-            name = n.group(1)
+            name = _declared(n.group(1))
         inline = re.search(r"^\s+peers:\s*\[([^\]]*)\]", body, re.M)
         if inline:
             peers = [x.strip().strip("\"'") for x in inline.group(1).split(",") if x.strip()]
@@ -176,6 +204,15 @@ def addressed_to(filename, sender, recipient):
     return re.match(r"^\d{4}-\d{2}-\d{2}(-|\.)", name[len(prefix):]) is not None
 
 
+def _same_bytes(a, b):
+    """True when two files are byte-identical. Mail is small; read it whole."""
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
 def _dir(root, name):
     d = os.path.join(root, name)
     return d if os.path.isdir(d) else None
@@ -207,7 +244,14 @@ def pull(root, apply=False, manifest_name=None):
         if actions and not os.path.isdir(inbox):
             os.makedirs(inbox)
         for src, dest, _ in actions:
-            shutil.copyfile(src, dest)
+            # WRITE ASIDE, THEN RENAME. `sweep` treats a file present in the
+            # addressee's inbox as the delivery receipt and deletes our only copy on
+            # the strength of it — so a copy interrupted midway would leave a
+            # truncated file that reads as delivered. os.replace is atomic on both
+            # platforms, so the name appears only once the bytes are all there.
+            part = dest + ".part"
+            shutil.copyfile(src, part)
+            os.replace(part, dest)
     return actions, notes
 
 
@@ -237,10 +281,19 @@ def sweep(root, apply=False, manifest_name=None):
         for their_name, peer_root in known.items():
             if not addressed_to(fn, me, their_name):
                 continue
-            if os.path.exists(os.path.join(peer_root, "inbox", fn)):
-                actions.append((os.path.join(out, fn), their_name))
-            else:
+            ours = os.path.join(out, fn)
+            theirs = os.path.join(peer_root, "inbox", fn)
+            if not os.path.exists(theirs):
                 notes.append("  · undelivered   %s" % fn)
+            elif not _same_bytes(ours, theirs):
+                # A NAME IS NOT A RECEIPT. The delivered copy has to be OUR copy:
+                # a same-named file that differs is either a partial write or a
+                # different message, and deleting our only copy against it is the
+                # one irreversible thing this script does.
+                notes.append("  ! differs      %s — same name, different bytes in "
+                             "their inbox; NOT deleted" % fn)
+            else:
+                actions.append((ours, their_name))
             break
         else:
             notes.append("  ? no declared peer named in %s" % fn)

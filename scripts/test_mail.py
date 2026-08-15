@@ -235,5 +235,87 @@ class TestPeerManifestDiscovery(MailCase):
         self.assertEqual(actions, [])
         self.assertTrue(any("skipped" in n for n in notes), notes)
 
+class TestTheShippedPlaceholderIsNotAName(MailCase):
+    """Found in the pre-v1.1.1 repo scan, and it had two heads.
+
+    The shipped manifest wrote `name: [PROJECT]` unquoted, which YAML reads as a
+    LIST — truthy, so an adopter who never filled it in would have sent mail from a
+    project literally called `['PROJECT']`, and the mistake would surface at the far
+    end of somebody else's inbox. Meanwhile the PyYAML-absent fallback read the same
+    line as the STRING `[PROJECT]`, so the two paths disagreed about the same file —
+    and PyYAML-absent is the modal adopter install."""
+
+    def _write(self, name_line):
+        d = os.path.join(self.root, "inst")
+        os.makedirs(d)
+        with open(os.path.join(d, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("instance:\n  name: X\nmail:\n  name: %s\n  peers: []\n" % name_line)
+        return d
+
+    def test_a_bracketed_placeholder_is_undeclared(self):
+        self.assertIsNone(mail.mail_config(self._write('"[PROJECT]"'))[0])
+
+    def test_an_unquoted_bracketed_placeholder_is_undeclared_too(self):
+        """The exact line the product shipped. YAML makes it a list; it still is
+        not a name."""
+        self.assertIsNone(mail.mail_config(self._write("[PROJECT]"))[0])
+
+    def test_a_real_name_still_reads(self):
+        self.assertEqual(mail.mail_config(self._write("4SYNC"))[0], "4SYNC")
+
+    def test_a_quoted_real_name_still_reads(self):
+        self.assertEqual(mail.mail_config(self._write('"4SYNC"'))[0], "4SYNC")
+
+    def test_an_unfilled_instance_pulls_nothing_and_says_why(self):
+        actions, notes = mail.pull(self._write("[PROJECT]"), apply=True)
+        self.assertEqual(actions, [])
+        self.assertTrue(any("no `mail.name`" in n for n in notes), notes)
+
+    def test_the_shipped_manifest_itself_declares_no_usable_name(self):
+        """Against the real file: a fresh clone must not be addressable until
+        somebody names it."""
+        product = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.exists(os.path.join(product, "4SYNC.yaml")):
+            self.skipTest("shipped manifest not present")
+        self.assertIsNone(mail.mail_config(product)[0])
+
+
+class TestANameIsNotAReceipt(MailCase):
+    """`sweep` deletes our only copy of a message on the strength of a file
+    existing in the addressee's inbox. Two ways that was not quite a receipt."""
+
+    def _pair(self):
+        a = self.instance("A", peers=["../B"])
+        b = self.instance("B", peers=["../A"])
+        return a, b
+
+    def test_a_same_named_file_with_different_bytes_is_not_delivery(self):
+        a, b = self._pair()
+        self.put(a, "outbox", "A-B-2026-08-15-note.md", "the real message")
+        self.put(b, "inbox", "A-B-2026-08-15-note.md", "truncated")
+        actions, notes = mail.sweep(a, apply=True)
+        self.assertEqual(actions, [])
+        self.assertIn("A-B-2026-08-15-note.md", self.ls(a, "outbox"))
+        self.assertTrue(any("differs" in n for n in notes), notes)
+
+    def test_an_identical_copy_is_delivery(self):
+        a, b = self._pair()
+        self.put(a, "outbox", "A-B-2026-08-15-note.md", "same")
+        self.put(b, "inbox", "A-B-2026-08-15-note.md", "same")
+        actions, _ = mail.sweep(a, apply=True)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(self.ls(a, "outbox"), [])
+
+    def test_pull_leaves_no_part_file_behind(self):
+        """The copy lands under a temporary name and is renamed into place, so an
+        interrupted write cannot leave something that reads as delivered."""
+        a, b = self._pair()
+        self.put(a, "outbox", "A-B-2026-08-15-note.md", "body")
+        mail.pull(b, apply=True)
+        self.assertEqual(self.ls(b, "inbox"), ["A-B-2026-08-15-note.md"])
+        self.assertFalse([f for f in os.listdir(os.path.join(b, "inbox"))
+                          if f.endswith(".part")])
+
+
 if __name__ == "__main__":
     unittest.main()

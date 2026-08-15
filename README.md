@@ -798,15 +798,21 @@ a checkmark on it, which is why this asks you to fetch something.
 
 `sync_version` is the *protocol* version and is a different thing; don't overload it.
 
-**The two inventories differ on purpose.** `arch_build.py` hashes **15** machinery
-files. `scripts/check_sync.py` — a maintainer-side tool that does not ship here —
-declares **9**. They answer different questions: `check_sync` asks *has the silo
-drifted from the product*, comparing two directories that both exist on the
-maintainer's machine, and correctly omits `meter.py`, `actuals.py`, their suites and
-`wire_hooks.py`, because the silo keeps no second copy of those and a file with one
-copy cannot drift. From your position all seventeen are machinery alike: copied in,
-never renamed, replaced wholesale by an update. Treating those two questions as one
-is what left the gap this section closes.
+**The two inventories differ on purpose.** `arch_build.py` hashes every machinery
+file — **ask it rather than counting, since the list grows.** `scripts/check_sync.py`
+— a maintainer-side tool that does not ship here — declares a shorter one. They
+answer different questions: `check_sync` asks *has the silo drifted from the
+product*, comparing two directories that both exist on the maintainer's machine, and
+correctly omits `meter.py`, `actuals.py`, their suites and `wire_hooks.py`, because
+the silo keeps no second copy of those and a file with one copy cannot drift. From
+your position they are all machinery alike: copied in, never renamed, replaced
+wholesale by an update. Treating those two questions as one is what left the gap
+this section closes.
+
+*(This paragraph published **15** and **seventeen** as live figures against a real
+22, having been written when both were true and never revisited — the fourth
+transcribed count in this project to go stale in prose no checker reaches. The
+numbers are gone rather than corrected, which is the only fix that holds.)*
 
 **The count went 15 → 17 at v1.0.8**, when `arch_build.py` and its suite turned out to
 be missing from their own inventory. A release changing only that file moved no build

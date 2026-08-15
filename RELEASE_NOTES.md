@@ -84,10 +84,11 @@ the RUNNING CODE for the INVENTORY, so ids are only ever comparable within a gen
 against the current release and disregard older ids.** Your own instance is unaffected — you run
 your generation's `arch_build.py` against your own tree.
 
-**Machinery: replace all thirteen changed files** — `hooks/pre_tool_use.py`,
+**Machinery: replace all fourteen changed files** — `hooks/pre_tool_use.py`,
 `hooks/session_start.py`, `hooks/test_pre_tool_use.py`, `scripts/arch_build.py`,
-`scripts/arch_update.py`, `scripts/rotate.py`, `scripts/split_ledger.py`, the two new
-`scripts/mail.py` + `scripts/test_mail.py`, and the four matching `test_*.py` files.
+`scripts/arch_update.py`, `scripts/meter.py`, `scripts/rotate.py`,
+`scripts/split_ledger.py`, the two new `scripts/mail.py` + `scripts/test_mail.py`, and
+the four matching `test_*.py` files.
 
 **Manifest: two additions, both optional.**
 

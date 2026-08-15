@@ -35,6 +35,7 @@ ORDER OF OPERATIONS, and the order is the point:
   2. verify the source's build id against --expect       -> refuse BEFORE writing
   3. copy only inventory files that actually differ      -> idempotent
   4. recompute THIS instance's build id afterwards       -> prove it landed
+  5. print what copying did NOT do, for your two versions
 
 Verifying the source after copying would report a bad clone once it was already on
 disk. The check is worth nothing at that point.
@@ -48,12 +49,159 @@ can gate a script. Nothing here makes a network call.
 """
 import argparse
 import os
+import re
 import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import arch_build
+
+
+# ── What copying cannot do (MP#82) ───────────────────────────────────────────
+#
+# Copying is self-evidencing: the build id moves, and it either matches the source
+# or it does not. THE STEPS THAT ARE NOT COPYING ARE THE DANGEROUS ONES, because
+# nothing reports them. The live example is the v1.0.5 `arch/VERSION` move — a copy
+# alone leaves the old `VERSION` at the instance root, `arch_build.py` then hashes
+# `arch/VERSION:MISSING`, and the instance matches NO release at all. The symptom is
+# a currency check that says nothing useful, which is the failure `arch_build.py`
+# exists to prevent.
+#
+# So a release note carries a `**By hand:` lead in the same shape as the
+# `**Machinery:` and `**Manifest:` leads beside it, and this prints the ones between
+# the instance's version and the source's. The silo's `release.py` refuses to cut a
+# release whose note has no such lead — writing "nothing" is the point, because an
+# absent line and a forgotten one are indistinguishable.
+#
+# READ FROM THE CLONE, NEVER FROM THE INSTANCE, and this is the load-bearing detail:
+# the instance's copy of the notes is older than the release being applied and cannot
+# contain its note. The clone is current by definition. It is also why an adopter
+# should run the CLONE's `arch_update.py` rather than their own.
+#
+# GENERATED, NEVER TRANSCRIBED. The note is the single source; nothing anywhere keeps
+# a second list of steps. That is the rule MP#81 paid for twice, and it is why the
+# silo's cut gate imports this parser instead of writing its own — one definition of
+# what a `By hand:` block is, so the gate and the updater cannot disagree.
+
+NOTES = "RELEASE_NOTES.md"
+# The two leads that describe work a copy cannot perform. `**Machinery:` is
+# deliberately absent: that one IS the copy, and this tool has already done it and
+# proved it with a build id. A manifest change is by-hand work with its own
+# established lead, so printing `By hand:` alone would answer "nothing" to an
+# adopter who still has a `close:` step to merge.
+LEADS = ("Manifest:", "By hand:")
+_HEADING = re.compile(r"^##\s+v(\d+\.\d+\.\d+)\s*$")
+
+
+def semver(version):
+    """(major, minor, patch), or None when it is not a release number."""
+    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", (version or "").strip())
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def release_sections(text):
+    """[(version, body)] for every `## v<semver>` heading, in file order."""
+    sections, version, body = [], None, []
+    for line in text.splitlines():
+        heading = _HEADING.match(line.strip())
+        if heading:
+            if version:
+                sections.append((version, "\n".join(body)))
+            version, body = heading.group(1), []
+        elif version and line.startswith("## "):
+            sections.append((version, "\n".join(body)))     # a non-release heading ends it
+            version, body = None, []
+        elif version:
+            body.append(line)
+    if version:
+        sections.append((version, "\n".join(body)))
+    return sections
+
+
+def lead_block(body, lead):
+    """The `**<lead>` block as a list of lines, or None if the note carries none.
+
+    A block is the lead line plus the lines under it up to the first blank one — the
+    shape the leads already use, so this reads what an author already writes rather
+    than asking for a format nobody would remember to follow.
+    """
+    lines = body.splitlines()
+    marker = "**" + lead
+    for index, line in enumerate(lines):
+        if line.strip().startswith(marker):
+            block = [line.strip()]
+            for following in lines[index + 1:]:
+                if not following.strip():
+                    break
+                block.append(following.strip())
+            return block
+    return None
+
+
+def by_hand(body):
+    """The `**By hand:` block — the lead the silo's cut gate requires."""
+    return lead_block(body, "By hand:")
+
+
+def steps_between(text, have, want):
+    """[(version, [(lead, block_or_None), ...])] for releases after `have`, up to `want`.
+
+    OLDEST FIRST: an adopter crossing three releases performs the by-hand steps in the
+    order they were released, and v1.0.5's `arch/VERSION` move has to happen before a
+    later note can assume it did.
+    """
+    low, high = semver(have), semver(want)
+    picked = []
+    for version, body in release_sections(text):
+        key = semver(version)
+        if key is None or (low and key <= low) or (high and key > high):
+            continue
+        picked.append((version, [(lead, lead_block(body, lead)) for lead in LEADS]))
+    picked.sort(key=lambda pair: semver(pair[0]))
+    return picked
+
+
+def beyond_copying(source, dest):
+    """Display lines naming what this update does not do for you."""
+    have, want = arch_build.read_version(dest), arch_build.read_version(source)
+    path = os.path.join(source, NOTES)
+    if not os.path.exists(path):
+        return ["BEYOND COPYING — the clone has no %s. Read the release's notes "
+                "before" % NOTES,
+                "  calling this update done: copying machinery is not the whole update."]
+    if semver(have) is None:
+        return ["BEYOND COPYING — this instance declares no release number "
+                "(arch/VERSION), so",
+                "  the releases that apply to it cannot be worked out here. Read %s"
+                % NOTES,
+                "  in the clone, from your build id forward."]
+    with open(path, "r", encoding="utf-8") as fh:
+        steps = steps_between(fh.read(), have, want)
+    span = "v%s -> v%s" % (have, want)
+    if not steps:
+        return ["BEYOND COPYING — %s: no releases between them." % span]
+    out = ["BEYOND COPYING — %s, from %s in the clone:" % (span, NOTES)]
+    silent = []
+    for version, blocks in steps:
+        printed = [line for _lead, block in blocks if block for line in block]
+        if printed:
+            out.append("")
+            out.append("  v%s" % version)
+            out.extend("    %s" % line for line in printed)
+        if dict(blocks).get("By hand:") is None:
+            silent.append("v" + version)
+    if silent:
+        # Silence would read as "nothing to do", and that is a different claim: a
+        # note written before the convention existed says neither. Named once as a
+        # list rather than repeated per release — a paragraph restated five times is
+        # one an adopter scrolls past, which is the failure mode it exists to avoid.
+        out.append("")
+        out.append("  NO `By hand:` LINE IN %s — those notes predate the convention,"
+                   % ", ".join(silent))
+        out.append("  so read their sections yourself. Absence is not a promise of "
+                   "nothing.")
+    return out
 
 
 class RefusedWrite(Exception):
@@ -140,7 +288,7 @@ def update(source, dest, apply=False, expect=None):
     return report
 
 
-def _render(report, dest, apply):
+def _render(report, source, dest, apply):
     out = []
     out.append("source build   %s" % report.source_build_id)
     if not report.changed:
@@ -164,8 +312,11 @@ def _render(report, dest, apply):
                                               report.result_build_id))
         out.append("Machinery only. Your config/, ledger and tasks/ were not read "
                    "or written.")
-        out.append("NOT DONE FOR YOU: read RELEASE_NOTES.md for any step beyond "
-                   "copying — copying machinery is not the whole update.")
+    # Printed in BOTH modes. A dry run is the preview of the whole update, and the
+    # steps a copy cannot do are the half worth previewing — knowing them before
+    # `--apply` is strictly better than being told afterwards.
+    out.append("")
+    out.extend(beyond_copying(source, dest))
     return out
 
 
@@ -197,7 +348,7 @@ def main():
         sys.stderr.write("arch_update: REFUSED — %s\n" % exc)
         return 1
 
-    for line in _render(report, args.dir, args.apply):
+    for line in _render(report, args.source, args.dir, args.apply):
         print(line)
     if args.apply and report.result_build_id != report.source_build_id:
         return 1

@@ -172,6 +172,11 @@ close:
     dir: tasks               # long form: tasks/MP-0NN.md, path derived from row id
     closed_dir: tasks/closed
     on_missing_open_doc: fail
+    prefix: MP               # document prefix. `derived` takes the first three
+                             # letters of instance.name (4SYNC -> SYN-083.md), so a
+                             # human running two instances can hear whose row is
+                             # whose. NOTHING IS RENAMED when you switch: MP-0NN.md
+                             # resolves permanently, and a mixed folder is fine.
   ledger_sync:
     file: MERGE_PLAN.md      # flip touched rows only; never delete, never renumber
   snapshot:
@@ -236,5 +241,12 @@ integrity:
                              # the real lesson: g5 measures a write, so nothing was
                              # watching the file at rest. rotate.py's status pass now is.
     declaration_only: true   # no state, no narrative, no timestamps-as-journal
+    overflow_to: []          # WHERE the excess goes when this file is over its cap.
+                             # Empty because a destination is per-instance and a guess
+                             # would send your rationale to a path you never declared.
+                             # Name your own reference/canon file(s) and rotate.py's
+                             # over-cap finding says "move it there" instead of the
+                             # useless "shrink it" — the cap is the stack's only HARD
+                             # limit, so it is the one overage nobody can scroll past.
 
 # ═══ EOF 4SYNC.yaml ═══

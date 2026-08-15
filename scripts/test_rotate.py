@@ -2167,6 +2167,231 @@ class TestSnapshotOverflowMap(ManifestEnvCase):
         self.assertIn("TRIM IT", out)
         self.assertNotIn("FINDINGS.md", out)
 
+    def test_the_overage_demands_arrival_rather_than_shrinkage(self):
+        """MP#79's third criterion, for the case a script cannot perform. BOTH
+        recorded failures deleted text under an "it is recorded elsewhere" rationale
+        that was false and unchecked — the second by a fresh session that had just
+        read the row about the first. So the success condition named here is the
+        grep, not the byte count."""
+        root = self._manifest("close:", "  snapshot:", "    overflow_to: FINDINGS.md")
+        self._status(root)
+        out = self._report(root)
+        self.assertIn("ARRIVAL, not shrinkage", out)
+        self.assertIn("BEFORE cutting it", out)
+
+
+class TestManifestOverflowMap(ManifestEnvCase):
+    """MP#79 criterion 2, the last boot-path limit without a declared destination.
+
+    The manifest cap is the only HARD limit in the stack — g5 refuses the write —
+    so it is the one overage nobody can scroll past, and until this it was still
+    told to shrink with nowhere named to put the excess."""
+
+    def _manifest(self, *lines):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-movf-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("".join(l + chr(10) for l in lines))
+        return root
+
+    def test_a_declared_destination_is_read(self):
+        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384",
+                              "    overflow_to: config/REFERENCE.yaml")
+        self.assertEqual(rotate.manifest_rules_overflow(root), ["config/REFERENCE.yaml"])
+
+    def test_a_declared_list_is_read(self):
+        root = self._manifest("integrity:", "  manifest_rules:",
+                              "    overflow_to: [config/REFERENCE.yaml, LEDGER_GUIDE.md]")
+        self.assertEqual(rotate.manifest_rules_overflow(root),
+                         ["config/REFERENCE.yaml", "LEDGER_GUIDE.md"])
+
+    def test_undeclared_is_empty_not_a_guess(self):
+        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384")
+        self.assertEqual(rotate.manifest_rules_overflow(root), [])
+
+    def test_an_over_cap_manifest_is_told_to_move_not_to_shrink(self):
+        findings, notes = [], []
+        rotate._check_caps("", [], [("4SYNC.yaml", 20000, 16384)], findings, notes)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("TRIM IT BY MOVING, NOT DELETING", " ".join(str(f) for f in findings))
+
+    def test_the_finding_names_the_declared_destination(self):
+        root = self._manifest("integrity:", "  manifest_rules:", "    max_bytes: 16384",
+                              "    overflow_to: config/REFERENCE.yaml")
+        findings, notes = [], []
+        rotate._check_caps("", [], [("4SYNC.yaml", 20000, 16384)], findings, notes, root=root)
+        self.assertIn("config/REFERENCE.yaml", " ".join(str(f) for f in findings))
+
+
+class TestDeclaredNames(ManifestEnvCase):
+    """MP#83. The manifest declared the ledger's name in THREE keys and both scripts
+    carried it as a string literal — MP#34's defect one line up, where `rotate.py`
+    hardcoded the journal-history filename that `overflow_to` already declared."""
+
+    def _manifest(self, *lines):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-names-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("".join(l + chr(10) for l in lines))
+        return root
+
+    def test_the_ledger_name_comes_from_ledger_sync(self):
+        root = self._manifest("close:", "  ledger_sync:", "    file: TASKS.md")
+        self.assertEqual(rotate.manifest_ledger_name(root), "TASKS.md")
+
+    def test_the_journal_key_answers_when_ledger_sync_is_silent(self):
+        root = self._manifest("close:", "  journal:", "    file: PLAN.md",
+                              "    section: '## Session journal'")
+        self.assertEqual(rotate.manifest_ledger_name(root), "PLAN.md")
+
+    def test_an_undeclared_ledger_falls_back_to_the_shipped_name(self):
+        root = self._manifest("close:", "  journal:", "    keep: 5")
+        self.assertEqual(rotate.manifest_ledger_name(root), rotate.LEDGER_FILENAME)
+
+    def test_the_bulletin_name_is_declared_and_its_archive_is_derived(self):
+        root = self._manifest("close:", "  bulletin:", "    file: BOARD.md")
+        self.assertEqual(rotate.manifest_bulletin_name(root), "BOARD.md")
+        self.assertEqual(rotate.archive_name("BOARD.md"), "BOARD_ARCHIVE.md")
+
+    def test_an_absent_manifest_leaves_every_default_standing(self):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-names-none-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertEqual(rotate.manifest_ledger_name(root), rotate.LEDGER_FILENAME)
+        self.assertEqual(rotate.manifest_bulletin_name(root), rotate.BULLETIN_FILENAME)
+        self.assertEqual(rotate.manifest_task_prefix(root), rotate.TASK_PREFIX_DEFAULT)
+
+
+class TestTaskPrefix(ManifestEnvCase):
+    """The prefix is DERIVED from instance.name and merely SWITCHED ON by the
+    manifest — nobody types the code, so it cannot drift from the instance it
+    names, and an adopter cannot pick one that collides with MP by accident."""
+
+    def _manifest(self, *lines):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-pfx-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("".join(l + chr(10) for l in lines))
+        return root
+
+    def test_the_shipped_default_is_MP(self):
+        root = self._manifest("instance:", "  name: 4SYNC", "close:", "  tasks:",
+                              "    dir: tasks")
+        self.assertEqual(rotate.manifest_task_prefix(root), "MP")
+
+    def test_opting_in_derives_the_code_from_the_instance_name(self):
+        root = self._manifest("instance:", "  name: 4SYNC", "close:", "  tasks:",
+                              "    prefix: derived")
+        self.assertEqual(rotate.manifest_task_prefix(root), "SYN")
+
+    def test_leading_non_letters_are_stripped_before_the_first_three(self):
+        root = self._manifest("instance:", "  name: 4CITE", "close:", "  tasks:",
+                              "    prefix: derived")
+        self.assertEqual(rotate.manifest_task_prefix(root), "CIT")
+
+    def test_a_value_other_than_derived_is_not_a_configured_prefix(self):
+        """Michael's ruling: derived, not configured. A literal here would be a
+        second place the code lives and a first chance for it to drift."""
+        root = self._manifest("instance:", "  name: 4SYNC", "close:", "  tasks:",
+                              "    prefix: ZZZ")
+        self.assertEqual(rotate.manifest_task_prefix(root), "MP")
+
+    def test_a_name_with_no_letters_degrades_to_the_default(self):
+        root = self._manifest("instance:", "  name: '4444'", "close:", "  tasks:",
+                              "    prefix: derived")
+        self.assertEqual(rotate.manifest_task_prefix(root), "MP")
+
+
+class TestPrefixedDocumentResolution(unittest.TestCase):
+    """NOTHING IS EVER RENAMED (Michael, 2026-08-14), so a MIXED directory is the
+    steady state here forever — not a migration in progress. The 78 documents in
+    tasks/closed/ keep `MP-0NN.md` permanently, every cross-reference in STATUS,
+    the ledger, FINDINGS and the journal stays valid, and the backward-compatibility
+    problem is DELETED rather than solved."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="rot-mixed-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+        with open(self.ledger, "w", encoding="utf-8", newline="") as fh:
+            fh.write(TASK_LEDGER)
+        self.tasks = os.path.join(self.root, "tasks")
+        self.closed = os.path.join(self.tasks, "closed")
+        os.makedirs(self.closed)
+
+    def _doc(self, name, body="body"):
+        p = os.path.join(self.tasks, name)
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body + "\n")
+        return p
+
+    def test_doc_names_is_prefixed_then_legacy(self):
+        self.assertEqual(rotate.doc_names(83, "SYN"), ["SYN-083.md", "MP-083.md"])
+
+    def test_the_default_prefix_yields_one_name_not_a_duplicate(self):
+        self.assertEqual(rotate.doc_names(83), ["MP-083.md"])
+
+    def test_a_legacy_document_is_found_under_a_prefixed_instance(self):
+        self._doc("MP-002.md")
+        name, live, _ = rotate.find_doc(self.tasks, self.closed, 2, "SYN")
+        self.assertEqual(name, "MP-002.md")
+        self.assertTrue(os.path.exists(live))
+
+    def test_the_prefixed_name_wins_when_both_exist(self):
+        self._doc("MP-002.md")
+        self._doc("SYN-002.md")
+        name, _, _ = rotate.find_doc(self.tasks, self.closed, 2, "SYN")
+        self.assertEqual(name, "SYN-002.md")
+
+    def test_a_new_document_takes_the_prefixed_name(self):
+        name, _, _ = rotate.find_doc(self.tasks, self.closed, 9, "SYN")
+        self.assertEqual(name, "SYN-009.md")
+
+    def test_a_legacy_row_closes_under_its_legacy_name(self):
+        """THE ONE THAT MATTERS. Row 1 is terminal and its document is MP-001.md;
+        it must land in closed/ as MP-001.md. A close that renamed on the way out
+        would break every reference written before the switchover, at exactly the
+        moment the row leaves the ledger and stops being watched."""
+        self._doc("MP-001.md", "closed thing")
+        self._doc("SYN-002.md", "open thing")     # the mixed directory, in one line
+        self._doc("MP-027.md", "the other open row")
+        moved, missing = rotate.rotate_task_docs(self.root, self.ledger, True, "SYN")
+        self.assertEqual(missing, [])
+        self.assertTrue(os.path.exists(os.path.join(self.closed, "MP-001.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.closed, "SYN-001.md")))
+        self.assertEqual([n for _, n, _, _ in moved], ["MP-001.md"])
+
+    def test_an_open_row_with_neither_name_is_still_reported(self):
+        self._doc("MP-001.md")
+        self._doc("SYN-027.md")
+        moved, missing = rotate.rotate_task_docs(self.root, self.ledger, False, "SYN")
+        self.assertEqual([t for t, _, _ in missing], [2])
+
+    def test_the_missing_report_names_the_prefixed_form(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rotate.rotate_task_docs(self.root, self.ledger, False, "SYN")
+        self.assertIn("SYN-002.md", buf.getvalue())
+
+
+class TestRowReferencesUnderAPrefix(unittest.TestCase):
+    """A checker keyed only to `MP#` would go blind on every row written after the
+    switchover WHILE STILL REPORTING GREEN — a check whose failure is
+    indistinguishable from its success, which is this project's recurring defect."""
+
+    def test_the_default_pattern_is_unchanged(self):
+        self.assertIs(rotate.status_ref_re(), rotate.STATUS_REF_RE)
+
+    def test_a_prefixed_instance_matches_both_forms(self):
+        found = rotate.status_ref_re("SYN").findall("MP#79 stands and SYN-083 is new")
+        self.assertEqual(found, ["79", "083"])
+
+    def test_the_repo_name_is_not_a_row_reference(self):
+        """`4SYNC-ARCH` must not read as row ARCH of instance 4SY — the word
+        boundary is what stops it, and it is worth a test because the false
+        positive would be silent."""
+        self.assertEqual(rotate.status_ref_re("SYN").findall("4SYNC-ARCH v1.1.1"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -295,6 +295,65 @@ class TestEmptiedHeading(TempRoot):
         self.assertIn("| 1 | ✅ | a | — |", self.new)
 
 
+class TestDeclaredNames(TempRoot):
+    """MP#83. This script is the more dangerous of the two that carried these
+    literals: it runs ONCE and is irreversible, so migrating to the wrong filenames
+    cannot be re-run to correct itself. The resolvers are IMPORTED from rotate.py
+    rather than copied — two copies of a naming rule is the defect being fixed."""
+
+    def setUp(self):
+        super().setUp()
+        self.prev = os.environ.get("ARCH_MANIFEST")
+        os.environ["ARCH_MANIFEST"] = "4SYNC.yaml"
+
+        def restore():
+            if self.prev is None:
+                os.environ.pop("ARCH_MANIFEST", None)
+            else:
+                os.environ["ARCH_MANIFEST"] = self.prev
+        self.addCleanup(restore)
+
+    def _root(self, ledger_name, *manifest_lines):
+        root = tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(root, ledger_name), "w", encoding="utf-8",
+                  newline="\n") as f:
+            f.write(LEDGER.format(extra="", extra_rows=""))
+        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as f:
+            f.write("".join(l + chr(10) for l in manifest_lines))
+        return root
+
+    def test_it_migrates_the_ledger_the_manifest_declares(self):
+        root = self._root("TASKS.md", "close:", "  ledger_sync:", "    file: TASKS.md")
+        code, out = run(root, "--apply")
+        self.assertEqual(code, 0, out[:300])
+        self.assertIn("TASKS.md", out)
+        self.assertTrue(os.path.exists(os.path.join(root, "tasks", "MP-002.md")))
+
+    def test_a_prefixed_instance_writes_prefixed_documents(self):
+        root = self._root("MERGE_PLAN.md", "instance:", "  name: 4SYNC", "close:",
+                          "  tasks:", "    prefix: derived")
+        code, out = run(root, "--apply")
+        self.assertEqual(code, 0, out[:300])
+        self.assertTrue(os.path.exists(os.path.join(root, "tasks", "SYN-002.md")))
+        self.assertTrue(os.path.exists(
+            os.path.join(root, "tasks", "closed", "SYN-001.md")))
+
+    def test_a_prefixed_document_heads_itself_the_same_way_it_is_named(self):
+        """`SYN-002`, not `MP#2` — Michael's ruling is that the reference matches
+        the filename exactly, and the header is the first place anyone reads it."""
+        root = self._root("MERGE_PLAN.md", "instance:", "  name: 4SYNC", "close:",
+                          "  tasks:", "    prefix: derived")
+        run(root, "--apply")
+        head = S.read(os.path.join(root, "tasks", "SYN-002.md")).splitlines()[0]
+        self.assertTrue(head.startswith("# SYN-002"), head)
+
+    def test_the_shipped_default_is_untouched_by_all_of_this(self):
+        root = self._root("MERGE_PLAN.md", "close:", "  tasks:", "    dir: tasks")
+        code, _ = run(root, "--apply")
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.exists(os.path.join(root, "tasks", "MP-002.md")))
+
+
 if __name__ == "__main__":
     S._utf8_stdout()
     unittest.main(verbosity=2)

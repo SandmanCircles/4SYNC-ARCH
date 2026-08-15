@@ -329,7 +329,8 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
     blocks = [text[s:e] for s, e, _ in to_move]
     orig_archive = read(archive_path) if os.path.exists(archive_path) else None
     arch = orig_archive if orig_archive is not None else (
-        "# ABBA — Archive\n\nDONE messages moved out of ABBA.md by scripts/rotate.py "
+        f"# {os.path.splitext(os.path.basename(abba_path))[0]} — Archive\n\nDONE "
+        "messages moved out of the bulletin by scripts/rotate.py "
         "(verbatim, newest-first). The trail is the value — never edit these.\n\n")
     arch = arch.rstrip("\n") + "\n\n" + "\n\n".join(b.strip() for b in blocks) + "\n"
     new_text = text
@@ -347,15 +348,56 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
 
 TASKS_DIRNAME = "tasks"
 CLOSED_DIRNAME = "closed"
+# The shipped names, and the fallback every resolver below degrades to. They are
+# DEFAULTS, not the truth: the manifest declares each of them, and MP#83 is the row
+# that made the code read what the manifest says instead of carrying these literals.
+LEDGER_FILENAME = "MERGE_PLAN.md"
+BULLETIN_FILENAME = "ABBA.md"
+TASK_PREFIX_DEFAULT = "MP"
 TERMINAL_MARKS = ("✅", "❌")   # ✅ completed · ❌ dropped
 TABLE_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", re.M)
 
 
-def doc_name(task_id):
+def doc_name(task_id, prefix=TASK_PREFIX_DEFAULT):
     """tasks/MP-027.md for row 27. Zero-padded to three digits so a directory
     listing sorts in ID order past 99 — a real adopter ledger hit 117 rows, where
-    unpadded names sort 1, 10, 100, 11 and the folder stops being readable."""
-    return f"MP-{int(task_id):03d}.md"
+    unpadded names sort 1, 10, 100, 11 and the folder stops being readable.
+
+    THE SINGLE DERIVATION SITE. The path is computed from the row id and never
+    written down as a pointer, so a convention cannot be typo'd."""
+    return f"{prefix}-{int(task_id):03d}.md"
+
+
+def doc_names(task_id, prefix=TASK_PREFIX_DEFAULT):
+    """Every name row `task_id` may legitimately live under, in lookup order.
+
+    PREFIXED FIRST, LEGACY SECOND, AND THE FALLBACK IS PERMANENT (MP#83). Not a
+    transition window: nothing is ever renamed, so `MP-040.md` stays the true name
+    of row 40 forever and a mixed directory is the steady state here, not a
+    migration in progress. A resolver that expects the legacy name to disappear
+    would fail the close on the day the oldest open row finally closes."""
+    names = [doc_name(task_id, prefix)]
+    legacy = doc_name(task_id, TASK_PREFIX_DEFAULT)
+    if legacy not in names:
+        names.append(legacy)
+    return names
+
+
+def find_doc(tasks_dir, closed_dir, task_id, prefix=TASK_PREFIX_DEFAULT):
+    """(name, live_path, closed_path) for the name that EXISTS, else the preferred one.
+
+    The close-move has to carry whichever name it actually found: `MP-040.md` closes
+    into `tasks/closed/MP-040.md`, untouched, or every cross-reference written before
+    the switchover breaks at exactly the moment the row leaves the ledger."""
+    for name in doc_names(task_id, prefix):
+        live = os.path.join(tasks_dir, name)
+        if os.path.exists(live):
+            return name, live, os.path.join(closed_dir, name)
+    for name in doc_names(task_id, prefix):
+        if os.path.exists(os.path.join(closed_dir, name)):
+            return name, os.path.join(tasks_dir, name), os.path.join(closed_dir, name)
+    name = doc_names(task_id, prefix)[0]
+    return name, os.path.join(tasks_dir, name), os.path.join(closed_dir, name)
 
 
 def summary_table_span(ledger_text):
@@ -401,7 +443,7 @@ def parse_summary_table(ledger_text):
             for r in TABLE_ROW_RE.finditer(table)}
 
 
-def rotate_task_docs(root, ledger_path, apply_):
+def rotate_task_docs(root, ledger_path, apply_, prefix=TASK_PREFIX_DEFAULT):
     """Move terminal rows' documents to tasks/closed/, and fail on any live row
     whose document is missing.
 
@@ -421,8 +463,7 @@ def rotate_task_docs(root, ledger_path, apply_):
 
     moved, missing = [], []
     for tid in sorted(rows):
-        name = doc_name(tid)
-        live_p, closed_p = os.path.join(tasks_dir, name), os.path.join(closed_dir, name)
+        name, live_p, closed_p = find_doc(tasks_dir, closed_dir, tid, prefix)
         if rows[tid]:                                   # terminal
             if os.path.exists(live_p):
                 moved.append((tid, name, live_p, closed_p))
@@ -699,7 +740,7 @@ SUBJECT_MAX_DEFAULT = 120
 TABLE_SUBJECT_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*[^|]*\|\s*(.*?)\s*\|", re.M)
 
 
-def report_subjects(ledger_path, subject_max):
+def report_subjects(ledger_path, subject_max, prefix=TASK_PREFIX_DEFAULT):
     """Flag summary-table rows whose Subject cell has become a description.
 
     THE ASYMMETRY THIS CLOSES: the split moved task substance out of the boot
@@ -744,8 +785,8 @@ def report_subjects(ledger_path, subject_max):
         print(f"  ! #{tid:<4} {n:>5,} chars — {head}…")
     if len(over) > 10:
         print(f"  … and {len(over) - 10} more")
-    print(f"  An over-long Subject wants a {TASKS_DIRNAME}/MP-0NN.md, not a shorter "
-          "sentence. (Reported, not blocked.)")
+    print(f"  An over-long Subject wants a {TASKS_DIRNAME}/{prefix}-0NN.md, not a "
+          "shorter sentence. (Reported, not blocked.)")
     return subjects, over
 
 
@@ -873,10 +914,35 @@ def report_status_size(root, soft_max=None):
               "check whether a field has become a log of closed work. TRIM IT BY "
               f"MOVING, NOT DELETING: {where}. Do not raise this number. "
               "(Reported, not blocked.)")
+        # ARRIVAL, NOT SHRINKAGE — the rule the journal overflow already enforces
+        # mechanically, stated for the case that needs judgement. Both recorded
+        # failures here deleted content under a "it is already recorded elsewhere"
+        # rationale that was FALSE and had never been checked; the second happened
+        # to a fresh session that had just read the row about the first. So the
+        # test cannot be "did the file get smaller", and it cannot be an alert
+        # reader either — it is one grep, before the cut.
+        print("    Then verify ARRIVAL, not shrinkage: grep a distinctive token from "
+              "the moved text and confirm it is in the destination BEFORE cutting it "
+              "here. A destination that OUGHT to hold it is not evidence that it "
+              "does — and a hit in a test fixture is not a record.")
     return total, [(n, b) for n, b in fields]
 
 
 STATUS_REF_RE = re.compile(r"\bMP#(\d+)")
+
+
+def status_ref_re(prefix=TASK_PREFIX_DEFAULT):
+    """The row-reference pattern for an instance, `MP#58` always.
+
+    An instance that opted into a prefix writes `SYN-58` in prose — Michael's ruling
+    is that the reference matches the document filename exactly — so a checker keyed
+    only to `MP#` would go blind on every row written after the switchover while
+    still reporting green. That is this project's own recurring defect: a check whose
+    failure is indistinguishable from its success. `MP#` stays accepted forever,
+    because nothing is ever renamed and every historical reference stays valid."""
+    if prefix == TASK_PREFIX_DEFAULT:
+        return STATUS_REF_RE
+    return re.compile(r"\b(?:MP#|%s-)(\d+)" % re.escape(prefix))
 
 
 def _status_list_entries(text):
@@ -919,7 +985,8 @@ def _status_list_entries(text):
     return out
 
 
-def report_status_closed_refs(root, ledger_path, manifest_name=None):
+def report_status_closed_refs(root, ledger_path, manifest_name=None,
+                              prefix=TASK_PREFIX_DEFAULT):
     """Flag STATUS entries whose ONLY ledger references are terminal rows.
 
     THE ADMISSION TEST IS THE LEAK (MP#62). The section asks for facts that are
@@ -954,7 +1021,7 @@ def report_status_closed_refs(root, ledger_path, manifest_name=None):
 
     found = []
     for field, idx, line, body in _status_list_entries(read(path)):
-        ids = [int(m.group(1)) for m in STATUS_REF_RE.finditer(body)]
+        ids = [int(m.group(1)) for m in status_ref_re(prefix).finditer(body)]
         known = [i for i in ids if i in rows]
         # An id absent from the table cannot be judged; an entry mixing open and
         # closed rows is live work. Both are left alone.
@@ -967,7 +1034,9 @@ def report_status_closed_refs(root, ledger_path, manifest_name=None):
         return []
     for field, idx, line, ids in found:
         print("  ! status-refs  %s:%d  %s[%d] cites only closed row(s): %s"
-              % (rel, line, field, idx, ", ".join("MP#%d" % i for i in ids)))
+              % (rel, line, field, idx,
+                 ", ".join(("MP#%d" if prefix == TASK_PREFIX_DEFAULT else prefix + "-%d") % i
+                           for i in ids)))
     print("status-refs: %d entry(ies) cite only closed rows. A closed row's outcome is "
           "still TRUE, which is why it survives a staleness check — ask the other "
           "question: WOULD IT STILL BE TRUE A YEAR FROM NOW? If yes it is a finding "
@@ -1061,6 +1130,131 @@ def manifest_snapshot_overflow(root, manifest_name="4SYNC.yaml"):
             return [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
     return []
 
+def _manifest_scalar(root, path_keys, block_key, manifest_name="4SYNC.yaml"):
+    """One declared scalar, read with PyYAML if present and a scoped regex if not.
+
+    The shape `manifest_journal_overflow` established, factored out once MP#83 needed
+    it four more times. The fallback is SCOPED to the block on purpose: an unscoped
+    `^\\s*file:` search finds whichever `file:` appears first, which on this manifest
+    is the debt tracker's — a resolver that quietly returns another key's value is
+    worse than one that returns nothing."""
+    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    if not os.path.exists(p):
+        return None
+    text = read(p)
+    try:
+        import yaml  # type: ignore
+        node = yaml.safe_load(text) or {}
+        for key in path_keys:
+            node = (node or {}).get(key, {})
+            if not isinstance(node, (dict, str, int)):
+                node = {}
+        if isinstance(node, str) and node.strip():
+            return node.strip()
+    except Exception:  # noqa: BLE001 — yaml missing, or the manifest does not parse
+        pass
+    block = _block_under(text, block_key)
+    if block is not None:
+        m = re.search(r"^\s*%s:\s*(.+)$" % re.escape(path_keys[-1]), block, re.M)
+        if m:
+            return m.group(1).split("#")[0].strip().strip("\"'") or None
+    return None
+
+
+def manifest_ledger_name(root, manifest_name="4SYNC.yaml"):
+    """close.ledger_sync.file (or close.journal.file) — the instance's ledger.
+
+    MP#83, and it is MP#34 one line up: the manifest declared this name in THREE
+    places and both scripts carried it as a string literal, so an instance that
+    renamed its ledger had a close operating on a file no manifest names. Falls back
+    to the shipped default, which every un-renamed instance is already using."""
+    for keys, block in ((("close", "ledger_sync", "file"), "ledger_sync"),
+                        (("close", "journal", "file"), "journal")):
+        v = _manifest_scalar(root, keys, block, manifest_name)
+        if v:
+            return v
+    return LEDGER_FILENAME
+
+
+def manifest_bulletin_name(root, manifest_name="4SYNC.yaml"):
+    """close.bulletin.file — the instance's board, defaulting to the shipped name."""
+    return _manifest_scalar(root, ("close", "bulletin", "file"), "bulletin",
+                            manifest_name) or BULLETIN_FILENAME
+
+
+def archive_name(name):
+    """`ABBA.md` → `ABBA_ARCHIVE.md`; `MERGE_PLAN.md` → `MERGE_PLAN_ARCHIVE.md`.
+
+    DERIVED, never declared: an archive whose name is configured separately is a
+    second name to keep in step, and the one thing worse than a hardcoded name is
+    two of them disagreeing."""
+    stem, ext = os.path.splitext(name)
+    return stem + "_ARCHIVE" + (ext or ".md")
+
+
+def manifest_task_prefix(root, manifest_name="4SYNC.yaml"):
+    """The task-document prefix: `MP` unless this instance opts in.
+
+    RULED 2026-08-14 (Michael, MP#40(c) → MP#83). The problem is spoken, not visual:
+    he says "MP" constantly across two instances and the number alone does not say
+    whose row it is — invisible at 120-vs-50 rows, chaos at 40-vs-40, so it arrives
+    silently and worsens as two ledgers converge.
+
+    DERIVED, NOT CONFIGURED. `close.tasks.prefix: derived` is a SWITCH; the value
+    comes from `instance.name` — leading non-letters stripped, first three letters,
+    uppercased (`4SYNC` → SYN, `4CITE` → CIT). Nobody types the code anywhere, so it
+    cannot drift from the instance it names, and an adopter cannot pick one that
+    collides with `MP` by accident.
+
+    OPT-IN, AND THE DEFAULT SHIPS UNCHANGED. Same reasoning as the KERNEL invariant
+    about checks an adopter cannot satisfy: nobody is migrated, no existing file is
+    renamed, and `MP-0NN.md` remains a permanently valid name — see doc_names()."""
+    v = _manifest_scalar(root, ("close", "tasks", "prefix"), "tasks", manifest_name)
+    if not v or v.strip().lower() != "derived":
+        return TASK_PREFIX_DEFAULT
+    name = _manifest_scalar(root, ("instance", "name"), "instance", manifest_name) or ""
+    letters = re.sub(r"^[^A-Za-z]+", "", name)
+    code = re.sub(r"[^A-Za-z]", "", letters)[:3].upper()
+    return code or TASK_PREFIX_DEFAULT
+
+
+def manifest_rules_overflow(root, manifest_name="4SYNC.yaml"):
+    """integrity.manifest_rules.overflow_to — where THIS instance says the MANIFEST's
+    own overflow goes.
+
+    MP#79 criterion 2: every boot-path file with a limit needs a declared
+    destination, and after the snapshot key landed this was the last one without.
+    The manifest is boot file zero and its cap is the only HARD one in the stack —
+    g5 refuses the write — so "it is over" is the one overage a session cannot
+    scroll past, and it was still the one with nowhere named to put the excess.
+
+    What goes over is almost always RATIONALE, which `declaration_only: true` says
+    was never supposed to be here: the argument for a rule belongs wherever this
+    instance keeps its reasoning. That is a per-instance answer, so as with the
+    snapshot key, UNDECLARED RETURNS EMPTY AND NEVER A DEFAULT."""
+    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    if not os.path.exists(p):
+        return []
+    text = read(p)
+    try:
+        import yaml  # type: ignore
+        v = ((yaml.safe_load(text) or {}).get("integrity", {})
+             .get("manifest_rules", {}).get("overflow_to"))
+        if isinstance(v, str) and v.strip():
+            return [v.strip()]
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    block = _block_under(text, "manifest_rules")
+    if block is not None:
+        ov = re.search(r"^\s*overflow_to:\s*(.+)$", block, re.M)
+        if ov:
+            raw = ov.group(1).split("#")[0].strip().strip("[]")
+            return [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
+    return []
+
+
 def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     """close.journal.overflow_to from the manifest, or the default filename.
 
@@ -1133,7 +1327,7 @@ def report_sizes(root, ledger_path, journal_max):
         # that changes with the presence of a comment is not a measurement.
         jbytes = len("\n\n".join(b.strip() for b in blocks).encode("utf-8"))
     share = (jbytes / total * 100) if total else 0
-    print(f"size: MERGE_PLAN.md {total:,} B (~{total // 4:,} tok) — "
+    print(f"size: {os.path.basename(ledger_path)} {total:,} B (~{total // 4:,} tok) — "
           f"journal {jbytes:,} B (~{jbytes // 4:,} tok, {share:.0f}%)")
     if jbytes > journal_max:
         print(f"  ! journal is over its {journal_max:,} B cap by {jbytes - journal_max:,} B — "
@@ -1521,7 +1715,7 @@ def count_test_methods(path):
     return n or None
 
 
-def _check_caps(text, spans, manifests, findings, notes):
+def _check_caps(text, spans, manifests, findings, notes, root=None, manifest_name=None):
     """Manifest cap claims: `N / M`, where M is a byte cap and N a manifest size.
 
     A pair qualifies as a cap claim only if M is a cap SOME manifest declares, or
@@ -1537,9 +1731,15 @@ def _check_caps(text, spans, manifests, findings, notes):
             continue
         caps.setdefault(mx, []).append((rel, size))
         if size > mx:
+            dests = manifest_rules_overflow(root, manifest_name or "4SYNC.yaml") if root else []
+            where = ("this instance declares where it goes: " + ", ".join(dests)) if dests else (
+                "a manifest is DECLARATION ONLY, so what is over is rationale — move it "
+                "to wherever this project keeps its reasoning, and declare "
+                "integrity.manifest_rules.overflow_to so this line can name it")
             findings.append(_finding(
                 None, "manifest", rel, f"cap {mx:,} B", f"{size:,} B",
-                "over its own declared manifest_rules.max_bytes — g5 blocks edits to it"))
+                "over its own declared manifest_rules.max_bytes — g5 blocks edits to it. "
+                f"TRIM IT BY MOVING, NOT DELETING: {where}"))
     for m in CAP_PAIR_RE.finditer(text):
         if _is_quoted(m.start(), spans):
             continue
@@ -1738,7 +1938,8 @@ def report_status_facts(root, manifest_name=None, run_meter=True):
     spans = _quoted_spans(text)
     findings, notes = [], []
 
-    _check_caps(text, spans, discover_manifests(root, manifest_name), findings, notes)
+    _check_caps(text, spans, discover_manifests(root, manifest_name), findings, notes,
+                root=root, manifest_name=manifest_name)
     _check_sizes(root, text, spans, findings)
     _check_shas(text, spans, _git_roots(root), findings)
     _check_suites(root, text, spans, findings, notes)
@@ -2037,7 +2238,8 @@ def verify_moves(moved_blocks, src, dst, restore):
 def main():
     _utf8_stdout()   # belt and braces; also runs at import for library callers
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default=".", help="project root (holds MERGE_PLAN.md / ABBA.md)")
+    ap.add_argument("--dir", default=".",
+                    help="instance root (holds the ledger and bulletin the manifest declares)")
     ap.add_argument("--keep", type=int, default=5)
     ap.add_argument("--age", type=int, default=10)
     ap.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
@@ -2057,10 +2259,15 @@ def main():
     args = ap.parse_args()
 
     d = os.path.abspath(args.dir)
-    ledger = os.path.join(d, "MERGE_PLAN.md")
+    # DECLARED, NOT ASSUMED (MP#83). Every one of these was a string literal here
+    # while the manifest declared it — the ledger in three separate keys.
+    ledger_name = manifest_ledger_name(d)
+    bulletin_name = manifest_bulletin_name(d)
+    prefix = manifest_task_prefix(d)
+    ledger = os.path.join(d, ledger_name)
     history = os.path.join(d, manifest_journal_overflow(d))
-    abba = os.path.join(d, "ABBA.md")
-    archive = os.path.join(d, "ABBA_ARCHIVE.md")
+    abba = os.path.join(d, bulletin_name)
+    archive = os.path.join(d, archive_name(bulletin_name))
 
     if (sys.platform.startswith("linux") and os.path.isdir("/sessions")
             and os.environ.get("ARCH_ROTATE_SANDBOX_OK") != "1"):
@@ -2081,10 +2288,17 @@ def main():
     # move, not just a line in the report that follows it.
     jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
 
+    # PRINTED, because a resolver that silently falls back is a resolver nobody can
+    # debug: a mistyped `prefix:` and an absent one produce the same `MP`, and the
+    # only difference visible anywhere is this line.
+    print(f"names: ledger {ledger_name} · bulletin {bulletin_name} · "
+          f"{TASKS_DIRNAME}/{prefix}-0NN.md"
+          f"{'' if prefix == TASK_PREFIX_DEFAULT else f' (legacy {TASK_PREFIX_DEFAULT}- still resolves)'}")
+
     missing = []
     if os.path.exists(ledger):
         rotate_journal(ledger, history, args.keep, args.apply, jmax)
-        _, missing = rotate_task_docs(d, ledger, args.apply)
+        _, missing = rotate_task_docs(d, ledger, args.apply, prefix)
         # BEFORE the reports, not after: report_table_prose measures this very
         # section, so a reconciled Tally is what gets measured. A close that
         # rewrote the line and then reported the pre-rewrite byte count would be
@@ -2097,9 +2311,9 @@ def main():
         report_sizes(d, ledger, jmax)
         report_table_prose(ledger)
         if args.subject_max > 0:
-            report_subjects(ledger, args.subject_max)
+            report_subjects(ledger, args.subject_max, prefix)
         report_pickup_ready(ledger)
-        report_status_closed_refs(d, ledger)
+        report_status_closed_refs(d, ledger, prefix=prefix)
     report_status_size(d)
     report_status_facts(d, run_meter=not args.no_meter)
     report_boot_growth(d, run_meter=not args.no_meter)
@@ -2112,7 +2326,8 @@ def main():
     # integrity gate the split traded the inline description for.
     if missing:
         print(f"\nFAILED: {len(missing)} open row(s) have no task document. "
-              f"Write {TASKS_DIRNAME}/MP-0NN.md for each before closing.", file=sys.stderr)
+              f"Write {TASKS_DIRNAME}/{prefix}-0NN.md for each before closing.",
+              file=sys.stderr)
         sys.exit(1)
 
 

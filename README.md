@@ -725,6 +725,12 @@ Dry run by default; `--apply` writes. It copies only the machinery inventory and
 **refuses to write any path outside it**, verifies the clone against `--expect` before
 writing anything, and recomputes your build id afterwards to prove the update landed.
 
+It then prints **what copying did not do**: the `**Manifest:` and `**By hand:` lines
+from every release between your version and the clone's, oldest first, read from the
+clone's `RELEASE_NOTES.md`. Those are the steps nothing else reports — a copy alone is
+self-evidencing, since the build id either matches or does not, while a missed manifest
+edit or an unmoved file is silent until something else breaks.
+
 **It cannot do the other two buckets, and that limit is structural rather than an
 oversight.** ARCH is copied, not installed: genesis renames your stack, rewrites the
 manifest with your `instance.root`, and moves this README and the license out of your

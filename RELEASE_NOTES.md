@@ -23,9 +23,13 @@ python <PATH-TO-CLONE>/scripts/arch_update.py --from <PATH-TO-CLONE> --dir . --e
 
 Dry run by default; `--apply` writes. It touches only the machinery inventory and refuses
 everything outside it, so your `config/` stack, ledger and task documents are not reachable by it.
-Then read the notes for every release between your version and the new one — **copying machinery
-is not the whole update**, and any release with a `**By hand:**` line has something the tool
-cannot do for you.
+
+**It also prints what copying did not do** — the `**Manifest:` and `**By hand:` lines from every
+release between your version and the one you are applying, oldest first, read from the CLONE's
+copy of this file. **Copying machinery is not the whole update**, and those two leads are where
+the rest of it lives. From v1.1.1 a release cannot be cut without a `**By hand:` line, so
+"nothing" is stated rather than left out; releases before that predate the convention and the
+tool names them instead of implying there is nothing to do.
 
 **If your instance predates v1.1.0**, or you would rather do it yourself, open a session in your
 instance and paste this, filling in the two paths:
@@ -57,6 +61,80 @@ Stop and ask me if any step is ambiguous rather than guessing.
 
 **Take machinery wholesale or not at all.** Cherry-picking "the useful ones" leaves you on a
 build that matches no release, which nobody — including support — can then reason about.
+
+---
+
+## v1.1.1
+
+*The complete release: cross-project mail, an update that tells you what copying did not do, and
+the last hardcoded names taken out of the two scripts that write your files.*
+
+**Read this before you compare ids — the machinery list grew, and every id published before this
+release now recomputes to something else.** `scripts/mail.py` and its suite join the inventory, so
+it goes **20 → 22**. This is the **fifth** time (`arch/VERSION` at v1.0.5, `arch_build.py` at
+v1.0.8, `test_wire_hooks.py` at v1.0.9, `arch_update.py` at v1.1.0), and it is said here *before*
+the cut rather than explained afterwards. A build id is anchored to a tag for file CONTENT but to
+the RUNNING CODE for the INVENTORY, so ids are only ever comparable within a generation. **Compare
+against the current release and disregard older ids.** Your own instance is unaffected — you run
+your generation's `arch_build.py` against your own tree.
+
+**Machinery: replace all thirteen changed files** — `hooks/pre_tool_use.py`,
+`hooks/session_start.py`, `hooks/test_pre_tool_use.py`, `scripts/arch_build.py`,
+`scripts/arch_update.py`, `scripts/rotate.py`, `scripts/split_ledger.py`, the two new
+`scripts/mail.py` + `scripts/test_mail.py`, and the four matching `test_*.py` files.
+
+**Manifest: three additions, all optional.**
+
+```yaml
+mail:                      # cross-project mail. Omit it and nothing changes.
+  name: YOURNAME           # what other instances address you as
+  peers: [../other-instance]   # each peer declares its own name; a peer that has
+                               # not opted in is reported as such, not as absent
+
+close:
+  tasks:
+    prefix: MP             # `derived` takes the first three letters of instance.name
+                           # (4SYNC -> tasks/SYN-083.md), so a human running two
+                           # instances can hear whose row is whose. NOTHING IS RENAMED
+                           # when you switch: MP-0NN.md resolves permanently and a
+                           # mixed folder is the steady state, not a migration.
+
+integrity:
+  manifest_rules:
+    overflow_to: []        # where THIS file's excess goes when it is over max_bytes.
+                           # Empty is fine — you get generic advice instead of your
+                           # own destinations. Nothing guesses a path for you.
+```
+
+**By hand:** create `inbox/` and `outbox/` in your instance root if you want mail —
+`arch_update.py` copies machinery only, and it is not machinery. `mail.py` cannot deliver into a
+folder that does not exist, and **a missing folder looks exactly like no mail**, which is the one
+silent failure this feature has. `git` does not track an empty directory, so add a `.gitkeep` to
+each.
+
+**What the update tool now tells you.** `arch_update.py` prints the `**Manifest:` and `**By hand:`
+lines from every release between your version and the clone's, oldest first, read from **the
+clone's** copy of this file — yours predates the release and cannot contain its note. Copying is
+self-evidencing, because the build id either matches or does not; the steps that are *not* copying
+are the ones nothing reports, and the live example is v1.0.5's `arch/VERSION` move, where a copy
+alone leaves an instance matching no release at all. From this release a release cannot be cut
+without a `**By hand:` line — "nothing" is written rather than left out, because an absent line and
+a forgotten one are indistinguishable. **Notes before v1.1.1 predate the convention, and the tool
+names them as such rather than implying there is nothing to do.**
+
+**`rotate.py` and `split_ledger.py` now read the names your manifest declares.** Both carried
+`MERGE_PLAN.md`, `ABBA.md` and `MP-0NN.md` as string literals while the manifest declared the
+ledger in three separate keys — so an instance that renamed its ledger had a close operating on a
+file no manifest names. Every default is unchanged, `split_ledger.py` imports the resolvers rather
+than keeping a second copy, and `rotate.py` prints a `names:` line at every run so a mistyped key
+is visible instead of silently falling back.
+
+**Also:** the manifest cap now excludes the `bootstrap:` block genesis deletes, so a fresh clone is
+no longer measured against instructions it discards on first use; `mail.py` finds a peer's manifest
+by discovery, because genesis renames it and its name is unknowable from outside; and every shipped
+script reconfigures its console to UTF-8, after a `pre_tool_use.py` refusal reached a user through
+a Windows permission prompt with a replacement character in it — where the message *is* the
+mechanism.
 
 ---
 

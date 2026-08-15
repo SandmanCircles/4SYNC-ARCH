@@ -54,6 +54,15 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import rotate  # noqa: E402 — the name resolvers live there (MP#83)
+# IMPORTED, NOT COPIED. This script and rotate.py must agree about the ledger's
+# name, the task-document prefix and the lookup fallback, and the way they stop
+# agreeing is two copies of the rule. Both are machinery and ship together, so the
+# import cannot dangle in a correctly-installed instance — and if it ever does, a
+# loud ImportError beats this script silently migrating to the shipped defaults.
+
 TERMINAL = {"completed", "dropped"}
 TASKS_DIRNAME = "tasks"
 CLOSED_DIRNAME = "closed"
@@ -69,9 +78,9 @@ TABLE_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*([^|]*?)\s*\|", re.M)
 FOOTER_RE = re.compile(r"\n---\n+\*[^\n]*\*\s*$", re.S)
 STATUS_TAIL_RE = re.compile(r"[\s✅⏳⏸️🔄❌]+$")
 
-DOC_HEADER = """# MP#{id} — {subject}
+DOC_HEADER = """# {ref} — {subject}
 
-<!-- Long form for row {id} of MERGE_PLAN.md.
+<!-- Long form for row {id} of {ledger}.
      STATE (status, blocked-by, owner) lives in that table and ONLY there.
      Do not repeat it here — two copies of state drift and neither announces it. -->
 
@@ -182,17 +191,23 @@ def excise(text, spans):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default=".", help="instance root (holds MERGE_PLAN.md)")
+    ap.add_argument("--dir", default=".",
+                    help="instance root (holds the ledger the manifest declares)")
     ap.add_argument("--apply", action="store_true", help="write (default: dry-run)")
     ap.add_argument("--allow-no-final-newline", action="store_true",
                     help="proceed even if the ledger does not end in a newline")
     args = ap.parse_args()
 
     root = os.path.abspath(args.dir)
-    ledger_p = os.path.join(root, "MERGE_PLAN.md")
-    archive_p = os.path.join(root, "MERGE_PLAN_ARCHIVE.md")
+    ledger_name = rotate.manifest_ledger_name(root)
+    prefix = rotate.manifest_task_prefix(root)
+    archive_name = rotate.archive_name(ledger_name)
+    ledger_p = os.path.join(root, ledger_name)
+    archive_p = os.path.join(root, archive_name)
     if not os.path.exists(ledger_p):
-        sys.exit(f"FATAL: no MERGE_PLAN.md in {root}")
+        sys.exit(f"FATAL: no {ledger_name} in {root}")
+    print(f"  names:        ledger {ledger_name} · documents "
+          f"{TASKS_DIRNAME}/{prefix}-0NN.md")
 
     ledger = read(ledger_p)
 
@@ -204,7 +219,7 @@ def main():
     # since preserving the damage. Migrating that file would have carried the damage into a
     # task document and deleted the evidence from the ledger in one step.
     if not ledger.endswith("\n") and not args.allow_no_final_newline:
-        sys.exit("FATAL: MERGE_PLAN.md does not end in a newline — it may be "
+        sys.exit(f"FATAL: {ledger_name} does not end in a newline — it may be "
                  "TRUNCATED. Check the tail against git history and repair it "
                  "before migrating. (--allow-no-final-newline overrides.)")
 
@@ -234,7 +249,7 @@ def main():
     print(f"  ledger:       {len(ledger.encode()):,} B")
     print(f"  table rows:   {len(status)}  ({len(status) - len(term_no_desc) - len(open_no_desc)} with a description)")
     print(f"  descriptions: {len(items) + len(archive_items)} blocks, {len(seen)} distinct"
-          + (f" ({len(archive_items)} from MERGE_PLAN_ARCHIVE.md)" if archive_items else ""))
+          + (f" ({len(archive_items)} from {archive_name})" if archive_items else ""))
     if term_no_desc:
         print(f"  terminal rows with no description: {len(term_no_desc)} — fine, no doc will be written")
     print()
@@ -249,7 +264,7 @@ def main():
     if open_no_desc:
         fatal.append(f"{len(open_no_desc)} OPEN row(s) have NO description: {open_no_desc} "
                      "— rotate.py rejects these at the next close; write "
-                     f"{TASKS_DIRNAME}/MP-0NN.md for each first")
+                     f"{TASKS_DIRNAME}/{prefix}-0NN.md for each first")
     if fatal:
         print("REFUSING — the ledger does not reconcile:")
         for f in fatal:
@@ -262,8 +277,11 @@ def main():
     for tid in sorted(seen):
         subject, body = seen[tid]
         sub = CLOSED_DIRNAME if status[tid] in TERMINAL else ""
-        rel = os.path.join(TASKS_DIRNAME, sub, f"MP-{tid:03d}.md")
-        plan.append((rel, DOC_HEADER.format(id=tid, subject=subject) + body + "\n",
+        rel = os.path.join(TASKS_DIRNAME, sub, rotate.doc_name(tid, prefix))
+        ref = ("MP#%d" % tid if prefix == rotate.TASK_PREFIX_DEFAULT
+               else "%s-%03d" % (prefix, tid))
+        plan.append((rel, DOC_HEADER.format(id=tid, subject=subject, ref=ref,
+                                            ledger=ledger_name) + body + "\n",
                      status[tid]))
 
     for rel, content, st in plan[:12]:
@@ -279,7 +297,7 @@ def main():
             new_ledger += "\n"
 
     print()
-    print(f"  MERGE_PLAN.md  {len(ledger.encode()):,} B → {len(new_ledger.encode()):,} B "
+    print(f"  {ledger_name}  {len(ledger.encode()):,} B → {len(new_ledger.encode()):,} B "
           f"({100 - len(new_ledger.encode()) * 100 // max(len(ledger.encode()), 1)}% smaller)")
     print(f"  footer preserved: {footer.strip()[:60]!r}" if footer else "  (no footer)")
 

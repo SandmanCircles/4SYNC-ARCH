@@ -150,5 +150,188 @@ class TestTheInventoryListsThisScriptAndItsSuite(unittest.TestCase):
         self.assertIn("scripts/test_arch_update.py", arch_build.MACHINERY)
 
 
+NOTES_FIXTURE = """# 4SYNC ARCH — Release Notes
+
+## How to apply any update
+
+Prose that is not a release and must not be parsed as one.
+
+---
+
+## v1.1.0
+
+**Machinery: replace all six changed files** — this line is the copy, which the tool
+already did.
+
+**Manifest: one optional addition.** Declare `close.snapshot.overflow_to`.
+
+**By hand: nothing.**
+
+Trailing prose after the blank line, which is not part of the block.
+
+---
+
+## v1.0.5
+
+**Machinery: replace two files.**
+
+**By hand:** move `VERSION` to `arch/VERSION`; a copy left at root hashes as
+MISSING and the instance then matches no release at all.
+
+---
+
+## v1.0.4
+
+**Machinery: one file.**
+
+**Manifest: nothing to change.**
+"""
+
+
+class TestReleaseNoteParsing(unittest.TestCase):
+    """The parser the silo's cut gate imports rather than re-implementing."""
+
+    def test_only_release_headings_open_a_section(self):
+        versions = [v for v, _ in arch_update.release_sections(NOTES_FIXTURE)]
+        self.assertEqual(versions, ["1.1.0", "1.0.5", "1.0.4"])
+
+    def test_a_non_release_heading_closes_the_section_it_follows(self):
+        text = "## v1.0.1\n\n**By hand: nothing.**\n\n## Appendix\n\n**By hand:** no.\n"
+        sections = dict(arch_update.release_sections(text))
+        self.assertNotIn("no.", sections["1.0.1"])
+
+    def test_a_block_is_the_lead_plus_its_continuation_lines(self):
+        body = dict(arch_update.release_sections(NOTES_FIXTURE))["1.0.5"]
+        block = arch_update.by_hand(body)
+        self.assertEqual(len(block), 2)
+        self.assertTrue(block[0].startswith("**By hand:**"))
+        self.assertIn("matches no release at all", block[1])
+
+    def test_a_block_stops_at_the_blank_line(self):
+        body = dict(arch_update.release_sections(NOTES_FIXTURE))["1.1.0"]
+        block = arch_update.by_hand(body)
+        self.assertEqual(block, ["**By hand: nothing.**"])
+
+    def test_nothing_written_is_none_not_an_empty_block(self):
+        body = dict(arch_update.release_sections(NOTES_FIXTURE))["1.0.4"]
+        self.assertIsNone(arch_update.by_hand(body))
+
+    def test_the_range_excludes_what_you_have_and_includes_what_you_want(self):
+        picked = [v for v, _ in arch_update.steps_between(NOTES_FIXTURE, "1.0.4", "1.1.0")]
+        self.assertEqual(picked, ["1.0.5", "1.1.0"])
+
+    def test_the_range_is_oldest_first_whatever_the_file_order(self):
+        picked = [v for v, _ in arch_update.steps_between(NOTES_FIXTURE, "1.0.0", "1.1.0")]
+        self.assertEqual(picked, sorted(picked, key=arch_update.semver))
+
+    def test_a_source_no_newer_than_the_instance_yields_nothing(self):
+        self.assertEqual(arch_update.steps_between(NOTES_FIXTURE, "1.1.0", "1.1.0"), [])
+
+
+class TestBeyondCopying(UpdateCase):
+    """MP#82. The half of an update that a copy cannot do and nothing else reports."""
+
+    def _versioned(self, instance_version, clone_version, notes=NOTES_FIXTURE,
+                   instance_notes=None):
+        src, dst = self._trees()
+        _write(src, "arch/VERSION", clone_version + "\n")
+        _write(dst, "arch/VERSION", instance_version + "\n")
+        _write(src, arch_update.NOTES, notes)
+        if instance_notes is not None:
+            _write(dst, arch_update.NOTES, instance_notes)
+        return src, dst
+
+    def test_it_prints_the_by_hand_steps_for_the_releases_in_between(self):
+        src, dst = self._versioned("1.0.4", "1.1.0")
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("v1.0.5", out)
+        self.assertIn("move `VERSION` to `arch/VERSION`", out)
+        self.assertIn("**By hand: nothing.**", out)
+
+    def test_it_does_not_print_a_release_the_instance_already_has(self):
+        src, dst = self._versioned("1.0.5", "1.1.0")
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertNotIn("move `VERSION` to `arch/VERSION`", out)
+
+    def test_manifest_work_is_named_too_so_nothing_reads_as_nothing(self):
+        # `By hand: nothing.` on a release that also says `Manifest: one optional
+        # addition` would be a true line producing a false impression.
+        src, dst = self._versioned("1.0.5", "1.1.0")
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("Manifest: one optional addition", out)
+
+    def test_the_notes_are_read_from_the_clone_not_the_instance(self):
+        # THE LOAD-BEARING DETAIL: the instance's copy is older than the release
+        # being applied and cannot contain its note.
+        stale = NOTES_FIXTURE.replace("move `VERSION` to `arch/VERSION`", "DECOY")
+        src, dst = self._versioned("1.0.4", "1.1.0", instance_notes=stale)
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("move `VERSION` to `arch/VERSION`", out)
+        self.assertNotIn("DECOY", out)
+
+    def test_a_note_predating_the_convention_says_so_rather_than_nothing(self):
+        # DECIDED 2026-08-14 (MP#82): the back catalogue is not backfilled, because
+        # the population that would traverse it is provably zero. So silence must
+        # never be rendered as "nothing to do" — they are different claims.
+        src, dst = self._versioned("1.0.3", "1.0.4")
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("NO `By hand:` LINE IN v1.0.4", out)
+        self.assertIn("predate the convention", out)
+
+    def test_the_silent_releases_are_named_once_not_repeated(self):
+        """Five identical paragraphs is a paragraph nobody reads."""
+        src, dst = self._versioned("1.0.0", "1.1.0")
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertEqual(out.count("predate the convention"), 1)
+        self.assertIn("v1.0.4", out.split("NO `By hand:` LINE IN")[1])
+
+    def test_an_instance_with_no_version_is_told_so_not_guessed_at(self):
+        src, dst = self._trees()
+        _write(src, "arch/VERSION", "1.1.0\n")
+        _write(src, arch_update.NOTES, NOTES_FIXTURE)
+        os.remove(os.path.join(dst, "arch", "VERSION"))
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("no release number", out)
+
+    def test_a_clone_without_notes_still_says_copying_is_not_the_whole_update(self):
+        src, dst = self._versioned("1.0.4", "1.1.0")
+        os.remove(os.path.join(src, arch_update.NOTES))
+        out = "\n".join(arch_update.beyond_copying(src, dst))
+        self.assertIn("not the whole update", out)
+
+    def test_the_render_carries_it_in_both_modes(self):
+        src, dst = self._versioned("1.0.4", "1.1.0")
+        for apply in (False, True):
+            report = arch_update.update(src, dst, apply=apply)
+            out = "\n".join(arch_update._render(report, src, dst, apply))
+            self.assertIn("BEYOND COPYING", out)
+
+
+class TestAgainstTheRealReleaseNotes(unittest.TestCase):
+    """Against the shipped file, not a fixture — the parser has to survive the real
+    document, which carries prose headings, code fences and ten releases."""
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), arch_update.NOTES)
+        if not os.path.exists(path):
+            self.skipTest("RELEASE_NOTES.md is not beside this suite")
+        with open(path, encoding="utf-8") as fh:
+            self.text = fh.read()
+
+    def test_every_release_in_the_file_parses_as_a_version(self):
+        sections = arch_update.release_sections(self.text)
+        self.assertTrue(sections)
+        for version, _ in sections:
+            self.assertIsNotNone(arch_update.semver(version))
+
+    def test_a_pre_v1_0_5_instance_is_told_about_v1_0_5_one_way_or_the_other(self):
+        # The criterion from the row: it is TOLD. With the back catalogue not
+        # backfilled, being told means being pointed at that section by name —
+        # never an empty report that reads as "you are done".
+        steps = arch_update.steps_between(self.text, "1.0.4", "1.0.5")
+        self.assertEqual([v for v, _ in steps], ["1.0.5"])
+
+
 if __name__ == "__main__":
     unittest.main()

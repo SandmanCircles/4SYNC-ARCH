@@ -27,9 +27,15 @@ everything outside it, so your `config/` stack, ledger and task documents are no
 **It also prints what copying did not do** — the `**Manifest:` and `**By hand:` lines from every
 release between your version and the one you are applying, oldest first, read from the CLONE's
 copy of this file. **Copying machinery is not the whole update**, and those two leads are where
-the rest of it lives. From v1.1.1 a release cannot be cut without a `**By hand:` line, so
-"nothing" is stated rather than left out; releases before that predate the convention and the
-tool names them instead of implying there is nothing to do.
+the rest of it lives.
+
+**v1.1.0 is the first note that carries a `**By hand:` line, and from v1.1.1 a release cannot be
+cut without one** — "nothing" gets written rather than left out, because an absent line and a
+forgotten one are indistinguishable. **Older notes are not backfilled and never will be.** If you
+are somehow updating from before v1.1.0, the tool names those releases as predating the convention
+and you read their sections yourself — starting with **v1.0.5, which moved `VERSION` to
+`arch/VERSION`**: copy alone leaves the old one at your root, the build then hashes
+`arch/VERSION:MISSING`, and your instance matches no release at all.
 
 **If your instance predates v1.1.0**, or you would rather do it yourself, open a session in your
 instance and paste this, filling in the two paths:

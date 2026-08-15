@@ -263,6 +263,16 @@ def _target(dest, rel):
 
 def update(source, dest, apply=False, expect=None):
     """Compare, optionally copy, and verify. Returns a Report; raises on refusal."""
+    # THE DOCUMENTED COMMAND IS THE CLONE'S UPDATER, and --dir defaults to the tree
+    # this script lives in — which, run from the clone, IS the clone. Drop the one
+    # flag and the tool compares the clone with itself and prints "already current,
+    # nothing to do": a success message about an instance it never looked at. A
+    # false pass one omitted flag off the happy path is refused, not reported.
+    if os.path.realpath(source) == os.path.realpath(dest):
+        raise RefusedWrite(
+            "source and destination are the same tree (%s). You are probably "
+            "running the clone's updater without --dir — pass --dir <your instance>."
+            % os.path.realpath(source))
     src_digests, src_missing = arch_build.file_digests(source)
     if src_missing:
         raise IncompleteSource(

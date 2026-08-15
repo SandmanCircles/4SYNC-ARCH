@@ -141,6 +141,34 @@ class TestItVerifiesRatherThanTrusts(UpdateCase):
             self._run(src, dst, apply=True)
 
 
+class TestSourceAndDestMustDiffer(UpdateCase):
+    """SECOND-PASS AUDIT FIND. The documented command is `python
+    <CLONE>/scripts/arch_update.py --from <CLONE> --dir .` — and --dir DEFAULTS to
+    the tree the script lives in, which for the clone's updater IS the clone. Drop
+    the one flag and the tool compares the clone with itself and prints "already
+    current, nothing to do": a success message, about an instance it never looked
+    at. A false pass sitting one omitted flag away from the happy path."""
+
+    def test_updating_a_tree_from_itself_is_refused(self):
+        src, _ = self._trees()
+        with self.assertRaises(arch_update.RefusedWrite):
+            arch_update.update(src, src)
+
+    def test_the_refusal_names_the_missing_flag(self):
+        src, _ = self._trees()
+        try:
+            arch_update.update(src, src)
+        except arch_update.RefusedWrite as exc:
+            self.assertIn("--dir", str(exc))
+        else:
+            self.fail("no refusal")
+
+    def test_a_real_pair_is_untouched_by_the_guard(self):
+        src, dst = self._trees()
+        report = arch_update.update(src, dst, apply=True)
+        self.assertEqual(report.source_build_id, report.result_build_id)
+
+
 class TestTheInventoryListsThisScriptAndItsSuite(unittest.TestCase):
     """MP#69 and MP#77 were both a script added without its suite in MACHINERY, and
     MP#80's own criteria demand this land in the same commit. Asserted, not promised."""

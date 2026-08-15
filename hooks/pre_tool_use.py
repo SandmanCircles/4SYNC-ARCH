@@ -518,6 +518,33 @@ def _manifest_sizes(content):
     return total, total - boot, boot
 
 
+def _manifest_rules_block(content):
+    """The body of `integrity.manifest_rules:` for the regex fallback, or "".
+
+    SCOPED, because rotate.py had already documented the trap this guard walked
+    into: "an unscoped max_bytes: search finds close.journal.max_bytes first,
+    which is a different cap." rotate scoped its lookup; this file's fallback did
+    not, so on a no-PyYAML box — the modal adopter install — whichever max_bytes
+    appeared first in the manifest governed the manifest cap. The journal block
+    sits above integrity in every real manifest, and the defect was latent here
+    only because both caps happen to be 16384. Indent-agnostic like _block_under
+    in rotate/meter/session_start (a local sibling, not a fourth copy — this one
+    resolves ONE fixed key and returns "" rather than None).
+    """
+    m = re.search(r"(?m)^([ \t]+)manifest_rules:[ \t]*(?:#[^\n]*)?$", content)
+    if not m:
+        return ""
+    ind = len(m.group(1).expandtabs(8))
+    body = []
+    for line in content[m.end():].split("\n")[1:]:
+        if line.strip():
+            depth = len(re.match(r"^[ \t]*", line).group(0).expandtabs(8))
+            if depth <= ind:
+                break
+        body.append(line)
+    return "\n".join(body)
+
+
 def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
     """Keep the instance manifest BORING — pure declaration. The manifest declares
     its OWN policy in `integrity.manifest_rules`; this guard reads that policy from
@@ -587,9 +614,10 @@ def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
         # where a later session can find it. max_bytes and declaration_only still bite.
         _log("g5: PyYAML absent — manifest PARSE check skipped; max_bytes and "
              "declaration_only still enforced via the regex scan")
-        m = re.search(r'(?m)^\s*max_bytes:\s*(\d+)', content)
+        rules_block = _manifest_rules_block(content)
+        m = re.search(r'(?m)^\s*max_bytes:\s*(\d+)', rules_block)
         max_bytes = int(m.group(1)) if m else None
-        decl_only = bool(re.search(r'(?m)^\s*declaration_only:\s*true\b', content))
+        decl_only = bool(re.search(r'(?m)^\s*declaration_only:\s*true\b', rules_block))
 
     if isinstance(max_bytes, int):
         size, persistent, boot_b = _manifest_sizes(content)

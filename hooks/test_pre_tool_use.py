@@ -530,6 +530,39 @@ class TestBoringGuardWithoutPyYAML(GuardCase):
         self.assertIsNotNone(reason)
         self.assertIn("2026-08-09", reason)
 
+    def test_the_journal_cap_is_not_mistaken_for_the_manifest_cap(self):
+        """SECOND-PASS AUDIT FIND, and rotate.py had already written it down:
+        'an unscoped max_bytes: search finds close.journal.max_bytes first, which
+        is a different cap.' rotate scoped its lookup; g5's regex fallback did not
+        — first max_bytes in document order won, and the journal block sits above
+        integrity in every real manifest. Latent on this project only because both
+        caps happen to be 16384. On a no-PyYAML box — the modal adopter install —
+        a roomier journal cap silently became the manifest's, and the only HARD
+        limit in the stack stopped limiting."""
+        roomy = MANIFEST_YAML.replace(
+            "integrity:",
+            "close:\n  journal:\n    max_bytes: 999999\n\nintegrity:")
+        self._put(self.manifest, roomy)
+        bloat = "\n".join(f"  - filler/path/number/{i}.md" for i in range(400))
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(self.manifest, "  - config/KERNEL.yaml",
+                                                  "  - config/KERNEL.yaml\n" + bloat))
+        self.assertIsNotNone(reason, "the 8192 manifest cap should have refused this")
+        self.assertIn("8192", reason)
+
+    def test_declaration_only_is_read_from_the_rules_block_not_anywhere(self):
+        """Same scoping, other key: a stray `declaration_only: true` outside
+        integrity.manifest_rules must not write-lock dates for a manifest whose
+        rules never declared it."""
+        loose = MANIFEST_YAML.replace(
+            "    declaration_only: true\n", "").replace(
+            "instance:", "tuning:\n  declaration_only: true\n\ninstance:")
+        self._put(self.manifest, loose)
+        with no_pyyaml():
+            reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
+                                                  'name: "Test Instance"  # 2026-08-09'))
+        self.assertIsNone(reason)
+
 
 class TestStatusGuardWithoutPyYAML(GuardCase):
     """What g4 still guarantees on a stdlib-only install — the DEFAULT install.

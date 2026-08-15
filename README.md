@@ -713,18 +713,34 @@ command across all six. Converted; see MP#47/D6.)*
 > per release, states the manifest change each one needs, and carries a paste-able prompt
 > that walks a session through the whole update — machinery, manifest, parse check, suites.
 
-**There is no update command, and the reason is structural rather than an oversight.**
-ARCH is copied, not installed: genesis renames your stack, rewrites the manifest with
-your `instance.root`, and moves this README and the license out of your root so
-`git init` doesn't mark your project FSL-licensed. After that there is no upstream to
-diff against, the filenames no longer line up, and most of the content is *yours*.
+**From v1.1.0 there IS an update command, and it covers exactly one of the three
+buckets below.** Clone the release you want and run the CLONE's updater against your
+instance — yours is older and does not know about the release it is applying:
+
+```bash
+python <PATH-TO-CLONE>/scripts/arch_update.py --from <PATH-TO-CLONE> --dir . --expect <build-id>
+```
+
+Dry run by default; `--apply` writes. It copies only the machinery inventory and
+**refuses to write any path outside it**, verifies the clone against `--expect` before
+writing anything, and recomputes your build id afterwards to prove the update landed.
+
+**It cannot do the other two buckets, and that limit is structural rather than an
+oversight.** ARCH is copied, not installed: genesis renames your stack, rewrites the
+manifest with your `instance.root`, and moves this README and the license out of your
+root so `git init` doesn't mark your project FSL-licensed. So for your instance files
+and your manifest there is no upstream to diff against, the filenames no longer line
+up, and most of the content is *yours*. Machinery is the one bucket where none of that
+is true — generic, never renamed, replaced wholesale — which is why it is the one
+bucket a tool can own.
 
 So sort the files into three buckets, because only one of them is ever "updated":
 
 - **Machinery** — `hooks/pre_tool_use.py`, `hooks/session_start.py`, their two suites,
-  and `scripts/*.py` with theirs: **seventeen files, listed canonically in
-  `scripts/arch_build.py`.** Generic, never renamed, not meant to be edited by you.
-  **Updating means replacing the file**; byte-identical is the correct outcome.
+  and `scripts/*.py` with theirs, **listed canonically in `scripts/arch_build.py` —
+  ask it rather than counting, since the inventory grows.** Generic, never renamed,
+  not meant to be edited by you. **Updating means replacing the file**; byte-identical
+  is the correct outcome, and `arch_update.py` does exactly this bucket.
 - **Your instance** — the `config/` stack, the ledger, naming conventions, journal,
   task documents. **Never touched by an update, ever.** These are the asset you
   adopted ARCH to accumulate.

@@ -2093,6 +2093,72 @@ class TestManifestAtRest(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+
+class TestSnapshotOverflowMap(unittest.TestCase):
+    """MP#79. rotate said "Cut it" and named no destination — and when a session
+    acted on that, "trim" collapsed into "delete" and grew a rationale that was
+    false: 55 of 60 sentences existed nowhere else. The journal never had that
+    failure, because close.journal.overflow_to declares where its overflow GOES,
+    so trimming means moving. This generalises that one key to STATUS.
+
+    The map is per-instance ON PURPOSE — another adopter's destinations are not
+    ours — so an undeclared map degrades to generic advice, never to a guess."""
+
+    def _manifest(self, *lines):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-ovf-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("".join(l + chr(10) for l in lines))
+        return root
+
+    def _status(self, root, size=400):
+        os.makedirs(os.path.join(root, "config"), exist_ok=True)
+        with open(os.path.join(root, "config", "STATUS.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("a: " + ("x" * size) + chr(10))
+
+    def _report(self, root):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rotate.report_status_size(root, soft_max=100)
+        return buf.getvalue()
+
+    def test_a_declared_list_is_returned_in_order(self):
+        root = self._manifest("close:", "  snapshot:", "    file: config/STATUS.yaml",
+                              "    overflow_to: [FINDINGS.md, config/KERNEL.yaml, tasks/closed/]")
+        self.assertEqual(rotate.manifest_snapshot_overflow(root),
+                         ["FINDINGS.md", "config/KERNEL.yaml", "tasks/closed/"])
+
+    def test_a_single_string_is_accepted(self):
+        root = self._manifest("close:", "  snapshot:", "    overflow_to: FINDINGS.md")
+        self.assertEqual(rotate.manifest_snapshot_overflow(root), ["FINDINGS.md"])
+
+    def test_an_undeclared_map_returns_empty_not_a_guess(self):
+        root = self._manifest("close:", "  snapshot:", "    file: config/STATUS.yaml")
+        self.assertEqual(rotate.manifest_snapshot_overflow(root), [])
+
+    def test_an_absent_manifest_returns_empty(self):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="rot-ovf-none-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertEqual(rotate.manifest_snapshot_overflow(root), [])
+
+    def test_the_report_names_the_declared_destinations(self):
+        """The whole point: the overage message must say where to put it."""
+        root = self._manifest("close:", "  snapshot:", "    file: config/STATUS.yaml",
+                              "    overflow_to: [FINDINGS.md, tasks/closed/]")
+        self._status(root)
+        out = self._report(root)
+        self.assertIn("FINDINGS.md", out)
+        self.assertIn("tasks/closed/", out)
+
+    def test_an_undeclared_instance_still_gets_advice(self):
+        """Degrade to generic guidance — never to silence, and never to a
+        destination this instance did not declare."""
+        root = self._manifest("close:", "  snapshot:", "    file: config/STATUS.yaml")
+        self._status(root)
+        out = self._report(root)
+        self.assertIn("TRIM IT", out)
+        self.assertNotIn("FINDINGS.md", out)
+
 if __name__ == "__main__":
     unittest.main()
 

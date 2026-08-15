@@ -176,6 +176,8 @@ close:
     file: MERGE_PLAN.md      # flip touched rows only; never delete, never renumber
   snapshot:
     file: config/STATUS.yaml
+    overflow_to: [FINDINGS.md, config/KERNEL.yaml, tasks/closed/]  # MP#79: where an
+                             # over-threshold field goes. Yours to change.
     mode: overwrite_facts    # never append; last_touched = ONE line
     skip_if: unattended_run  # an autonomous run must not rewrite the project's focus
     verify: [eof_sentinel, yaml_parse]

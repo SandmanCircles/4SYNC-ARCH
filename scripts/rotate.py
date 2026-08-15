@@ -799,7 +799,9 @@ def report_table_prose(ledger_path):
     if prose > rows:
         print(f"  ! OVER THRESHOLD. A tally is a count; once it explains why each row "
               f"closed it is a second copy of {TASKS_DIRNAME}/closed/, and it drifts from "
-              "both. Cut it back to a count. (Reported, not blocked.)")
+              "both. TRIM IT BACK TO A COUNT — the explanations already live in "
+              f"{TASKS_DIRNAME}/closed/, so move nothing, just stop restating it here. "
+              "(Reported, not blocked.)")
     return rows, prose
 
 
@@ -861,10 +863,16 @@ def report_status_size(root, soft_max=None):
     for name, n in sorted(fields, key=lambda f: -f[1])[:3]:
         print(f"    {name}: {n:,} B")
     if total > soft_max:
+        dests = manifest_snapshot_overflow(root)
+        where = ("this instance declares where it goes: " + ", ".join(dests)) if dests else (
+            "a fact needed at a MOMENT is a finding (with a Trigger: and an Exit:), a "
+            "decided rule is doctrine, and the story of a finished row is already in "
+            f"{TASKS_DIRNAME}/closed/. Declare close.snapshot.overflow_to to have this "
+            "name your own destinations")
         print(f"  ! over the {soft_max:,} B soft threshold. STATUS is a SNAPSHOT — "
-              "check whether a field has become a log of closed work that "
-              f"{TASKS_DIRNAME}/closed/ already holds. Cut it; do not raise this "
-              "number. (Reported, not blocked.)")
+              "check whether a field has become a log of closed work. TRIM IT BY "
+              f"MOVING, NOT DELETING: {where}. Do not raise this number. "
+              "(Reported, not blocked.)")
     return total, [(n, b) for n, b in fields]
 
 
@@ -1014,6 +1022,44 @@ def _block_under(text, key):
         body.append(line)
     return "\n".join(body) if ind is not None else None
 
+
+def manifest_snapshot_overflow(root, manifest_name="4SYNC.yaml"):
+    """close.snapshot.overflow_to — where THIS instance says STATUS overflow goes.
+
+    MP#79, and it generalises the one key that already worked. The journal has
+    never suffered the delete-instead-of-move failure, because its destination is
+    DECLARED: `close.journal.overflow_to`. STATUS had no such key, so its overage
+    message could only say "cut it" — and a session that acted on that deleted 55
+    sentences existing nowhere else, justifying it afterwards.
+
+    Returns a LIST because STATUS legitimately has three destinations: a fact
+    needed at a moment is a finding, a decided rule is doctrine, and the story of
+    a finished row is already in the closed-tasks dir.
+
+    UNDECLARED RETURNS EMPTY, NEVER A DEFAULT. The map is per-instance — another
+    adopter's files are not ours — so guessing a destination would send someone
+    else's content to a path they never declared, which is the failure this row
+    exists to prevent, wearing a helpful face."""
+    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    if not os.path.exists(p):
+        return []
+    text = read(p)
+    try:
+        import yaml  # type: ignore
+        v = (yaml.safe_load(text) or {}).get("close", {}).get("snapshot", {}).get("overflow_to")
+        if isinstance(v, str) and v.strip():
+            return [v.strip()]
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+    except Exception:  # noqa: BLE001 — yaml missing or manifest not valid yaml
+        pass
+    block = _block_under(text, "snapshot")
+    if block is not None:
+        ov = re.search(r"^\s*overflow_to:\s*(.+)$", block, re.M)
+        if ov:
+            raw = ov.group(1).split("#")[0].strip().strip("[]")
+            return [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
+    return []
 
 def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     """close.journal.overflow_to from the manifest, or the default filename.

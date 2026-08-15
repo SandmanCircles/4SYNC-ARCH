@@ -2180,6 +2180,70 @@ class TestSnapshotOverflowMap(ManifestEnvCase):
         self.assertIn("BEFORE cutting it", out)
 
 
+class TestLineEndingsSurviveAWrite(unittest.TestCase):
+    """Found in the pre-v1.1.1 bug pass, in the shipped writer with the widest
+    blast radius.
+
+    `read()` is universal-newline, so a CRLF file arrives as "\\n"; writing that
+    back converted EVERY line ending in the file — a whole-file rewrite disguised as
+    moving one journal block. Windows git defaults to autocrlf=true, so a CRLF
+    working tree is the ordinary state for the platform this was written on.
+
+    `verify_moves` could not catch it: it re-reads through the same universal-newline
+    path, where both versions decode identically. Third checker this session that was
+    blind to the exact failure it existed to catch."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="rot-eol-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _file(self, data):
+        p = os.path.join(self.root, "f.md")
+        with open(p, "wb") as fh:
+            fh.write(data)
+        return p
+
+    def test_a_crlf_file_stays_crlf(self):
+        p = self._file(b"one\r\ntwo\r\nthree\r\n")
+        rotate.atomic_write(p, "one\nTWO\nthree\n")
+        with open(p, "rb") as fh:
+            self.assertEqual(fh.read(), b"one\r\nTWO\r\nthree\r\n")
+
+    def test_an_lf_file_stays_lf(self):
+        p = self._file(b"one\ntwo\n")
+        rotate.atomic_write(p, "one\nTWO\n")
+        with open(p, "rb") as fh:
+            self.assertEqual(fh.read(), b"one\nTWO\n")
+
+    def test_a_new_file_is_written_as_given(self):
+        p = os.path.join(self.root, "new.md")
+        rotate.atomic_write(p, "a\nb\n")
+        with open(p, "rb") as fh:
+            self.assertEqual(fh.read(), b"a\nb\n")
+
+    def test_content_already_carrying_crlf_is_not_doubled(self):
+        p = self._file(b"one\r\n")
+        rotate.atomic_write(p, "one\r\ntwo\r\n")
+        with open(p, "rb") as fh:
+            self.assertNotIn(b"\r\r\n", fh.read())
+
+    def test_a_journal_rotation_on_a_crlf_ledger_leaves_it_crlf(self):
+        """End to end, not just the primitive: the operation that surfaced it."""
+        led = os.path.join(self.root, "MERGE_PLAN.md")
+        history = os.path.join(self.root, "HISTORY.md")
+        with open(led, "wb") as fh:
+            fh.write(ledger(range(4), comment=True).replace("\n", "\r\n").encode("utf-8"))
+        moved = rotate.rotate_journal(led, history, keep=1, apply_=True,
+                                      journal_max=10 ** 6)
+        self.assertTrue(moved, "fixture did not rotate anything — test proves nothing")
+        with open(led, "rb") as fh:
+            data = fh.read()
+        self.assertIn(b"\r\n", data)
+        self.assertNotIn(b"\r\r\n", data)
+        lf_only = data.replace(b"\r\n", b"")
+        self.assertNotIn(b"\n", lf_only, "some lines lost their CR")
+
+
 class TestOverCapManifest(unittest.TestCase):
     """The manifest gets a MESSAGE and no declared destination — ruled 2026-08-15
     (Michael), against MP#79's criterion applied mechanically.

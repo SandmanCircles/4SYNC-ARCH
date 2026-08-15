@@ -153,6 +153,33 @@ def read(p):
 
 
 def atomic_write(p, s):
+    """Write `s` to `p` atomically, KEEPING THE FILE'S OWN LINE ENDINGS.
+
+    `read()` opens in universal-newline mode, so a CRLF file arrives here as "\\n"
+    and writing it back converted every line ending in the file — a whole-file
+    rewrite disguised as moving one journal block. Windows git defaults to
+    `autocrlf=true`, so a CRLF working tree is the ORDINARY state for the platform
+    this was written on, and `verify_moves` could not see it: it re-reads through
+    the same universal-newline path, where both versions decode identically.
+
+    Committed content is usually unharmed — autocrlf normalizes on the way in — so
+    this shows up as an enormous diff rather than as damage. The adopter it can
+    actually hurt is the one not using git for this folder, whose file simply
+    changes under them.
+
+    RESTORED AT THE BOUNDARY rather than by preserving "\\r\\n" through the whole
+    module, deliberately: every regex here anchors on "\\n", and a stray "\\r"
+    inside `[^\\n]*` captures would leak into rewritten table rows and journal
+    blocks. That is a real audit of ~2,200 lines, not a pre-release change.
+    """
+    if os.path.exists(p) and "\r\n" not in s:
+        try:
+            with open(p, "rb") as f:
+                existing = f.read()
+            if b"\r\n" in existing:
+                s = s.replace("\n", "\r\n")
+        except OSError:                     # unreadable: write it the way we have it
+            pass
     tmp = p + ".rotate_tmp"
     with open(tmp, "w", encoding="utf-8", newline="") as f:
         f.write(s)

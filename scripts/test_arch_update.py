@@ -306,6 +306,22 @@ class TestBeyondCopying(UpdateCase):
             out = "\n".join(arch_update._render(report, src, dst, apply))
             self.assertIn("BEYOND COPYING", out)
 
+    def test_apply_still_prints_the_steps_not_an_empty_span(self):
+        """THE AUDIT FIND. arch/VERSION is machinery, so --apply copies it BEFORE
+        the render — and beyond_copying then read the instance's version as already
+        current, printing "no releases between them" on exactly the run that just
+        performed the update. The dry run showed the steps; the apply swallowed
+        them. The both-modes test above passed throughout because it asserted the
+        header, not the steps — a checker blind to its own failure, again."""
+        src, dst = self._versioned("1.0.4", "1.1.0")
+        report = arch_update.update(src, dst, apply=True)
+        self.assertEqual(arch_build.read_version(dst), "1.1.0",
+                         "fixture must have copied VERSION for this test to bite")
+        out = "\n".join(arch_update._render(report, src, dst, True))
+        self.assertIn("v1.0.4 -> v1.1.0", out)
+        self.assertIn("**By hand: nothing.**", out)
+        self.assertNotIn("no releases between them", out)
+
 
 class TestAgainstTheRealReleaseNotes(unittest.TestCase):
     """Against the shipped file, not a fixture — the parser has to survive the real

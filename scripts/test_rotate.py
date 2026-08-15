@@ -2352,6 +2352,32 @@ class TestTaskPrefix(ManifestEnvCase):
                               "    prefix: derived")
         self.assertEqual(rotate.manifest_task_prefix(root), "MP")
 
+    def test_the_prefix_derives_without_pyyaml_too(self):
+        """THE FINDING FROM THE PRE-v1.1.1 AUDIT. `instance:` is a TOP-LEVEL key
+        and `_block_under` requires one space of indent by design, so the regex
+        fallback could not see it: `prefix: derived` resolved to SYN with PyYAML
+        and MP without — same manifest, two answers, no error anywhere. PyYAML-
+        absent is the modal adopter install, so the broken path was the COMMON one,
+        and the checkers downstream (status-refs among them) would have quietly
+        keyed to the wrong prefix on every such box."""
+        root = self._manifest("instance:", "  name: 4SYNC", "close:", "  tasks:",
+                              "    prefix: derived")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_task_prefix(root), "SYN")
+
+    def test_the_switch_reads_without_pyyaml_too(self):
+        root = self._manifest("instance:", "  name: 4SYNC", "close:", "  tasks:",
+                              "    dir: tasks")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_task_prefix(root), "MP")
+
+    def test_ledger_and_bulletin_resolve_without_pyyaml_too(self):
+        root = self._manifest("close:", "  journal:", "    file: PLAN.md",
+                              "  bulletin:", "    file: BOARD.md")
+        with no_pyyaml():
+            self.assertEqual(rotate.manifest_ledger_name(root), "PLAN.md")
+            self.assertEqual(rotate.manifest_bulletin_name(root), "BOARD.md")
+
 
 class TestPrefixedDocumentResolution(unittest.TestCase):
     """NOTHING IS EVER RENAMED (Michael, 2026-08-14), so a MIXED directory is the

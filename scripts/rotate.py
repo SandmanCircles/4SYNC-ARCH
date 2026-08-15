@@ -1181,6 +1181,17 @@ def _manifest_scalar(root, path_keys, block_key, manifest_name="4SYNC.yaml"):
     except Exception:  # noqa: BLE001 — yaml missing, or the manifest does not parse
         pass
     block = _block_under(text, block_key)
+    if block is None:
+        # _block_under requires ≥1 space of indent BY DESIGN — it resolves keys
+        # nested under close:. But `instance:` is a TOP-LEVEL block, and asking the
+        # nested finder for it returns None on every PyYAML-absent box — which is
+        # the modal adopter install, so `prefix: derived` quietly resolved to MP
+        # there while resolving to SYN here. The exact parsed-but-not-honored
+        # failure _block_under's own docstring names. Top-level fallback: from
+        # `^key:` at column 0 to the next column-0 key.
+        m = re.search(r"(?ms)^%s:[ \t]*(?:#[^\n]*)?$\n(.*?)(?=^\S|\Z)"
+                      % re.escape(block_key), text)
+        block = m.group(1) if m else None
     if block is not None:
         m = re.search(r"^\s*%s:\s*(.+)$" % re.escape(path_keys[-1]), block, re.M)
         if m:

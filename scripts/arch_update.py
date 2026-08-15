@@ -162,9 +162,19 @@ def steps_between(text, have, want):
     return picked
 
 
-def beyond_copying(source, dest):
-    """Display lines naming what this update does not do for you."""
-    have, want = arch_build.read_version(dest), arch_build.read_version(source)
+_UNSET = object()
+
+
+def beyond_copying(source, dest, have=_UNSET):
+    """Display lines naming what this update does not do for you.
+
+    `have` is the instance's version BEFORE the copy when the caller knows it
+    (Report.version_before); reading it from disk after an --apply reads the number
+    the update just wrote, which spans nothing.
+    """
+    if have is _UNSET:
+        have = arch_build.read_version(dest)
+    want = arch_build.read_version(source)
     path = os.path.join(source, NOTES)
     if not os.path.exists(path):
         return ["BEYOND COPYING — the clone has no %s. Read the release's notes "
@@ -223,6 +233,12 @@ class Report(object):
         self.applied = False
         self.source_build_id = None
         self.result_build_id = None
+        # The instance's version BEFORE anything was copied. arch/VERSION is itself
+        # machinery, so after --apply the file on disk already says the new number —
+        # and a beyond-copying report computed from disk at render time would span
+        # "new -> new" and print nothing, on exactly the run that performed the
+        # update. The dry run showed the steps; the apply swallowed them.
+        self.version_before = None
 
     @property
     def would_change(self):
@@ -255,6 +271,7 @@ def update(source, dest, apply=False, expect=None):
 
     report = Report()
     report.source_build_id = arch_build.build_id(src_digests, src_missing)
+    report.version_before = arch_build.read_version(dest)
 
     # STEP 2 — before any write. A clone that is not what the adopter believes it is
     # must be rejected while the instance is still untouched.
@@ -316,7 +333,7 @@ def _render(report, source, dest, apply):
     # steps a copy cannot do are the half worth previewing — knowing them before
     # `--apply` is strictly better than being told afterwards.
     out.append("")
-    out.extend(beyond_copying(source, dest))
+    out.extend(beyond_copying(source, dest, have=report.version_before))
     return out
 
 

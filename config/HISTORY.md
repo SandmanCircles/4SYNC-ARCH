@@ -22,7 +22,8 @@ Two streams feed HISTORY, both append-only (newest first):
 
 1. **Aged-out session journal.** Your task ledger (`MERGE_PLAN.md`) keeps only the
    most recent ~5 session entries inline. When a newer entry pushes an older one
-   past that window, the oldest entry moves here verbatim. (See the `wrap` skill.)
+   past that window, the oldest entry moves here verbatim. (The move happens at
+   close — see the manifest's `close.journal.overflow_to`.)
 2. **Frozen status.** When a `STATUS.yaml` fact is superseded and the *path it
    took* is worth keeping (a completed migration, a retired HOLD), the old state
    is recorded here rather than just overwritten away.

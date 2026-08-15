@@ -67,25 +67,31 @@ No skills to install, no plugins, no per-machine setup. The entire mechanism is 
 files that travel with the folder: `CLAUDE.md` (teaches any session the protocol
 exists) and `4SYNC.yaml` (declares what this instance's protocol is).
 
-**Want a trigger phrase anyway?** Say "wrap up" and a session closes; that already
-works, because the manifest declares what closing means. If you'd rather have a
-slash command, write one in *your* `.claude/`, not in this folder — six lines is
-the whole thing:
+### Closing a session — "wrap up"
 
-```markdown
----
-name: wrap
-description: Close out this 4SYNC ARCH session.
----
-Read `4SYNC.yaml` and execute its `close:` steps in order, honoring
-`freshness_check` before any ledger write.
-```
+Tell the session you're done, in whatever words you'd normally use — *"wrap up,"
+"let's close out," "I'm finished."* It then executes the manifest's `close:` steps
+in order: re-read the shared files before writing them (`freshness_check`), prepend
+one block to the session journal, mirror task state back to the ledger, overwrite the
+facts that changed in `STATUS.yaml`, handle the bulletin board, and run rotation.
+Committing is spelled out in `CLAUDE.md` rather than the manifest, because it depends
+on whether the session can reach git.
 
-That is a convenience for your fingers, and deliberately not a dependency: the
-protocol has to run for a session that has never heard of your skill — a
-scheduled job, a teammate's machine, a different surface. Anything that only
-works when the skill is installed has moved a load-bearing step out of the folder
-that travels. Keep the manifest authoritative and let the skill be a shortcut to it.
+**Nothing is installed and nothing is intercepting the phrase.** The session closes
+because `CLAUDE.md` told it to read `4SYNC.yaml`, and `4SYNC.yaml` declares what
+closing means. That is the whole mechanism.
+
+Close fires **only on an explicit ending signal**. Silence, idling and pausing are not
+endings — a paused session resumes, it doesn't wrap. (An unattended run has no pause:
+finishing its declared task is its signal.)
+
+If you'd rather type a slash command than a phrase, write one in *your* `.claude/` —
+never in this folder — and have it do nothing but read `4SYNC.yaml` and execute
+`close:`. That's a convenience for your fingers and deliberately not a dependency: the
+protocol has to run for a session that has never heard of your shortcut — a scheduled
+job, a teammate's machine, a different surface. Anything that only works when a
+shortcut is installed has moved a load-bearing step out of the folder that travels.
+Keep the manifest authoritative.
 
 For a filled-in instance end to end — seed, the config genesis writes from it, and
 one of each artifact in use — see **[`EXAMPLE.md`](EXAMPLE.md)**.

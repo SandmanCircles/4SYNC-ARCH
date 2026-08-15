@@ -16,6 +16,14 @@ venv/
 .session_debt.tsv
 .session_debt.tsv.tmp
 
+# Outbound mail in transit — STAGING, not project material. A message is committed
+# exactly ONCE, at the recipient: inbox/ is tracked and keeps what was handed in,
+# outbox/ holds a copy deleted as soon as delivery is confirmed.
+# `outbox/*` and not `outbox/` — git does not descend into an ignored directory,
+# so the negation below only works against the glob form.
+outbox/*
+!outbox/.gitkeep
+
 # Logs
 *.log
 

@@ -76,8 +76,37 @@ def _read(path):
 
 
 def manifest_path(root, manifest_name=None):
-    return os.path.join(root, os.environ.get("ARCH_MANIFEST")
-                        or manifest_name or MANIFEST_DEFAULT)
+    """This instance's manifest, or a PEER's — which is the hard half.
+
+    A PEER'S MANIFEST NAME IS UNKNOWABLE FROM OUTSIDE. Genesis renames every
+    instance's manifest to `<PROJECT>.yaml` (MP#20), so a 4SYNC instance's
+    neighbour is `4CITE.yaml`, and `ARCH_MANIFEST` describes THIS instance, never
+    theirs. The first version of this function used the local name for both and
+    silently reported every correctly-configured peer as "not opted in" — found
+    live, minutes after the peer was declared correctly.
+
+    So: use the declared name when a file is actually there, and otherwise
+    DISCOVER it — the one `*.yaml` at the root that is an ARCH manifest. Discovery
+    requires `sync_version:`, so a stray `docker-compose.yaml` never becomes a peer.
+    """
+    named = os.path.join(root, os.environ.get("ARCH_MANIFEST")
+                         or manifest_name or MANIFEST_DEFAULT)
+    if os.path.exists(named):
+        return named
+    try:
+        candidates = sorted(f for f in os.listdir(root) if f.endswith((".yaml", ".yml")))
+    except OSError:
+        return named
+    for fn in candidates:
+        p = os.path.join(root, fn)
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                head = fh.read(4096)
+        except OSError:
+            continue
+        if re.search(r"(?m)^sync_version:", head):
+            return p
+    return named
 
 
 def mail_config(root, manifest_name=None):
@@ -221,7 +250,25 @@ def sweep(root, apply=False, manifest_name=None):
     return actions, notes
 
 
+def _utf8_stdout():
+    """Print UTF-8 regardless of the console's default codepage.
+
+    Windows consoles default to cp1252, which has no em dash — so a report line
+    reading "mode: dry-run — pass --apply" arrives as "dry-run ? pass". Reported
+    from a real Windows session on this script's first day. The glyphs are not
+    decoration (`✓`/`✗` carry the verdict in every ARCH report), so the fix is to
+    widen the stream rather than narrow the vocabulary. errors="replace" keeps a
+    weird console from turning a report into a traceback.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # pre-3.7, or a stream that cannot
+            pass
+
+
 def main():
+    _utf8_stdout()
     ap = argparse.ArgumentParser(description="Cross-project mail between ARCH instances.")
     ap.add_argument("command", choices=["pull", "sweep"])
     ap.add_argument("--dir", default=os.path.abspath(

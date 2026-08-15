@@ -189,5 +189,51 @@ class TestConfigParsing(MailCase):
         self.assertEqual(mail.mail_config(d), ("BLOCKY", ["../ONE", "../TWO"]))
 
 
+
+class TestPeerManifestDiscovery(MailCase):
+    """A PEER'S MANIFEST NAME IS UNKNOWABLE FROM OUTSIDE, and assuming it is the
+    defect this class exists for. MP#20 has genesis rename every instance's manifest
+    to <PROJECT>.yaml, so the neighbour of a 4SYNC instance is 4CITE.yaml, not
+    4SYNC.yaml. The first implementation looked for its OWN manifest name inside the
+    peer, found nothing, and reported "no declared name, skipped" — which reads as
+    "the peer has not opted in" and would have stayed silent forever.
+
+    Found live against the real neighbour on 2026-08-15, minutes after Michael
+    declared the block correctly and it still did not resolve."""
+
+    def renamed(self, name, manifest, peers=()):
+        d = os.path.join(self.root, name)
+        for sub in ("inbox", "outbox"):
+            os.makedirs(os.path.join(d, sub))
+        lines = ["sync_version: " + chr(34) + "1.0" + chr(34),
+                 "mail:", "  name: " + name,
+                 "  peers: [" + ", ".join(peers) + "]"]
+        with open(os.path.join(d, manifest), "w", encoding="utf-8") as fh:
+            fh.write("".join(l + chr(10) for l in lines))
+        return d
+
+    def test_a_peer_with_a_renamed_manifest_is_found(self):
+        b = self.renamed("BETA", "BETA.yaml", peers=["../ALPHA"])
+        self.assertEqual(mail.peer_name(b), "BETA")
+
+    def test_mail_arrives_from_a_peer_whose_manifest_is_renamed(self):
+        a = self.instance("ALPHA", peers=["../BETA"])
+        b = self.renamed("BETA", "BETA.yaml", peers=["../ALPHA"])
+        self.put(b, "outbox", "BETA-ALPHA-2026-08-15-renamed.md")
+        actions, notes = mail.pull(a, apply=True)
+        self.assertEqual(len(actions), 1, notes)
+        self.assertEqual(self.ls(a, "inbox"), ["BETA-ALPHA-2026-08-15-renamed.md"])
+
+    def test_a_directory_with_no_arch_manifest_is_still_skipped(self):
+        """Discovery must not turn any stray yaml into a peer."""
+        a = self.instance("ALPHA", peers=["../PLAIN"])
+        d = os.path.join(self.root, "PLAIN")
+        os.makedirs(os.path.join(d, "outbox"))
+        with open(os.path.join(d, "docker-compose.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("services: {}" + chr(10))
+        actions, notes = mail.pull(a, apply=True)
+        self.assertEqual(actions, [])
+        self.assertTrue(any("skipped" in n for n in notes), notes)
+
 if __name__ == "__main__":
     unittest.main()

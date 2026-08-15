@@ -497,6 +497,27 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
     return None
 
 
+def _manifest_sizes(content):
+    """(total, persistent, bootstrap) byte sizes of a manifest.
+
+    THE CAP GOVERNS WHAT EVERY SESSION PAYS FOR, and `bootstrap:` is not that.
+    Genesis reads it once and deletes it at the end, so it costs a project exactly
+    one session — while `boot:` and `close:` are paid every session for the life of
+    the instance. One number governing both is mis-scoped rather than tight: the
+    shipped template was within 45 bytes of its cap while carrying ~5 KB of genesis
+    instructions that no adopter ever loads, which would have refused the next real
+    declaration for the wrong reason.
+
+    Excluding it beats a second tunable number. An allowance would be one more
+    figure to pick, justify and drift; this needs no figure at all, and it makes the
+    cap mean the thing it was always meant to mean.
+    """
+    total = len(content.encode("utf-8"))
+    m = re.search(r"(?ms)^bootstrap:\s*$.*?(?=^\S|\Z)", content)
+    boot = len(m.group(0).encode("utf-8")) if m else 0
+    return total, total - boot, boot
+
+
 def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
     """Keep the instance manifest BORING — pure declaration. The manifest declares
     its OWN policy in `integrity.manifest_rules`; this guard reads that policy from
@@ -571,11 +592,15 @@ def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
         decl_only = bool(re.search(r'(?m)^\s*declaration_only:\s*true\b', content))
 
     if isinstance(max_bytes, int):
-        size = len(content.encode("utf-8"))
-        if size > max_bytes:
-            return (f"boring-guard: the manifest write is {size} bytes, over its own declared "
-                    f"max_bytes ({max_bytes}). The manifest is pure declaration — trim it, or "
-                    "raise max_bytes deliberately in the same edit.")
+        size, persistent, boot_b = _manifest_sizes(content)
+        if persistent > max_bytes:
+            extra = ("" if boot_b == 0 else
+                     f" ({size} with the bootstrap block, which is excluded: genesis "
+                     f"deletes it, so its {boot_b} bytes are read once and never again)")
+            return (f"boring-guard: the manifest write is {persistent} bytes of persistent "
+                    f"declaration{extra}, over its own declared max_bytes ({max_bytes}). "
+                    "The manifest is pure declaration — trim it, or raise max_bytes "
+                    "deliberately in the same edit.")
 
     if decl_only:
         m = re.search(r'\b(20\d\d-[01]\d-[0-3]\d)\b', content)

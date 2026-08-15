@@ -1456,6 +1456,54 @@ class TestCrashedGuardIsLoud(GuardCase):
         self.assertNotIn("CRASHED", self._log_text())
 
 
+
+class TestManifestSizesExcludeBootstrap(unittest.TestCase):
+    """MP#67/#84. The cap governs what EVERY SESSION pays for, and `bootstrap:` is
+    not that: genesis reads it once and deletes it at the end, while boot: and
+    close: are paid for the life of the instance. One number governing both is
+    mis-scoped rather than tight — the shipped template sat 45 bytes from its cap
+    while carrying ~5.7 KB of genesis instructions no adopter ever loads, and the
+    next real declaration would have been refused for the wrong reason.
+
+    Excluded rather than given an allowance, deliberately: an allowance is a second
+    number to pick, justify and let drift. This needs no number."""
+
+    def _sizes(self, text):
+        return hooks._manifest_sizes(text)
+
+    def test_a_manifest_without_bootstrap_is_unchanged(self):
+        text = "boot:" + chr(10) + "  - a.yaml" + chr(10)
+        total, persistent, boot = self._sizes(text)
+        self.assertEqual(boot, 0)
+        self.assertEqual(total, persistent)
+
+    def test_the_bootstrap_block_is_excluded_from_persistent(self):
+        text = ("boot:" + chr(10) + "  - a.yaml" + chr(10)
+                + "bootstrap:" + chr(10) + "  steps: [one, two]" + chr(10)
+                + "close:" + chr(10) + "  journal: x" + chr(10))
+        total, persistent, boot = self._sizes(text)
+        self.assertGreater(boot, 0)
+        self.assertEqual(persistent, total - boot)
+        self.assertNotIn("steps", "")  # sanity: the block really was present
+
+    def test_a_following_top_level_key_is_not_swallowed(self):
+        """The block ends at the next top-level key, not at end of file. Swallowing
+        close: would exempt the very thing the cap exists to bound."""
+        text = ("bootstrap:" + chr(10) + "  a: 1" + chr(10)
+                + "close:" + chr(10) + "  b: 2" + chr(10))
+        total, persistent, boot = self._sizes(text)
+        self.assertIn("close:", text[len("bootstrap:") + boot - len("bootstrap:"):])
+        self.assertGreaterEqual(persistent, len(("close:" + chr(10) + "  b: 2" + chr(10)).encode()))
+
+    def test_a_cap_breach_is_judged_on_the_persistent_size(self):
+        """The whole point: a manifest whose persistent half fits must be allowed
+        even when the bootstrap block pushes the raw total over."""
+        boot_block = "bootstrap:" + chr(10) + ("  # filler" + chr(10)) * 200
+        text = "boot:" + chr(10) + "  - a.yaml" + chr(10) + boot_block
+        total, persistent, boot = self._sizes(text)
+        self.assertGreater(total, 1000)
+        self.assertLess(persistent, 100)
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_pre_tool_use.py ═══

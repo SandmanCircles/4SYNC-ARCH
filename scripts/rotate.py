@@ -1375,6 +1375,33 @@ def manifest_max_bytes(path):
     return int(mb.group(1)) if mb else None
 
 
+BOOTSTRAP_BLOCK_RE = re.compile(rb"(?ms)^bootstrap:[^\S\n]*\r?$.*?(?=^\S|\Z)")
+
+
+def manifest_persistent_bytes(path):
+    """Manifest bytes EXCLUDING the `bootstrap:` block — the size g5 judges.
+
+    Kept in step with the guard on purpose (MP#67/#84). g5 excludes `bootstrap:`
+    because genesis reads it once and deletes it at the end, while `boot:` and
+    `close:` are paid every session for the life of the instance. If this reported
+    the raw file size, the checker and the guard would disagree about the one
+    number they both exist to police — and the checker is the one a session reads
+    at close.
+
+    MEASURED ON RAW BYTES, not decoded text. `read()` opens in text mode, so CRLF
+    collapses to LF and the count lands under the real file size — which on a
+    Windows checkout makes a correct STATUS claim read as wrong. Caught by an
+    existing test comparing against os.path.getsize.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return os.path.getsize(path)
+    m = BOOTSTRAP_BLOCK_RE.search(raw)
+    return len(raw) - (len(m.group(0)) if m else 0)
+
+
 def discover_manifests(root, manifest_name=None):
     """Every ARCH manifest reachable from root: this instance's, plus any nested
     repo shipping one (the product repo does). [(relpath, bytes, max_bytes|None)]."""
@@ -1389,7 +1416,7 @@ def discover_manifests(root, manifest_name=None):
     for rel in rels:
         p = os.path.join(root, rel.replace("/", os.sep))
         if os.path.exists(p):
-            out.append((rel, os.path.getsize(p), manifest_max_bytes(p)))
+            out.append((rel, manifest_persistent_bytes(p), manifest_max_bytes(p)))
     return out
 
 

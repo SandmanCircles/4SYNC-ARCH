@@ -70,6 +70,68 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## Unreleased — next cut
+
+*The cold-trial release: everything a stranger's literal walk through the published docs
+broke, plus the second-machine gap an adopter's field report supplied the same day.*
+
+**The machinery list grows — 22 → 24, stated here before the cut.** `scripts/debt.py` and
+`scripts/test_debt.py` join the inventory, so every id published before this release will
+recompute to something else — permanent, same one-time effect as the v1.0.8 and v1.1.1
+inventory moves. `debt.py` exists because the session-debt recorder upserts the closing
+session's row on **every file-edit tool call**: a close that cleared its own row with an
+edit tool — or made any edit after the clear — silently restored it, so the close said
+"cleared" while the next boot reported phantom debt. Observed live on a cold trial. A
+script's writes are invisible to the recorder, so `python scripts/debt.py --clear` is
+ordering-proof; the recorder itself now also refuses to record writes that target the
+debt file.
+
+**Changed machinery** (replace wholesale, as always): `hooks/pre_tool_use.py` + suite,
+`scripts/rotate.py` + suite, `scripts/wire_hooks.py` + suite, `scripts/arch_build.py`.
+
+- **rotate.py finds your manifest from a plain terminal.** Run without `ARCH_MANIFEST`
+  in a genesis-renamed instance, it used to fall back to the default filename, find
+  nothing, and report "no STATUS file declared or found — skipped" — three checks lost,
+  a fallback journal cap used, in words indistinguishable from an instance that declares
+  no STATUS. It now resolves by ladder — `ARCH_MANIFEST` → default name → content
+  discovery (the same match `wire_hooks.py` uses) — prints which manifest governs the
+  run and how it was found, and says loudly when there is none: skipped checks are
+  reported as *unreachable*, never left looking like passes.
+- **rotate.py stops crying wolf on newborn ledgers.** The prose-vs-rows ratio fired on
+  day one of every fresh instance (a 1-row ledger's fixed scaffolding outweighs its one
+  row by construction). A 2,048 B floor now sits under the ratio; real bloat still fires.
+- **`wire_hooks.py --status`** answers "is THIS machine wired for THIS instance?" with a
+  report and an exit code — project and user level, the boot receipt, interpreter
+  verification, and the stranded pre-v1.0.7 settings shape — instead of leaving absence
+  to be inferred from silence.
+- **Template fixes, all from the cold trial:** the ledger template's `Tally` line now
+  ships in rotate's canonical format (the first complaint an adopter ever saw from their
+  own tooling was about a line the template itself wrote wrong); the bulletin ships
+  `check_at_boot: false` (the README always said it ships inert — now it does); genesis
+  asks the git question ("is this a new/blank folder? has git been initiated?" — ARCH
+  requires a repository) and the Claude Desktop question (a Desktop user has two
+  surfaces whether they have thought about it or not), sets the `agents:` block and the
+  bulletin key **together** from the surfaces answer, MOVES the seed to `arch/` instead
+  of copying it, updates the manifest's own header banner in the rename pass, rewrites
+  the dead `bootstrap:` pointer when it deletes the block, authors **from the seed
+  only** (never importing a name from the environment), and copies EOF sentinels
+  exactly; `CLAUDE.md` gains the per-machine wiring check keyed to the boot receipt's
+  absence.
+
+**Manifest:** nothing required for an existing instance. Recommended, as anchored edits:
+if you run ONE surface, set `close.bulletin.check_at_boot: false` — the old template
+shipped it `true`, which priced a board that can carry no traffic into every boot; and
+consider copying the new `debt:` comment (clear via `scripts/debt.py --clear`, never via
+a file-edit tool) so the rule survives next to the key it governs.
+
+**By hand:** two things. If your close clears the session-debt row with a file-edit
+tool, switch to `python scripts/debt.py --clear` — an edit-tool clear un-does itself.
+And on every machine you work from, run `python scripts/wire_hooks.py --status` once: a
+git-synced instance on a second machine boots with no guards, no receipt, and no debt
+recorder, silently.
+
+---
+
 ## v1.1.1
 
 *The complete release: cross-project mail, an update that tells you what copying did not do, and

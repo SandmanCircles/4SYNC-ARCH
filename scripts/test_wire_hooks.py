@@ -286,5 +286,76 @@ class TestManifestWiring(unittest.TestCase):
         self.assertNotIn("ARCH_MANIFEST", merged["env"])
 
 
+class StatusCase(unittest.TestCase):
+    """--status: is THIS machine wired for THIS instance? Verified, not inferred.
+
+    SYN-089, field-reported: an instance git-synced to a second machine boots
+    with the entire enforcement layer silently absent — wiring is machine-local
+    by design, and the SessionStart receipt is both the announcement channel and
+    part of what is missing. The only reliable detector was a session noticing
+    an absence. This makes absence a report instead.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="wh_status_")
+        os.makedirs(os.path.join(self.root, "hooks"))
+        with open(os.path.join(self.root, "hooks", "pre_tool_use.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("# hook body\n")
+        self.user = os.path.join(self.root, "fake_user_settings.json")
+
+    def _run(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = wh.status(self.root, user_settings=self.user,
+                             check_interpreter=False)
+        return code, buf.getvalue()
+
+    def _wire_project(self):
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        blob = {"hooks": {"PreToolUse": [{"matcher": "Write|Edit", "hooks": [
+                    {"type": "command",
+                     "command": '"%s" "%s"' % (sys.executable,
+                                               os.path.join(self.root, "hooks",
+                                                            "pre_tool_use.py"))}]}]},
+                "env": {"ARCH_HOOKS_MODE": "warn"}}
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(blob, fh)
+
+    def test_unwired_machine_reports_unwired_and_exits_1(self):
+        code, out = self._run()
+        self.assertEqual(code, 1)
+        self.assertIn("UNWIRED", out)
+        self.assertIn("--write", out)          # the fix is named, not implied
+
+    def test_project_level_wire_reports_wired(self):
+        self._wire_project()
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("WIRED", out)
+
+    def test_user_level_wire_reports_wired_and_receipt(self):
+        blob = {"hooks": {
+            "PreToolUse": [{"hooks": [{"type": "command",
+                            "command": '"py" "/x/hooks/pre_tool_use.py"'}]}],
+            "SessionStart": [{"hooks": [{"type": "command",
+                              "command": '"py" "/x/hooks/session_start.py"'}]}]}}
+        with open(self.user, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("user", out.lower())
+        self.assertNotIn("receipt: NOT wired", out)
+
+    def test_no_receipt_is_called_out(self):
+        self._wire_project()                    # guards wired, receipt not
+        _, out = self._run()
+        self.assertIn("receipt: NOT wired", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,24 +45,26 @@ class TempInstance(unittest.TestCase):
 
 
 class TestInventory(unittest.TestCase):
-    def test_inventory_is_twenty_two_files(self):
+    def test_inventory_is_twenty_four_files(self):
         """A PINNED COUNT, and the pin is the point: changing the inventory changes
         every published build id's recomputation, so it must be a deliberate act
         rather than a side effect. 15 → 17 at v1.0.8 (MP#69), 17 → 18 at v1.0.9
-        (MP#77), 18 → 20 under MP#80 (arch_update.py and its suite), 20 → 22 under MP#84
-        (mail.py and its suite). If this test
-        fails, do not just update the number — read RELEASE_NOTES and say what the
-        change does to the back catalogue.
+        (MP#77), 18 → 20 under MP#80 (arch_update.py and its suite), 20 → 22 under
+        MP#84 (mail.py and its suite), 22 → 24 under SYN-087 (debt.py and its
+        suite — the ordering-proof session-debt clear). If this test fails, do not
+        just update the number — read RELEASE_NOTES and say what the change does
+        to the back catalogue.
 
-        WHAT THE MP#80 CHANGE DOES TO THE BACK CATALOGUE, stated here because this
-        tripwire asked: every id published before it — v1.0.9's cc7f95b66647 and
-        every earlier one — now recomputes to something else when checked by code of
-        this generation. That is the FOURTH occurrence, which retires the word
-        'incident' for it. It is not a defect and not repairable: an id is anchored
-        to the tag for file CONTENT but to the running code for the INVENTORY.
-        Adopters are untouched; each runs their own generation's arch_build.py
-        against their own tree. The next release note must say so BEFORE the cut."""
-        self.assertEqual(len(arch_build.MACHINERY), 22)
+        WHAT EACH INVENTORY CHANGE DOES TO THE BACK CATALOGUE, stated here because
+        this tripwire asks: every id published before it recomputes to something
+        else when checked by code of this generation — for the SYN-087 change that
+        includes v1.1.1's 3163dbd00ba2 and every earlier id. Repeated occurrences
+        retired the word 'incident' for this. It is not a defect and not
+        repairable: an id is anchored to the tag for file CONTENT but to the
+        running code for the INVENTORY. Adopters are untouched; each runs their
+        own generation's arch_build.py against their own tree. The release note
+        must say so BEFORE the cut — for 22 → 24 it already does."""
+        self.assertEqual(len(arch_build.MACHINERY), 24)
 
     def test_inventory_includes_this_script_and_its_suite(self):
         """MP#69. Absent from v1.0.0 through v1.0.7 with no recorded reason. A

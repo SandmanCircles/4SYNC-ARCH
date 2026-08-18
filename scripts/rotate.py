@@ -819,6 +819,14 @@ def report_subjects(ledger_path, subject_max, prefix=TASK_PREFIX_DEFAULT):
 
 # ── table-prose report ───────────────────────────────────────────────────────
 
+# Below this, prose CANNOT meaningfully outweigh rows: a newborn ledger's fixed
+# scaffolding (the Pickup-ready sentence, the legend) outweighs its first rows
+# by construction, so the ratio alone made the FIRST rotate an adopter ever runs
+# open with a complaint about a file genesis had just written (SYN-088, cold
+# trial: 321 B prose / 119 B rows flagged a 1-row ledger). A report that fires
+# on day one of every fresh instance is a report adopters learn to ignore.
+PROSE_FLOOR_BYTES = 2048
+
 
 def report_table_prose(ledger_path):
     """Measure the NON-ROW prose sitting in the summary-table section.
@@ -864,12 +872,16 @@ def report_table_prose(ledger_path):
     print(f"table: prose is {share:.0f}% of the summary section "
           f"({prose:,} B prose / {rows:,} B rows, ~{total // 4:,} tok of boot) "
           f"— {verdict} the 50% threshold")
-    if prose > rows:
+    if prose > rows and prose >= PROSE_FLOOR_BYTES:
         print(f"  ! OVER THRESHOLD. A tally is a count; once it explains why each row "
               f"closed it is a second copy of {TASKS_DIRNAME}/closed/, and it drifts from "
               "both. TRIM IT BACK TO A COUNT — the explanations already live in "
               f"{TASKS_DIRNAME}/closed/, so move nothing, just stop restating it here. "
               "(Reported, not blocked.)")
+    elif prose > rows:
+        print(f"  (over the ratio but under the {PROSE_FLOOR_BYTES:,} B floor — a "
+              "newborn ledger's fixed scaffolding outweighs its first rows by "
+              "construction; not reported as bloat)")
     return rows, prose
 
 
@@ -2239,6 +2251,51 @@ def verify_moves(moved_blocks, src, dst, restore):
     print("verify: all moved blocks present in destination, absent from source ✓")
 
 
+# ── manifest resolution ──────────────────────────────────────────────────────
+
+
+def resolve_manifest(root):
+    """Which manifest file governs this run, and how it was found.
+
+    THE FAILURE THIS CLOSES (SYN-088, cold trial): run from a plain terminal in
+    a genesis-renamed instance with ARCH_MANIFEST unset, this script fell back
+    to the default filename, found nothing, and reported "no STATUS file
+    declared or found — skipped" — three checks lost and a fallback journal cap
+    used, in words indistinguishable from an instance that declares no STATUS.
+    Meanwhile report_manifest_at_rest FOUND the renamed manifest in the same
+    run, because it globs by content. A resolver that can be out-known by a
+    later line of its own report is worse than none.
+
+    The ladder: ARCH_MANIFEST (an explicit pin — honored even when the file is
+    missing, loudly, because a wrong pin should look wrong rather than silently
+    heal to a different file), then the default filename, then content
+    discovery: a root-level *.yaml declaring `sync_version:` and `boot:`, the
+    same match wire_hooks.py uses. Returns (filename_or_None, how)."""
+    env = os.environ.get("ARCH_MANIFEST")
+    if env:
+        if os.path.isfile(os.path.join(root, env)):
+            return env, "ARCH_MANIFEST"
+        return env, "ARCH_MANIFEST — FILE MISSING at this root; checks will misfire"
+    if os.path.isfile(os.path.join(root, "4SYNC.yaml")):
+        return "4SYNC.yaml", "default name"
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None, "root unreadable"
+    for name in names:
+        if not name.lower().endswith((".yaml", ".yml")):
+            continue
+        try:
+            with open(os.path.join(root, name), encoding="utf-8") as fh:
+                head = fh.read(4096)
+        except Exception:  # noqa: BLE001 — an unreadable candidate is not the manifest
+            continue
+        if "sync_version:" in head and "\nboot:" in head:
+            return name, ("discovered by content — set ARCH_MANIFEST=%s to pin it"
+                          % name)
+    return None, "none"
+
+
 def main():
     _utf8_stdout()   # belt and braces; also runs at import for library callers
     ap = argparse.ArgumentParser()
@@ -2263,6 +2320,22 @@ def main():
     args = ap.parse_args()
 
     d = os.path.abspath(args.dir)
+
+    # Resolve the manifest ONCE, say what was resolved, and export it: every
+    # downstream helper reads ARCH_MANIFEST, so a discovered manifest reaches
+    # all of them without threading a parameter through fifteen call sites —
+    # including the meter subprocess, which inherits the environment.
+    manifest_name_resolved, manifest_how = resolve_manifest(d)
+    if manifest_name_resolved and not os.environ.get("ARCH_MANIFEST"):
+        os.environ["ARCH_MANIFEST"] = manifest_name_resolved
+    if manifest_name_resolved:
+        print(f"manifest: {manifest_name_resolved} ({manifest_how})")
+    else:
+        print("manifest: NONE FOUND — ARCH_MANIFEST is unset and no root *.yaml "
+              "declares sync_version:+boot:. Declared names, caps and every STATUS "
+              "check now run on DEFAULTS; checks skipped below are UNREACHABLE, "
+              "not passing.")
+
     # DECLARED, NOT ASSUMED (MP#83). Every one of these was a string literal here
     # while the manifest declared it — the ledger in three separate keys.
     ledger_name = manifest_ledger_name(d)

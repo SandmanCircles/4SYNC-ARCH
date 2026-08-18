@@ -83,6 +83,13 @@ bootstrap:
       folder later means repairing that path and the hook paths by hand. A user
       who cloned into Downloads or Desktop should flinch when they read it back —
       that flinch is the point, and it is the last moment it costs nothing.
+      IN THE SAME PLAYBACK, put the folder's git state to them as a QUESTION —
+      is this a new/blank folder? has git been initiated? (`git rev-parse
+      --git-dir` answers the second; pre-fill both, then ask.) ARCH REQUIRES A
+      REPOSITORY — git is the undo behind every close, the dirty-tree gate
+      rotation refuses on, and the entire exit story — so on "no repo", offer
+      `git init` HERE, at the cheapest moment, and do not author the stack
+      until the repo exists or the user explicitly rules otherwise.
       Ask them to confirm or correct it, and WAIT for an explicit yes.
       Both entry paths land here, so this is the only gate needed. Why it is worth
       one question — the steps below author the whole stack, set a root path, flip
@@ -91,15 +98,27 @@ bootstrap:
     - author config/KERNEL.yaml + STATUS.yaml + CANON_INDEX.yaml from the seed
       (fill bracketed placeholders; keep the skeleton's structure + directives;
       remove the TEMPLATE GUARD directive line); route the seed's deep canon
-      (charter prose, rationale, origin history) into config/REFERENCE.yaml
+      (charter prose, rationale, origin history) into config/REFERENCE.yaml.
+      AUTHOR FROM THE SEED AND THE INTERVIEW ONLY — never import a name or a
+      fact from the environment (folder paths, a parent CLAUDE.md, git config) —
+      a seed that says "my" stays possessive-neutral, because a name the user
+      never gave you is not yours to write into their canon. Copy each
+      template's EOF sentinel EXACTLY, substituting only the filename
     - fill CLAUDE.md and NAMING_CONVENTIONS.md placeholders
     - set instance.name + instance.root (absolute) in THIS file
-    - route the seed's "Agents & surfaces" answer into ABBA.md's roster + declare
-      an `agents` block here; if none named, omit it (ABBA/LANDING_QUEUE stay, inert)
+    - route the seed's "Agents & surfaces" answer into ABBA.md's roster, declare
+      an `agents` block here AND set close.bulletin.check_at_boot true — IFF TWO
+      OR MORE surfaces/agents are named. Fewer than two — omit the block and
+      leave check_at_boot false (ABBA/LANDING_QUEUE stay, inert; a one-surface
+      board can carry no traffic, so its boot scan is pure overhead). The block
+      and the key move TOGETHER, from the same answer — gating them differently
+      makes the manifest declare one thing while the meter prices another
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
     - verify every authored YAML: [eof_sentinel, yaml_parse]
-    - archive the seed verbatim → arch/SEED_<date>.md, then set the archived
-      file READ-ONLY (attrib +R / chmod a-w — the birth record is preserved,
+    - archive the seed verbatim → arch/SEED_<date>.md — a MOVE, not a copy, so
+      root SEED.md must not remain, since a duplicate at root outlives every
+      reader's memory of which one is the record — then set the archived file
+      READ-ONLY (attrib +R / chmod a-w — the birth record is preserved,
       never edited) + CANON_INDEX pointer row
     - add the archived seed to CLAUDE.md's load list, on-demand only —
       "the genesis birth record, read-only"
@@ -109,7 +128,8 @@ bootstrap:
       then share no stack filename, so a wrong-instance read is visible in the tool
       call and the log instead of looking identical to a right one. Update EVERY
       reference in the same pass — the boot, on_demand and never_load_whole lists
-      here, the CANON_INDEX pointer rows, CLAUDE.md's load list, README. Then merge
+      here, THIS FILE'S OWN HEADER BANNER (its first comment line names the
+      manifest), the CANON_INDEX pointer rows, CLAUDE.md's load list, README. Then merge
       ARCH_MANIFEST=<P>.yaml into .claude/settings.json's env block (merge into it,
       never overwrite the file). WITHOUT that variable the rename silently DOWNGRADES
       the hardening — g5 stops guarding the manifest, the boot receipt and meter can
@@ -135,11 +155,20 @@ bootstrap:
       cannot be recomputed later. The build you are RUNNING is always computed live
       from the machinery on disk, so it is never transcribed and cannot go stale
     - prepend a genesis journal block to MERGE_PLAN.md
-    - LAST — delete this `bootstrap` block; genesis cannot re-run once the TEMPLATE
-      markers flip, so it is dead weight every later session reads
+    - LAST — delete this `bootstrap` block AND rewrite the header line above
+      that points at it ("First session in a fresh drop-in…") to say genesis
+      has run and the block was deleted as declared — a pointer that outlives
+      its target otherwise ships in every instance forever. Genesis cannot
+      re-run once the TEMPLATE markers flip, so the block is dead weight every
+      later session reads
     - then continue with normal boot
   template_seed:               # interview mode — seed still says TEMPLATE
-    - walk the user conversationally through SEED.md's own sections
+    - walk the user conversationally through SEED.md's own sections. At "Agents
+      & surfaces", ask the Claude Desktop question OUTRIGHT — do you use Claude
+      Desktop? then TWO surfaces touch this folder (Claude Code and Cowork)
+      whether you have thought about it or not — because a Desktop user
+      answering "one surface" is the one wrong answer that silently mis-shapes
+      the bulletin and agents declarations
     - write their answers INTO SEED.md; flip its status → AUTHORED
     - then run authored_seed (one pipeline; the seed is always the birth record)
   no_seed:
@@ -188,11 +217,18 @@ close:
     verify: [eof_sentinel, yaml_parse]
   bulletin:
     file: ABBA.md
-    check_at_boot: true      # OPEN messages `To:` this agent, before planned work
+    check_at_boot: false     # ships FALSE — the board is inert until this is true,
+                             # and genesis sets it true exactly when two or more
+                             # surfaces/agents are declared. When true — OPEN
+                             # messages `To:` this agent, before planned work
     mode: scan_headers       # grep `### [n] … To: … Status:`; read ONLY your own bodies.
                              # On a header-count mismatch, full read AND SAY SO
     archive_done_after_days: 10
-  debt: clear_own_row        # see session_debt: — delete this session's row
+  debt: clear_own_row        # HOW: `python scripts/debt.py --clear` — a script's
+                             # writes are invisible to the recorder. NEVER clear
+                             # via the file-edit tools: the recorder upserts this
+                             # session's row on EVERY edit-tool call, so any edit
+                             # after the clear silently restores the row
   rotate:
     script: scripts/rotate.py  # run if present AND runnable (no Python → skip silently);
                                # dry-run on first-ever use
@@ -217,7 +253,12 @@ close:
     # full verbatim conversation including tool results.
   commit:
     trusted_git: explicit_paths          # stage by path, no `add -A`; push only on request
-    untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount
+    untrusted_or_no_git: LANDING_QUEUE.md  # queue a row; NEVER commit through a mount.
+                             # For sessions that cannot SAFELY reach git — never for
+                             # an instance with no repository at all. ARCH requires
+                             # one (genesis asks), so a missing repo is a LOUD
+                             # anomaly said out loud at close, not a mode this
+                             # fallback quietly absorbs
 
 mail:                      # MP#84: cross-project mail. Nothing shared is created.
   name: "[PROJECT]"        # what other instances address you as. QUOTED: unquoted

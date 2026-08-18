@@ -25,7 +25,9 @@ trustworthy across sessions and surfaces, so more of every window goes to the wo
 
 ## Prerequisites
 
-- **Git**
+- **Git** — required, not optional: the instance folder must be a repository. Genesis
+  asks ("has git been initiated?") and offers `git init` if it hasn't — git is the undo
+  behind every close, the dirty-tree gate rotation refuses on, and the whole exit story.
 - **Python 3** (3.8+, standard library only — no pip install, ever)
 - **Claude Code**
 
@@ -35,8 +37,10 @@ actually used for.
 ## Quickstart — four steps, no installation
 
 1. **Start in a new, empty folder — genesis makes it permanent.** Create a fresh folder
-   for this project and open your Claude session there. **Not your Downloads or Desktop
-   folder, and not an existing repo** — ARCH wants a folder of its own. Genesis writes
+   for this project, run `git init` in it, and open your Claude session there — ARCH
+   requires a repository, and genesis will ask and offer to create one if you skip
+   this. **Not your Downloads or Desktop folder, and not an existing repo** — ARCH
+   wants a folder of its own. Genesis writes
    that folder's absolute path into the manifest as `instance.root`, and every close
    resolves from it no matter where a later session is launched. You can move the folder
    afterwards, but you have to fix `instance.root` and the absolute hook paths in
@@ -63,9 +67,13 @@ actually used for.
    unpick afterwards. Every session after that boots oriented and deposits state
    back on close.
 
-No skills to install, no plugins, no per-machine setup. The entire mechanism is two
-files that travel with the folder: `CLAUDE.md` (teaches any session the protocol
-exists) and `4SYNC.yaml` (declares what this instance's protocol is).
+No skills to install, no plugins — and the **protocol** needs no per-machine setup:
+the entire mechanism is two files that travel with the folder, `CLAUDE.md` (teaches
+any session the protocol exists) and `4SYNC.yaml` (declares what this instance's
+protocol is). The optional **enforcement layer** — guards, boot receipt, session-debt
+recorder — is the one per-machine part: wired once per machine by
+`scripts/wire_hooks.py` (see Hardening), and a clone on a new machine starts unwired
+until you do.
 
 ### Closing a session — "wrap up"
 
@@ -339,12 +347,16 @@ of this is a preference; run several and wire the hooks first.
   the *next* boot can say whether anyone else is in the folder right now. Its real
   value shows up after something goes wrong: a row proving two sessions were live
   in the same minute is the only artifact that can establish it, and where there
-  were no hooks there is no row and no account of what happened. Two limits travel
+  were no hooks there is no row and no account of what happened. Three limits travel
   with that claim. `last_activity` records **file writes only** — a session mid-
   commit, or one that has spent twenty minutes reading, looks idle — so *not live*
-  means *probably idle*, never *gone*. And a nested repo that is itself an ARCH
+  means *probably idle*, never *gone*. A nested repo that is itself an ARCH
   instance keeps its **own** debt file, so a session editing both leaves a row in
-  each and an ordinary close clears one.
+  each and an ordinary close clears one. And the file is **per-machine** — local and
+  gitignored — so the *do you have company?* reading is scoped to the machine you are
+  on: a desktop session and a laptop session contesting the same ledgers through git
+  are mutually invisible here, and the anchored-edit discipline plus git conflicts
+  are the backstop across machines.
 
   **One dependency note, because it decides what a check can promise.** YAML
   *parse* validation in the STATUS guard requires **PyYAML**, which is not in the
@@ -401,7 +413,18 @@ committed repo:
 ```bash
 python scripts/wire_hooks.py            # dry run — prints exactly what it would write
 python scripts/wire_hooks.py --write    # merge it into .claude/settings.local.json
+python scripts/wire_hooks.py --status   # is THIS machine wired for THIS instance?
 ```
+
+**A second machine starts unwired — and nothing tracked can say so.** Wiring is
+machine-local by design (absolute interpreter and hook paths, in gitignored settings),
+so git-syncing an instance to another machine carries the protocol and none of the
+enforcement layer: the clone boots `CLAUDE.md`-only, silently — no guards, no
+session-debt recorder, and no boot receipt, which is exactly the channel that would
+have announced the gap. Field-reported by an adopter running two machines. The routine
+is clone → `wire_hooks.py --write`, once per instance root, per machine — and
+`--status` turns "am I wired here?" into a report with an exit code instead of an
+inference from silence.
 
 It derives both paths from itself, **proves the interpreter runs before writing it**,
 and merges without disturbing settings you already have. Then **reload** — open

@@ -20,6 +20,7 @@ one file, `.claude/settings.local.json`, and nothing else.
 Usage:
   python scripts/wire_hooks.py                 # DRY RUN — print the merged result
   python scripts/wire_hooks.py --write         # merge it into .claude/settings.local.json
+  python scripts/wire_hooks.py --status        # is THIS machine wired for THIS instance?
   python scripts/wire_hooks.py --python PATH   # wire a different interpreter than this one
   python scripts/wire_hooks.py --mode enforce  # default: warn
 """
@@ -237,6 +238,147 @@ def print_boot_hook_guidance(root, exe):
     print("verified interpreter and hook, already filled in.")
 
 
+def _load_settings(path):
+    """A settings file's parsed content, None if absent, or "unreadable"."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    except Exception:  # noqa: BLE001 — exists but does not parse
+        return "unreadable"
+
+
+def _hook_command(settings, event, basename):
+    """The command string wiring `basename` under `event`, or None."""
+    if not isinstance(settings, dict):
+        return None
+    for entry in (settings.get("hooks") or {}).get(event) or []:
+        for h in entry.get("hooks") or []:
+            cmd = h.get("command", "")
+            if basename in cmd:
+                return cmd
+    return None
+
+
+def _command_exe(cmd):
+    """The interpreter path out of a '"exe" "hook"' command string."""
+    if '"' in cmd:
+        parts = cmd.split('"')
+        return parts[1] if len(parts) > 1 else ""
+    return cmd.split()[0] if cmd.split() else ""
+
+
+def status(root, user_settings=None, check_interpreter=True):
+    """Report whether THIS machine is wired for THIS instance. Returns exit code.
+
+    THE GAP THIS CLOSES (SYN-089, field-reported): wiring is machine-local by
+    correct design — absolute interpreter and hook paths in gitignored settings
+    — so git-syncing an instance to a second machine carries the protocol and
+    none of the enforcement layer. The clone boots CLAUDE.md-only, silently:
+    no guards, no session-debt recorder, and no SessionStart receipt, which is
+    the one channel that would have announced the absence. Until this existed,
+    the only detector was a session noticing that nothing had announced itself.
+
+    Exit codes: 0 = the PreToolUse guards are wired somewhere Claude Code will
+    read for a session in this instance; 1 = unwired (or wired with problems);
+    2 = cannot tell (a settings file exists but is not readable JSON). The boot
+    receipt is reported but never moves the exit code — recommended, not
+    required. `check_interpreter=False` skips executing the wired interpreter
+    (the report then says paths were not verified)."""
+    root = os.path.abspath(root)
+    sroot, why_root = settings_root(root)
+    user_path = user_settings or os.path.join(
+        os.path.expanduser("~"), ".claude", "settings.json")
+    project_path = os.path.join(sroot, SETTINGS_REL)
+    hook_base = os.path.basename(HOOK_REL)
+
+    print("instance root : %s" % root)
+    print("settings root : %s  (%s)" % (sroot, why_root))
+
+    wired_at = []
+    problems = []
+
+    proj = _load_settings(project_path)
+    if proj == "unreadable":
+        print("project       : %s — EXISTS BUT IS NOT READABLE JSON" % project_path)
+        return 2
+    pcmd = _hook_command(proj, "PreToolUse", hook_base)
+    if pcmd:
+        wired_at.append("project")
+        mode = (proj.get("env") or {}).get("ARCH_HOOKS_MODE")
+        print("project       : guards wired in %s%s"
+              % (project_path, ("  (ARCH_HOOKS_MODE=%s)" % mode) if mode else ""))
+    else:
+        print("project       : %s — %s"
+              % (project_path, "no guard entry" if proj is not None else "absent"))
+
+    user = _load_settings(user_path)
+    if user == "unreadable":
+        print("user          : %s — EXISTS BUT IS NOT READABLE JSON" % user_path)
+        return 2
+    ucmd = _hook_command(user, "PreToolUse", hook_base)
+    if ucmd:
+        wired_at.append("user")
+        print("user          : guards wired in %s" % user_path)
+    else:
+        print("user          : %s — %s"
+              % (user_path, "no guard entry" if user is not None else "absent"))
+
+    if _hook_command(user, "SessionStart", os.path.basename(BOOT_HOOK_REL)):
+        print("receipt       : wired at user level")
+    else:
+        print("receipt: NOT wired — a session that skips boot announces nothing.")
+        print("                Run this script and paste its SessionStart block into")
+        print("                ~/.claude/settings.json yourself (user level, by hand).")
+
+    # The stranded pre-v1.0.7 shape: settings written where nothing reads them.
+    if os.path.normcase(sroot) != os.path.normcase(root):
+        stranded = os.path.join(root, SETTINGS_REL)
+        if os.path.isfile(stranded):
+            print("STRANDED      : %s" % stranded)
+            print("                This instance is nested, so Claude Code reads settings")
+            print("                at the repository root; this file is never read. Merge")
+            print("                anything you set in it upward, then delete it.")
+
+    for where, cmd in (("project", pcmd), ("user", ucmd)):
+        if not cmd:
+            continue
+        exe = _command_exe(cmd)
+        if not check_interpreter:
+            continue
+        if not os.path.isfile(exe):
+            problems.append("%s wiring points at a missing interpreter: %s" % (where, exe))
+        elif not interpreter_works(exe):
+            problems.append("%s wiring's interpreter does not execute: %s" % (where, exe))
+
+    print()
+    for p in problems:
+        print("PROBLEM       : %s" % p)
+    if wired_at and not problems:
+        note = ""
+        if len(wired_at) == 2:
+            note = " — Claude Code dedupes identical hook commands, so a guard fires once"
+        if not check_interpreter:
+            note += "  (interpreter paths not verified)"
+        print("VERDICT       : WIRED (%s)%s" % (" + ".join(wired_at), note))
+        return 0
+    if wired_at:
+        print("VERDICT       : wired (%s) but with the problems above — treat as"
+              % " + ".join(wired_at))
+        print("                unwired until fixed. A hook on a broken interpreter")
+        print("                fails silently, which is worse than no hook.")
+        return 1
+    print("VERDICT       : UNWIRED on this machine. The protocol still runs —")
+    print("                CLAUDE.md + the manifest travel with the folder — but no")
+    print("                guards, no boot receipt, no session-debt recorder. Fix:")
+    print("                python scripts/wire_hooks.py --write   (once per machine,")
+    print("                per instance root), then reload the session.")
+    return 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="Wire the 4SYNC ARCH guard hooks into Claude Code.")
     ap.add_argument("--dir", default=None,
@@ -247,12 +389,18 @@ def main():
                     help="interpreter to wire (default: the one running this script)")
     ap.add_argument("--mode", default="warn", choices=["warn", "enforce", "off"],
                     help="initial ARCH_HOOKS_MODE (default: warn — logs, never blocks)")
+    ap.add_argument("--status", action="store_true",
+                    help="report whether THIS machine is wired for THIS instance "
+                         "(exit 0 wired, 1 unwired) — writes nothing")
     args = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     root = os.path.abspath(args.dir) if args.dir else instance_root()
+
+    if args.status:
+        return status(root)
     hook_path = os.path.join(root, *HOOK_REL.split("/")).replace("\\", "/")
     exe = (args.python or sys.executable or "").replace("\\", "/")
 

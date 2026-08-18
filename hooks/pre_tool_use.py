@@ -991,6 +991,19 @@ def _record_debt(payload):
         return
     if payload.get("tool_name", "") not in WRITE_TOOLS:
         return
+    # A write TARGETING the debt file is bookkeeping, not work — recording it is
+    # always wrong, and one case is fatal: a close that clears its own row with a
+    # file-edit tool would be upserted right back by this very function, so the
+    # close reports "cleared" and the next boot reports phantom debt (SYN-087,
+    # observed live). scripts/debt.py is the ordering-proof clear; this guard
+    # closes the edit-tool path as well.
+    raw_target = ((payload.get("tool_input") or {}).get("file_path") or "")
+    if raw_target:
+        base = os.path.basename(os.path.abspath(raw_target)).lower()
+        override = os.environ.get("ARCH_DEBT_FILE") or ""
+        if base == DEBT_FILENAME.lower() or (
+                override and base == os.path.basename(override).lower()):
+            return
     sid = (payload.get("session_id")
            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
     cwd = payload.get("cwd") or os.getcwd()

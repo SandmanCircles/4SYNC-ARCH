@@ -29,8 +29,12 @@ trial of everything except the point.
 So: a real folder, somewhere you can find it, that you delete afterward.
 
 ```
-mkdir ~/arch-trial && cd ~/arch-trial
+mkdir ~/arch-trial && cd ~/arch-trial && git init
 ```
+
+The `git init` is not dressing: **ARCH requires a repository.** Rotation's dirty-tree
+gate, the close's commit step, and every exit in this document run on git — and genesis
+will ask ("has git been initiated?") and offer to run it if you skipped it.
 
 ### What a trial should actually show you
 
@@ -164,6 +168,27 @@ up front, to something that's asking.
 
 ---
 
+## Taking an instance to a second machine
+
+Clone it with git and the **protocol** arrives whole — but the **enforcement layer does
+not travel.** Hook wiring is machine-local (absolute interpreter and hook paths, in
+gitignored settings), so the second machine boots with no guards, no session-debt
+recorder, and no boot receipt — silently, because the receipt is the announcement
+channel and it is part of what is missing. Two commands close the gap, once per
+machine, per instance root:
+
+```
+python scripts/wire_hooks.py --status   # is THIS machine wired for THIS instance?
+python scripts/wire_hooks.py --write    # wire it, then reload the session
+```
+
+Also worth knowing: `.session_debt.tsv` is per-machine, so the "do you have company?"
+boot reading only sees sessions on the machine you are on. Two machines editing the
+same ledgers through git rely on the anchored-edit discipline and git conflicts — the
+same backstop as any two concurrent writers.
+
+---
+
 ## Getting back out
 
 Worth knowing before you start, not after. **The exit cost is low, and it isn't a trick
@@ -181,6 +206,10 @@ Three ways out, by effort:
 
 Even at the second level, **your accumulated knowledge stays fully readable.** You lose
 the choreography, not the content.
+
+(All three ways out assume the repository the adoption path requires. A folder that was
+never `git init`-ed has no genesis commit to revert — which is one of the reasons
+genesis now asks about git before it writes anything.)
 
 ### Two things that are slightly sticky, stated plainly
 
@@ -218,6 +247,12 @@ You'll likely be the one running the trial. Two things:
 - **If you're in a cloud container, you have no git and no hooks.** You can read, author
   and run the protocol; you can't commit it or make a guard fire for someone to watch.
   Write what you did into `LANDING_QUEUE.md` and a session on their machine lands it.
+- **If you're booted inside another ARCH instance with hooks at `enforce`, you cannot
+  write the trial folder.** The root fence blocks cross-instance writes by design — no
+  override, no prompt. That is the fence working, not breaking. Launch the trial
+  session with its working directory IN the trial folder instead, which is the fence's
+  own prescription ("write from a session booted there") — and a cleaner trial anyway,
+  since that session carries none of your other project's context.
 
 ---
 

@@ -133,6 +133,12 @@ MACHINERY = [
     "scripts/test_actuals.py",
     "scripts/split_ledger.py",
     "scripts/test_split_ledger.py",
+    # debt.py exists because the recorder made self-clearing via edit tools
+    # self-defeating (SYN-087): it upserts the session's row on every file-write
+    # tool call, so only a script's writes — invisible to it — can clear a row
+    # that STAYS cleared regardless of close-step ordering.
+    "scripts/debt.py",
+    "scripts/test_debt.py",
     "scripts/wire_hooks.py",
     # ADDED v1.0.9 (MP#77). The SAME omission as arch_build.py's own, one release
     # later and found the same way — `release.py status` reported 3 changed

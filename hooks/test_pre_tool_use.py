@@ -1537,6 +1537,62 @@ class TestManifestSizesExcludeBootstrap(unittest.TestCase):
         self.assertGreater(total, 1000)
         self.assertLess(persistent, 100)
 
+class DebtSelfWriteCase(unittest.TestCase):
+    """A write TARGETING the debt file itself must never be recorded as debt.
+
+    SYN-087, observed live on a cold trial: the recorder upserts this session's
+    row on every file-write call, so a close that cleared its own row with a
+    file-edit tool — or made any write-tool call AFTER the clear — silently
+    restored the row, and the next boot reported phantom debt from a session
+    that had closed properly. The debt file is bookkeeping, not work: touching
+    it proves nothing about undeposited state, so recording it is always wrong.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="debt_self_")
+        os.makedirs(os.path.join(self.root, "config"))
+        with open(os.path.join(self.root, "config", "KERNEL.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("meta:\n  status: AUTHORITATIVE\n")
+        self.debt = os.path.join(self.root, ".session_debt.tsv")
+        for var in ("ARCH_DEBT", "ARCH_DEBT_FILE"):
+            prev = os.environ.pop(var, None)
+            if prev is not None:
+                self.addCleanup(os.environ.__setitem__, var, prev)
+
+    def _payload(self, target):
+        p = write_payload(target, "x")
+        p["cwd"] = self.root
+        p["session_id"] = "sid-under-test"
+        return p
+
+    def test_write_to_debt_file_records_nothing(self):
+        hooks._record_debt(self._payload(self.debt))
+        self.assertFalse(os.path.exists(self.debt))
+
+    def test_clear_then_edit_of_debt_file_does_not_resurrect(self):
+        hooks._record_debt(self._payload(os.path.join(self.root, "notes.md")))
+        with open(self.debt, encoding="utf-8") as fh:
+            self.assertIn("sid-under-test", fh.read())
+        with open(self.debt, "w", encoding="utf-8") as fh:  # the close's clear
+            fh.write("# header only\n")
+        hooks._record_debt(self._payload(self.debt))        # an edit OF the file
+        with open(self.debt, encoding="utf-8") as fh:
+            self.assertNotIn("sid-under-test", fh.read())
+
+    def test_override_debt_file_name_is_also_skipped(self):
+        alt = os.path.join(self.root, "custom_debt.tsv")
+        os.environ["ARCH_DEBT_FILE"] = alt
+        self.addCleanup(os.environ.pop, "ARCH_DEBT_FILE", None)
+        hooks._record_debt(self._payload(alt))
+        self.assertFalse(os.path.exists(alt))
+
+    def test_ordinary_write_still_records(self):
+        hooks._record_debt(self._payload(os.path.join(self.root, "notes.md")))
+        with open(self.debt, encoding="utf-8") as fh:
+            self.assertIn("sid-under-test", fh.read())
+
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_pre_tool_use.py ═══

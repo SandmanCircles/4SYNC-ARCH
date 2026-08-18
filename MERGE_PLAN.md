@@ -60,7 +60,12 @@ PRIOR — YYYY-MM-DD [earlier session] — [...].
 | 4 | ⏸️ | [Example blocked task — e.g., "Backfill historical records"] | #2 | — |
 | 5 | ❌ | [Example dropped task — e.g., "Original Stripe webhook design"] | — | — |
 
-**Tally:** [N tasks total. X completed, Y in_progress, Z pending, A blocked, B dropped.]
+**Tally:** [N] tasks total — [X] completed, [Y] in_progress, [Z] pending, [A] blocked, [B] dropped.
+
+<!-- rotate.py DERIVES the Tally from the rows (--apply rewrites it) and checks it on
+     every run — keep the exact shape above, em dash included. A hand-styled variant
+     reads as drift, and the first complaint an adopter ever sees from their own
+     tooling must not be about a line the template itself wrote wrong. -->
 
 **Pickup-ready right now (no blockers):** [List the ⏳ rows as bare `#3`, `#7` — NOT `MP-003`, which is the right ID form everywhere else in ARCH but is not what this line's check counts — plus a one-line note on each. Write a *historical* mention as "row 3" so commentary stays out of the list.]
 

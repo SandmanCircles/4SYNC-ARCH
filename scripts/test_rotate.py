@@ -651,8 +651,11 @@ class TestTableProseReport(unittest.TestCase):
         return rows, pr, buf.getvalue()
 
     def test_prose_outweighing_rows_is_flagged(self):
-        rows, pr, out = self._run("**Tally:** " + "narrative " * 200)
+        # 300 repeats ≈ 3 KB — above PROSE_FLOOR_BYTES, so the ratio flag fires.
+        # (At 200 this fixture sat just under the floor and documented nothing.)
+        rows, pr, out = self._run("**Tally:** " + "narrative " * 300)
         self.assertGreater(pr, rows)
+        self.assertGreater(pr, rotate.PROSE_FLOOR_BYTES)
         self.assertIn("OVER THRESHOLD", out)
 
     def test_a_short_tally_is_clean(self):
@@ -2468,6 +2471,102 @@ class TestRowReferencesUnderAPrefix(unittest.TestCase):
         boundary is what stops it, and it is worth a test because the false
         positive would be silent."""
         self.assertEqual(rotate.status_ref_re("SYN").findall("4SYNC-ARCH v1.1.1"), [])
+
+
+class ResolveManifestFallbackCase(unittest.TestCase):
+    """resolve_manifest: ARCH_MANIFEST → default name → content discovery.
+
+    SYN-088, cold trial: hand-run in a genesis-renamed instance with ARCH_MANIFEST
+    unset, this script fell back to the default filename, found nothing, and said
+    "no STATUS file declared or found — skipped" — indistinguishable from an
+    instance that declares no STATUS — while report_manifest_at_rest FOUND the
+    renamed manifest in the same run, because it globs by content. A resolver
+    that can be out-known by a later line of its own report is worse than none.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_resolve_")
+        prev = os.environ.pop("ARCH_MANIFEST", None)
+        if prev is not None:
+            self.addCleanup(os.environ.__setitem__, "ARCH_MANIFEST", prev)
+
+    def _manifest(self, name):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as fh:
+            fh.write('sync_version: "1.0"\n\nboot:\n  - MERGE_PLAN.md\n')
+
+    def test_env_pin_wins(self):
+        os.environ["ARCH_MANIFEST"] = "PINNED.yaml"
+        self.addCleanup(os.environ.pop, "ARCH_MANIFEST", None)
+        self._manifest("PINNED.yaml")
+        name, how = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "PINNED.yaml")
+        self.assertIn("ARCH_MANIFEST", how)
+
+    def test_env_pin_with_missing_file_is_loud_not_healed(self):
+        os.environ["ARCH_MANIFEST"] = "GONE.yaml"
+        self.addCleanup(os.environ.pop, "ARCH_MANIFEST", None)
+        self._manifest("REAL.yaml")   # discoverable, but the pin must NOT silently heal
+        name, how = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "GONE.yaml")
+        self.assertIn("MISSING", how)
+
+    def test_default_name_found(self):
+        self._manifest("4SYNC.yaml")
+        name, _ = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "4SYNC.yaml")
+
+    def test_renamed_manifest_discovered_by_content(self):
+        self._manifest("TRELLIS.yaml")
+        name, how = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "TRELLIS.yaml")
+        self.assertIn("discovered", how)
+
+    def test_non_manifest_yaml_is_not_discovered(self):
+        with open(os.path.join(self.root, "ci.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("jobs:\n  build:\n    steps: []\n")
+        name, _ = rotate.resolve_manifest(self.root)
+        self.assertIsNone(name)
+
+    def test_nothing_to_find(self):
+        name, _ = rotate.resolve_manifest(self.root)
+        self.assertIsNone(name)
+
+
+class ProseFloorCase(unittest.TestCase):
+    """report_table_prose must not cry wolf on a newborn ledger.
+
+    SYN-088, cold trial: the 50% ratio is structural on a 1-row ledger — the fixed
+    scaffolding (the Pickup-ready sentence, the legend) outweighs one row by
+    construction — so the FIRST rotate an adopter ever runs opened with a
+    complaint about a file genesis had just written. Below an absolute floor the
+    ratio carries no signal, and a report that fires on day one of every fresh
+    instance is a report adopters learn to ignore.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_prose_")
+        self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
+
+    def _write(self, prose_chars):
+        rows = "| ID | Status | Subject |\n|---|---|---|\n| 1 | ⏳ | a |\n"
+        prose = "**Pickup-ready:** " + "x" * prose_chars + "\n"
+        with open(self.ledger, "w", encoding="utf-8") as fh:
+            fh.write("# L\n\n## Summary table\n\n" + rows + "\n" + prose)
+
+    def _run(self):
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rotate.report_table_prose(self.ledger)
+        return buf.getvalue()
+
+    def test_newborn_ledger_over_ratio_but_under_floor_stays_calm(self):
+        self._write(300)
+        self.assertNotIn("OVER THRESHOLD", self._run())
+
+    def test_real_bloat_still_fires(self):
+        self._write(4000)
+        self.assertIn("OVER THRESHOLD", self._run())
 
 
 if __name__ == "__main__":

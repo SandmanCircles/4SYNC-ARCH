@@ -86,6 +86,20 @@ class ClearCase(unittest.TestCase):
         self.assertEqual(code, 0)              # bookkeeping never blocks a close
         self.assertIn("no own row", out)
 
+    def test_cleared_nothing_but_rows_exist_is_loud(self):
+        """The id-mismatch case, observed live: in a NESTED claude run the env
+        var carries the PARENT session's id, so --clear targets a row that does
+        not exist while the real row sits one line away — and "no own row" reads
+        like success. When nothing was cleared anywhere but unwrapped rows
+        exist, the tool must say so and name them, so the closing session can
+        recognize its own row and re-run with --session."""
+        top = os.path.join(self.root, ".session_debt.tsv")
+        self._seed(top, ["48edbd23-real"])
+        code, out = self._run("--clear", "--dir", self.root, "--session", "wrong-id")
+        self.assertEqual(code, 0)
+        self.assertIn("48edbd23-real", out)    # the surviving row is NAMED
+        self.assertIn("--session", out)        # and the remedy is named too
+
     def test_session_id_from_environment(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "env-sid"
         self.addCleanup(os.environ.pop, "CLAUDE_CODE_SESSION_ID", None)

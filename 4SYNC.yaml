@@ -115,6 +115,10 @@ bootstrap:
       makes the manifest declare one thing while the meter prices another
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
     - verify every authored YAML: [eof_sentinel, yaml_parse]
+    - grep the WHOLE authored stack — REFERENCE included, where routed prose
+      lands — for personal names. Any proper name absent from the seed came
+      from the environment and gets replaced with neutral phrasing before
+      genesis reports done
     - archive the seed verbatim → arch/SEED_<date>.md — a MOVE, not a copy, so
       root SEED.md must not remain, since a duplicate at root outlives every
       reader's memory of which one is the record — then set the archived file

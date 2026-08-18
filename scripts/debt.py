@@ -97,13 +97,37 @@ def main(argv=None):
     if not files:
         print("no %s under %s — nothing to clear" % (DEBT_FILENAME, root))
         return 0
+    cleared_any = False
     for f in files:
         try:
-            print("%s: %s" % (f, "own row cleared" if clear_own_row(f, sid)
-                              else "no own row"))
+            hit = clear_own_row(f, sid)
+            cleared_any = cleared_any or hit
+            print("%s: %s" % (f, "own row cleared" if hit else "no own row"))
         except OSError as exc:
             # Reported, not raised: a bookkeeping failure must not block a close.
             print("%s: could not update (%s)" % (f, exc))
+
+    # THE ID-MISMATCH CASE MUST BE LOUD (observed live in a nested claude run):
+    # the recorder keys rows by the hook payload's session id, while this tool
+    # defaults to $CLAUDE_CODE_SESSION_ID — and a nested or scripted session
+    # INHERITS the parent's value, so the clear targets a row that does not
+    # exist while the real row sits one line away. "no own row" alone reads
+    # like success; naming the survivors turns it into a actionable miss.
+    if not cleared_any:
+        leftover = []
+        for f in files:
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    leftover += [ln.split("\t")[0] for ln in fh
+                                 if ln.strip() and not ln.startswith("#")]
+            except OSError:
+                pass
+        if leftover:
+            print("NOTE: cleared nothing for session id %r, but %d unwrapped row(s) "
+                  "remain: %s" % (sid, len(leftover), ", ".join(leftover)))
+            print("      If one of these is THIS session (a nested or scripted run "
+                  "inherits the parent's $CLAUDE_CODE_SESSION_ID), re-run with "
+                  "--session <that id>.")
     return 0
 
 

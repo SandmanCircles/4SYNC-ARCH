@@ -1304,11 +1304,35 @@ class TestDispatcherEndToEnd(GuardCase):
         self.assertEqual("allow", decision, "warn must never gate a call")
 
     def test_warn_mode_tells_the_session_what_it_found(self):
-        """THE v1.1.2 FAILURE (SYN-090): g4 caught a STATUS write that did not
-        parse, logged it, and allowed the call — correctly, warn does not refuse.
-        But the session was told NOTHING: exit 0, empty stderr, the finding in a
-        log nobody reads mid-session. The guard was never the defect; its silence
-        was."""
+        """THE v1.1.2 FAILURE (SYN-090): a guard caught a bad STATUS write, logged
+        it, and allowed it — correctly, warn does not refuse. But the session was
+        told NOTHING: exit 0, empty stderr, the finding in a log nobody reads
+        mid-session. The guard was never the defect; its silence was.
+
+        DRIVEN THROUGH THE EOF-SENTINEL CHECK, WHICH NEEDS NO PARSER. The first
+        version of this test used the YAML-parse branch and so passed only where
+        PyYAML happens to be installed — it went red on every CI leg but
+        `with-pyyaml`. PyYAML is absent from every fresh Python, which this
+        codebase calls the modal fresh install, so a feature test that silently
+        depends on it covers the path fewest adopters run. The parse branch has
+        its own gated test below."""
+        tail = STATUS_YAML[STATUS_YAML.index("focus:"):]
+        r = self._run(edit_payload(self.status, tail, 'focus: "clipped"\n'), "warn")
+        self.assertEqual(0, r.returncode, "warn must not block")
+        out = json.loads(r.stdout)
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual("allow", out["hookSpecificOutput"]["permissionDecision"])
+        self.assertIn("clipped", reason)
+        self.assertIn("g4_status_write_guard", out["systemMessage"])
+        self.assertIn("enforce", reason,
+                      "the session should learn this would block under enforce")
+
+    @unittest.skipUnless(HAS_YAML, "the YAML parse branch requires PyYAML")
+    def test_warn_speaks_for_the_parse_branch_too(self):
+        """The v1.1.2 shape exactly — an anchored Edit built on a clipped read,
+        leaving an orphan tail outside the closing quote. Gated, because check (a)
+        is skipped without a parser; the test above keeps the FEATURE covered on
+        stdlib-only boxes, so this skip leaves no hole."""
         self._put(self.status,
                   'meta:\n  file: STATUS.yaml\n\n'
                   'active_focus: "v1.1.2 published and verified\n'
@@ -1320,9 +1344,6 @@ class TestDispatcherEndToEnd(GuardCase):
         out = json.loads(r.stdout)
         self.assertIn("does not parse as YAML",
                       out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertIn("g4_status_write_guard", out["systemMessage"])
-        self.assertIn("enforce", out["hookSpecificOutput"]["permissionDecisionReason"],
-                      "the session should learn this would block under enforce")
 
     def test_warn_says_nothing_when_no_guard_fires(self):
         """A mode that speaks on every call is a mode nobody reads."""

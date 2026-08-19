@@ -70,7 +70,7 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
-## Unreleased — next cut
+## v1.1.2
 
 *The cold-trial release: everything a stranger's literal walk through the published docs
 broke, plus the second-machine gap an adopter's field report supplied the same day.*

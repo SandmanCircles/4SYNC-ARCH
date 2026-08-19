@@ -173,9 +173,17 @@ def summarise(path):
         return None
 
     name = os.path.basename(path)
+    stem = os.path.splitext(name)[0]
+    agent = stem.startswith("agent-")
     return {
-        "session": os.path.splitext(name)[0][:8],
-        "kind": "agent" if name.startswith("agent-") else "main",
+        # TRUNCATE THE IDENTIFYING PART, not the filename. A subagent transcript
+        # is `agent-<uuid>`, so `[:8]` kept `agent-` plus TWO hex digits — 256
+        # possible values — and append_series dedupes on this key, so distinct
+        # subagent sessions were silently dropped as already-present while the run
+        # still reported "appended N new row(s)" (SYN-091). `kind` below carries
+        # the agent/main distinction, so the prefix does not need to.
+        "session": (stem[len("agent-"):] if agent else stem)[:8],
+        "kind": "agent" if agent else "main",
         "cwd": meta.get("cwd"),
         "branch": meta.get("branch"),
         "version": meta.get("version"),
@@ -192,6 +200,18 @@ def summarise(path):
         # ESTIMATE of relative cost, not a bill — labelled as such everywhere.
         "input_weighted_est": int(fresh + cc + cr * CACHE_READ_WEIGHT),
     }
+
+
+def _within(path, root):
+    """Is `path` the instance root, or inside it?
+
+    A PATH BOUNDARY, NOT A STRING PREFIX. Bare `startswith` made `4SYNC-ARCH`,
+    `4SYNC-web` and even `4SYNCOTHER` count as part of a `4SYNC` instance. For an
+    adopter holding `/proj/app` beside `/proj/app-legacy`, `--dir /proj/app --log`
+    then folded the legacy project's sessions into this instance's PERMANENT
+    series — quietly corrupting the one measurement this tool exists to produce
+    (SYN-091). Both arguments are already normcased and absolute."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def project_dirs(all_projects, instance_root):
@@ -217,7 +237,7 @@ def project_dirs(all_projects, instance_root):
                 continue
             for _usage, m in iter_usage(os.path.join(d, f)):
                 cwd = m.get("cwd")
-                if cwd and os.path.normcase(os.path.abspath(cwd)).startswith(want):
+                if cwd and _within(os.path.normcase(os.path.abspath(cwd)), want):
                     hits.append(d)
                 break
             if d in hits:
@@ -286,6 +306,15 @@ def render(rows):
     return "\n".join(out) + "\n"
 
 
+def _series_key(row):
+    """Dedupe identity for a series row.
+
+    `kind` is included so a main and an agent session cannot collide on a short
+    id, and it costs no migration: every row ever written already carries it, so
+    adding it re-keys nothing that exists."""
+    return (row.get("project"), row.get("session"), row.get("kind"))
+
+
 def append_series(root, rows):
     """Append one JSON object per session. Append-only and keyed by session id
     so re-running is safe: rows already present are skipped rather than
@@ -297,12 +326,18 @@ def append_series(root, rows):
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as fh:
             for line in fh:
+                # ONE parse per line, and a line that is valid JSON but not an
+                # object is SKIPPED. `null` and `123` both parse, and `.get` then
+                # raised AttributeError straight past this guard — crashing --log
+                # at every close until the file was hand-repaired, against the
+                # manifest's `actuals.on_missing: skip` (SYN-091).
                 try:
-                    seen.add((json.loads(line).get("project"),
-                              json.loads(line).get("session")))
+                    rec = json.loads(line)
                 except (ValueError, TypeError):
                     continue
-    new = [r for r in rows if (r.get("project"), r.get("session")) not in seen]
+                if isinstance(rec, dict):
+                    seen.add(_series_key(rec))
+    new = [r for r in rows if _series_key(r) not in seen]
     if new:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:

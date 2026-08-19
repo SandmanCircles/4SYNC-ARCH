@@ -191,6 +191,29 @@ class TestSummarise(unittest.TestCase):
         self.assertLess(r["first_ts"], r["last_ts"])
 
 
+    def test_agent_session_ids_do_not_collide(self):
+        """`agent-<uuid>` truncated to 8 chars keeps `agent-` plus TWO hex digits,
+        and append_series dedupes on that key — so distinct subagent sessions were
+        silently discarded as already-present, with the run still reporting
+        "appended N new row(s)". 256 possible keys per project makes a collision
+        likelier than not by ~19 subagent sessions. Found by the SYN-091 coverage
+        pass over the one machinery file that review could not see."""
+        ids, kinds = [], []
+        # All three share their first TWO hex characters, which is all the old
+        # key retained after `agent-`. They differ well inside eight, which is
+        # what the key must actually resolve.
+        for u in ("3f9c1d2e-aaaa-bbbb-cccc-000000000001",
+                  "3fa04b71-aaaa-bbbb-cccc-000000000002",
+                  "3fffffff-9999-8888-7777-666666666666"):
+            path = os.path.join(self.dir, "agent-" + u + ".jsonl")
+            write_transcript(path, [usage()])
+            row = actuals.summarise(path)
+            ids.append(row["session"])
+            kinds.append(row["kind"])
+        self.assertEqual(len(set(ids)), 3, ids)
+        self.assertEqual(kinds, ["agent"] * 3)
+
+
 class TestPrefixTrace(unittest.TestCase):
     """The trace exists because session TOTALS cannot answer a before/after —
     they are dominated by how long the session ran. Sampling the same turn
@@ -269,6 +292,19 @@ class TestProjectMatching(unittest.TestCase):
         hits = actuals.project_dirs(False, os.path.join(self.dir, "B"))
         self.assertEqual([os.path.basename(h) for h in hits], ["proj-b"])
 
+    def test_a_sibling_whose_name_extends_the_root_is_excluded(self):
+        """`startswith` on a raw path string has no separator boundary, so a
+        SIBLING whose name merely extends the root matched it. For an adopter with
+        `/proj/app` and `/proj/app-legacy`, `--dir /proj/app --log` folded the
+        legacy project's sessions into this instance's permanent series — quietly
+        corrupting the measurement the tool exists to produce."""
+        d = os.path.join(self.root, "proj-a-legacy")
+        os.makedirs(d)
+        write_transcript(os.path.join(d, "s.jsonl"), [usage()],
+                         cwd=os.path.join(self.dir, "A-legacy"))
+        hits = actuals.project_dirs(False, os.path.join(self.dir, "A"))
+        self.assertEqual([os.path.basename(h) for h in hits], ["proj-a"])
+
     def test_missing_transcript_root_is_empty_not_fatal(self):
         actuals.transcript_root = lambda: os.path.join(self.dir, "does-not-exist")
         self.assertEqual(actuals.project_dirs(True, self.dir), [])
@@ -319,6 +355,20 @@ class TestAppendSeries(unittest.TestCase):
         actuals.append_series(self.dir, self.rows("a"))
         path = os.path.join(self.dir, actuals.SERIES_REL)
         self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_a_degenerate_json_line_does_not_crash_the_append(self):
+        """`null` and `123` are valid JSON and are not dicts, so `.get` raised
+        AttributeError straight past the (ValueError, TypeError) guard — crashing
+        --log at every close until the file was hand-repaired. That contradicts
+        this module's stated tolerance posture and the manifest's
+        `actuals.on_missing: skip`, whose whole point is that a measurement never
+        blocks a close."""
+        path = os.path.join(self.dir, actuals.SERIES_REL)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("null" + chr(10) + "123" + chr(10))
+        n, _ = actuals.append_series(self.dir, self.rows("a"))
+        self.assertEqual(n, 1)
 
     def test_every_line_is_valid_json(self):
         actuals.append_series(self.dir, self.rows("a", "b", "c"))

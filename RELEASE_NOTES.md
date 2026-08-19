@@ -70,6 +70,97 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.1.3
+
+*The false-alarm release: four checks that fired when nothing was wrong, one that could never
+pass at all, and a guard that was right and said so where nobody could hear it.*
+
+**Changed machinery** (replace wholesale, as always): `hooks/pre_tool_use.py` + suite,
+`hooks/session_start.py` + suite, `scripts/rotate.py` + suite, `scripts/wire_hooks.py` + suite,
+`scripts/debt.py` + suite, `scripts/arch_build.py`, `scripts/arch_update.py`, `scripts/mail.py`
+and their suites. **The inventory itself is unchanged at 24 files**, so unlike v1.0.8, v1.1.1
+and v1.1.2 this release does *not* invalidate previously published build ids for inventory
+reasons — your id changes because the code changed, which is the ordinary case.
+
+- **The "Pickup-ready" check could never pass.** Reported by an adopter whose 27-row ledger
+  flagged all five pending rows as "pending but not named" while every one of them was
+  correctly named. The pattern matched the **header line** and the row scan ran against that
+  match, so a list written as bullets underneath was never read — and because the reverse
+  comparison was empty for the same reason, it only ever complained in one direction, which
+  reads like a drifted ledger rather than a blind parser. The template's own guidance ("plus a
+  one-line note on each") produced the shape that broke it. It now reads the header plus the
+  block beneath, stopping at the next bold heading so a following `**Blocked, but closer:**`
+  note cannot leak into the list. **If your pickup list spans more than one line, expect this
+  check to start telling you the truth — including drift it was hiding.**
+
+- **A guard was doing its job silently.** In `warn` — the default mode — a guard that caught a
+  bad write logged it and allowed the call, correctly. But the session that made the write was
+  told *nothing*: exit 0, empty stderr, the finding in a log file nobody reads mid-session. The
+  guard was never the defect; its silence was. Warn now speaks: it emits the reason to the
+  session, names the guard, and says the write would have been refused under `enforce`. **It
+  still never blocks and never prompts** — the decision is always `allow`, and the exit code is
+  still 0.
+
+- **The table-prose check had a dead zone.** It only reported once prose passed an absolute
+  2,048-byte floor, so any ledger whose prose outweighed its rows while staying under 2 KB was
+  never reported — permanently. That band is every small and every young ledger, which is most
+  adopters. The floor is gone. In its place the check subtracts what the *template* wrote —
+  comments, rules, the attribution footer, bold labels and unfilled `[placeholders]` — so a
+  newborn ledger is quiet because it is genuinely fine, not because a threshold muted it.
+  **A ledger that was silent under the floor may start reporting. That is the check working.**
+
+- **`rotate.py` and `wire_hooks.py` could not see some manifests at all.** The content test
+  required a newline before `boot:`, so a manifest whose *first* line is `boot:` was invisible;
+  and it read a fixed 4,096-byte window, which undercuts the 16,384-byte cap a manifest is
+  allowed to reach — a legal comment prologue could push both marker keys out of view. Either
+  way the tool reported "no manifest", which is indistinguishable from an instance that
+  declares none.
+
+- **The session-debt clear could target the wrong row, and said so unhelpfully.** The recorder
+  keys rows by the hook payload's session id while `debt.py --clear` defaults to
+  `$CLAUDE_CODE_SESSION_ID`, and a nested or scripted run inherits its parent's value. The boot
+  receipt now prints the payload id **only when the two disagree**, with the exact command to
+  run. And when a clear matches nothing, the tool no longer invites you to pick a row from the
+  survivors: any of them may belong to a session that is live right now, and deleting one
+  destroys the only evidence it was working.
+
+- **`debt.py` walked your whole instance at every close.** It now skips build output like its
+  sibling tools already did, prunes dot-directories as a class rather than one guessed name at
+  a time, and stops after three levels — deep enough for any nested-instance layout.
+
+- **The bulletin and its manifest key can now disagree out loud.** A roster naming two or more
+  agents with `close.bulletin.check_at_boot: false` means mail queues where no session reads
+  it; a single agent with the key `true` means every session pays for a board nobody else can
+  post to. The close reports either. Template placeholder rows are not counted as agents.
+
+- **A tally in the pre-v1.1.2 wording no longer reads as a miscount.** The counts are compared
+  as numbers, so an upgrading instance is told its *format* is old rather than its arithmetic
+  is wrong. `--apply` still restores the canonical line.
+
+- **New: the close asks about third-party names in your own prose.** It looks for attribution
+  *shapes* — "reported by <Name>", "<Name>'s repo", "(<Name>, 2026-08-14)" — in your ledger,
+  journal, board and task documents. It knows no names and keeps no list. It asks; it never
+  decides, because whether a person belongs in a file that may become public is a consent
+  question about a human being. It is quiet by construction — it needs a two-word
+  capitalised name, so your own first name running through ordinary prose is not a match, and
+  a hit is a question rather than a verdict.
+
+- Smaller: the boot-cost meter is no longer launched twice per close; every shipped file now
+  ends with its EOF sentinel; `ADOPTING.md` expands ARCH on first mention.
+
+**Manifest:** nothing required. This release adds no keys and changes no declared shapes.
+
+**By hand:** four things, all of them behaviour you will *see* rather than work you must do.
+If you keep a session-debt file more than three directories below your instance root, it will
+no longer be cleared — move it up or clear it explicitly. If your ledger was quiet under the
+old prose floor, expect the table-prose line to start reporting; read it before trimming
+anything, because the fix for over-long prose is usually a task document, not deletion. If
+your pickup list spans multiple lines, the check now reads it and may name real drift for the
+first time. And if any tooling of yours reads hook output, note that `warn` mode now writes a
+JSON object to stdout where it previously wrote nothing — exit code and decision are unchanged.
+
+---
+
 ## v1.1.2
 
 *The cold-trial release: everything a stranger's literal walk through the published docs

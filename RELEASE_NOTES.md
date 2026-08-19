@@ -111,24 +111,32 @@ debt file.
   asks the git question ("is this a new/blank folder? has git been initiated?" — ARCH
   requires a repository) and the Claude Desktop question (a Desktop user has two
   surfaces whether they have thought about it or not), sets the `agents:` block and the
-  bulletin key **together** from the surfaces answer, MOVES the seed to `arch/` instead
-  of copying it, updates the manifest's own header banner in the rename pass, rewrites
-  the dead `bootstrap:` pointer when it deletes the block, authors **from the seed
-  only** (never importing a name from the environment), and copies EOF sentinels
-  exactly; `CLAUDE.md` gains the per-machine wiring check keyed to the boot receipt's
-  absence.
+  bulletin key **together** from the surfaces answer (every named agent still lands in
+  ABBA's roster, even a single one — the block and key stay commented/false below two),
+  MOVES the seed to `arch/` instead of copying it, updates the manifest's own header
+  banner in the rename pass, rewrites the dead `bootstrap:` pointer when it deletes the
+  block, authors **from the seed only** (never importing a name from the environment),
+  and copies EOF sentinels exactly; the shipped `agents:` block itself now ships
+  COMMENTED so the resting template obeys its own pairing rule; `CLAUDE.md` gains the
+  per-machine wiring check — `--status` is the authoritative test, the missing boot
+  receipt is the visible symptom, and the receipt is a separate hand-paste that
+  `--write` does not do.
 
 **Manifest:** nothing required for an existing instance. Recommended, as anchored edits:
-if you run ONE surface, set `close.bulletin.check_at_boot: false` — the old template
-shipped it `true`, which priced a board that can carry no traffic into every boot; and
+if you run ONE surface, set `close.bulletin.check_at_boot: false` AND comment out (or
+delete) your `agents:` block — the pair moves together, and the old template shipped
+block-plus-`true`, which priced a board that can carry no traffic into every boot; and
 consider copying the new `debt:` comment (clear via `scripts/debt.py --clear`, never via
 a file-edit tool) so the rule survives next to the key it governs.
 
-**By hand:** two things. If your close clears the session-debt row with a file-edit
+**By hand:** three things. If your close clears the session-debt row with a file-edit
 tool, switch to `python scripts/debt.py --clear` — an edit-tool clear un-does itself.
-And on every machine you work from, run `python scripts/wire_hooks.py --status` once: a
+On every machine you work from, run `python scripts/wire_hooks.py --status` once: a
 git-synced instance on a second machine boots with no guards, no receipt, and no debt
-recorder, silently.
+recorder, silently. And if your instance predates this release's git requirement and
+was never `git init`-ed, init it now — every exit and undo story in `ADOPTING.md`
+assumes the repo exists, and a close in a repo-less instance now says so loudly
+instead of quietly queueing.
 
 ---
 

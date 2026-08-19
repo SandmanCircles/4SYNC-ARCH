@@ -62,9 +62,14 @@ session_debt:              # unwrapped-session tracker: hook sets on mutation; o
                            # instance's. A nested repo is itself an instance, so a
                            # session that edits both leaves a row in each.
 
-agents:                    # OPTIONAL — omit if one surface; the bulletin stays inert
-  self: [declared, env:ARCH_AGENT, shell, ask]   # identity ladder, first hit wins
-  roster: ABBA.md          # names + aliases live with the board they serve
+# agents:                  # DECLARED BY GENESIS iff TWO OR MORE surfaces/agents
+#   self: [declared, env:ARCH_AGENT, shell, ask]   # are named. Identity ladder,
+#   roster: ABBA.md        # first hit wins; names + aliases live with the board.
+                           # Ships COMMENTED so the resting template obeys its own
+                           # pairing rule — no block + check_at_boot false. Genesis
+                           # uncomments this AND flips the bulletin key together,
+                           # from the same surfaces answer, never one without the
+                           # other.
 
 bootstrap:
   # Genesis — fires ONLY when config/KERNEL.yaml has `meta.status: TEMPLATE`
@@ -106,13 +111,18 @@ bootstrap:
       template's EOF sentinel EXACTLY, substituting only the filename
     - fill CLAUDE.md and NAMING_CONVENTIONS.md placeholders
     - set instance.name + instance.root (absolute) in THIS file
-    - route the seed's "Agents & surfaces" answer into ABBA.md's roster, declare
-      an `agents` block here AND set close.bulletin.check_at_boot true — IFF TWO
-      OR MORE surfaces/agents are named. Fewer than two — omit the block and
-      leave check_at_boot false (ABBA/LANDING_QUEUE stay, inert; a one-surface
-      board can carry no traffic, so its boot scan is pure overhead). The block
-      and the key move TOGETHER, from the same answer — gating them differently
-      makes the manifest declare one thing while the meter prices another
+    - route EVERY named surface/agent — even a single one — into ABBA.md's
+      roster table. A name the user gave in the interview must land somewhere
+      machine-readable, and a roster row is free while the board is inert;
+      losing it to the read-only archived seed means reconstructing it from
+      memory the day a second surface arrives. THEN, IFF TWO OR MORE are
+      named — uncomment the `agents` block above AND set
+      close.bulletin.check_at_boot true. Fewer than two — leave the block
+      commented and the key false (ABBA/LANDING_QUEUE stay, inert; a
+      one-surface board can carry no traffic, so its boot scan is pure
+      overhead). The block and the key move TOGETHER, from the same answer —
+      gating them differently makes the manifest declare one thing while the
+      meter prices another
     - flip meta.status TEMPLATE → AUTHORITATIVE in each authored file
     - verify every authored YAML: [eof_sentinel, yaml_parse]
     - grep the WHOLE authored stack — REFERENCE included, where routed prose

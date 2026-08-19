@@ -17,10 +17,18 @@ Usage:
 
 --session defaults to $CLAUDE_CODE_SESSION_ID; with neither, --clear refuses
 (exit 2) rather than guess whose row to delete. The clear walks EVERY
-.session_debt.tsv under the root (skipping .git and friends), because a nested
-repo that is itself an ARCH instance keeps its own debt file, and a session
-that edited both left a row in each. Exit 0 on success and on nothing-to-do —
-bookkeeping must never block a close.
+.session_debt.tsv under the root (skipping .git and friends) — a nested repo
+that is itself an ARCH instance keeps its own debt file, and a session that
+edited both left a row in each — and ALSO covers the ARCH_DEBT_FILE override
+path when that variable is set, because the recorder honors it and a clear
+that did not would reintroduce the exact failure this script closes. Exit 0
+on success and on nothing-to-do — bookkeeping must never block a close.
+
+The rewrite is ATOMIC (tmp + os.replace, the recorder's own pattern) and
+operates on BYTES: rows are matched as raw `sid\t` prefixes, so a hand-edited
+file carrying non-UTF-8 bytes neither crashes the clear nor gets its other
+rows re-encoded — everything that is not this session's row is preserved
+byte for byte.
 """
 
 import argparse
@@ -32,29 +40,61 @@ SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
 
 
 def find_debt_files(root):
-    """Every debt file under `root`, bounded by the skip list."""
+    """Every debt file under `root`, bounded by the skip list, plus the
+    ARCH_DEBT_FILE override when set — the recorder writes there instead, so a
+    walk that ignored it would clear nothing while reporting success."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         if DEBT_FILENAME in filenames:
             found.append(os.path.join(dirpath, DEBT_FILENAME))
+    override = os.environ.get("ARCH_DEBT_FILE")
+    if override:
+        override = os.path.abspath(override)
+        if os.path.isfile(override) and not any(
+                os.path.normcase(override) == os.path.normcase(f) for f in found):
+            found.append(override)
     return found
 
 
 def clear_own_row(path, sid):
     """Delete `sid`'s row from one debt file. Returns True if a row was removed.
 
-    Everything that is not this session's row — the header, other sessions'
-    rows, even malformed lines — is preserved byte-for-byte: this tool has
-    exactly one opinion, and it is about one row."""
-    with open(path, encoding="utf-8", newline="") as fh:
-        lines = fh.readlines()
-    kept = [ln for ln in lines if not ln.startswith(sid + "\t")]
+    Byte-level and atomic, deliberately: everything that is not this session's
+    row — the header, other sessions' rows, malformed or non-UTF-8 lines — is
+    preserved byte-for-byte, and the rewrite goes through tmp + os.replace so
+    a concurrent reader never sees a truncated file and a crash mid-write
+    cannot destroy rows. (A concurrent recorder rewrite can still interleave —
+    neither writer takes a lock — but the window no longer includes an empty
+    file, which was the row-destroying case.)"""
+    with open(path, "rb") as fh:
+        lines = fh.read().splitlines(keepends=True)
+    prefix = sid.encode("utf-8") + b"\t"
+    kept = [ln for ln in lines if not ln.startswith(prefix)]
     if len(kept) == len(lines):
         return False
-    with open(path, "w", encoding="utf-8", newline="") as fh:
-        fh.writelines(kept)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(b"".join(kept))
+        os.replace(tmp, path)            # atomic on the same filesystem
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return True
+
+
+def _display_rows(path):
+    """Data lines of one debt file, decoded for DISPLAY only (replace errors —
+    the file itself is never rewritten through this decoding)."""
+    with open(path, "rb") as fh:
+        for raw in fh.read().splitlines():
+            ln = raw.decode("utf-8", "replace")
+            if ln.strip() and not ln.startswith("#"):
+                yield ln
 
 
 def main(argv=None):
@@ -82,10 +122,11 @@ def main(argv=None):
             return 0
         for f in files:
             print(f)
-            with open(f, encoding="utf-8") as fh:
-                for ln in fh:
-                    if ln.strip() and not ln.startswith("#"):
-                        print("  " + ln.rstrip("\n"))
+            try:
+                for ln in _display_rows(f):
+                    print("  " + ln)
+            except OSError as exc:
+                print("  (unreadable: %s)" % exc)
         return 0
 
     sid = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID")
@@ -103,7 +144,7 @@ def main(argv=None):
             hit = clear_own_row(f, sid)
             cleared_any = cleared_any or hit
             print("%s: %s" % (f, "own row cleared" if hit else "no own row"))
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             # Reported, not raised: a bookkeeping failure must not block a close.
             print("%s: could not update (%s)" % (f, exc))
 
@@ -112,14 +153,12 @@ def main(argv=None):
     # defaults to $CLAUDE_CODE_SESSION_ID — and a nested or scripted session
     # INHERITS the parent's value, so the clear targets a row that does not
     # exist while the real row sits one line away. "no own row" alone reads
-    # like success; naming the survivors turns it into a actionable miss.
+    # like success; naming the survivors turns it into an actionable miss.
     if not cleared_any:
         leftover = []
         for f in files:
             try:
-                with open(f, encoding="utf-8") as fh:
-                    leftover += [ln.split("\t")[0] for ln in fh
-                                 if ln.strip() and not ln.startswith("#")]
+                leftover += [ln.split("\t")[0] for ln in _display_rows(f)]
             except OSError:
                 pass
         if leftover:

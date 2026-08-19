@@ -894,7 +894,7 @@ STATUS_SOFT_MAX = 20480
 STATUS_SOFT_MAX_ENV = "ARCH_STATUS_MAX"
 
 
-def report_status_size(root, soft_max=None):
+def report_status_size(root, soft_max=None, manifest_name=None):
     """Measure the DECLARED STATUS file per top-level field.
 
     THE FOURTH PLACE THE GROWTH WENT (MP#48). The split capped descriptions;
@@ -918,7 +918,7 @@ def report_status_size(root, soft_max=None):
     manifest's own doctrine, that a cap you raise on reflex is not a cap.
 
     Reports; never blocks. Returns (total_bytes, [(field, bytes), …])."""
-    path = find_status_file(root)
+    path = find_status_file(root, manifest_name)
     if not path or not os.path.isfile(path):
         print("status-size: no STATUS file declared or found — skipped")
         return 0, []
@@ -1614,10 +1614,19 @@ def discover_manifests(root, manifest_name=None):
     """Every ARCH manifest reachable from root: this instance's, plus any nested
     repo shipping one (the product repo does). [(relpath, bytes, max_bytes|None)]."""
     name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
+    # Nested candidates are tried under BOTH this instance's name AND the
+    # default. A nested instance that ran its own genesis carries a renamed
+    # manifest unknowable from here, but a vendored pre-genesis checkout ships
+    # the default name — and resolving the ROOT manifest to a renamed file
+    # must not silently drop those nested copies out of at-rest and cap
+    # coverage, which is exactly what a single-name lookup did.
+    names = [name] if name == "4SYNC.yaml" else [name, "4SYNC.yaml"]
     rels = [name]
     try:
-        rels += [d + "/" + name for d in sorted(os.listdir(root))
-                 if d not in SKIP_DIRS and os.path.isdir(os.path.join(root, d))]
+        for d in sorted(os.listdir(root)):
+            if d in SKIP_DIRS or not os.path.isdir(os.path.join(root, d)):
+                continue
+            rels += [d + "/" + n for n in names]
     except OSError:
         pass
     out = []
@@ -1905,21 +1914,27 @@ def manifest_meter_script(root, manifest_name=None):
     return s.group(1) if s else None
 
 
-def _meter_boot(root, script_rel):
+def _meter_boot(root, script_rel, manifest_name=None):
     """(tokens, bytes) from the declared meter's --json, or None.
 
     The meter is DECLARED, not discovered: close.meter.script is where this
     instance says its meter lives, and in this silo that is the product's copy,
     one directory down. Any failure is a skip — the manifest's own posture for
-    this step is on_missing: skip, and a measurement never blocks a close."""
+    this step is on_missing: skip, and a measurement never blocks a close.
+    A resolved manifest name travels to the child through a COPIED environment
+    — never by mutating this process's os.environ, which would convert a
+    per-run inference into a global pin that outlives the run."""
     if not script_rel:
         return None
     p = os.path.join(root, script_rel.replace("/", os.sep))
     if not os.path.exists(p):
         return None
+    env = os.environ.copy()
+    if manifest_name and not env.get("ARCH_MANIFEST"):
+        env["ARCH_MANIFEST"] = manifest_name
     try:
         out = subprocess.run([sys.executable, p, "--dir", root, "--json"],
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=120, env=env)
         d = json.loads(out.stdout)
         return d.get("boot_total_tokens"), d.get("boot_total_bytes")
     except Exception:  # noqa: BLE001 — no meter, no --json, bad output: skip
@@ -1960,7 +1975,9 @@ def report_status_facts(root, manifest_name=None, run_meter=True):
     _check_shas(text, spans, _git_roots(root), findings)
     _check_suites(root, text, spans, findings, notes)
     if run_meter:
-        _check_boot(text, spans, _meter_boot(root, manifest_meter_script(root, manifest_name)),
+        _check_boot(text, spans,
+                    _meter_boot(root, manifest_meter_script(root, manifest_name),
+                                manifest_name),
                     findings)
 
     print(f"status: {rel} — {len(findings)} claim(s) disagree with what they describe")
@@ -2089,7 +2106,7 @@ def report_boot_growth(root, manifest_name=None, run_meter=True, pct=BOOT_GROWTH
     script = manifest_meter_script(root, manifest_name)
     if not script:
         return None
-    got = _meter_boot(root, script)
+    got = _meter_boot(root, script, manifest_name)
     if not got:
         return None
     now = got[0]
@@ -2151,7 +2168,8 @@ def report_manifest_at_rest(root, manifest_name=None):
 
     Reports; never blocks. Returns a list of (relpath, problem) findings."""
     found = []
-    for rel, _size, _cap in discover_manifests(root, manifest_name):
+    checked = discover_manifests(root, manifest_name)
+    for rel, _size, _cap in checked:
         p = os.path.join(root, rel.replace("/", os.sep))
         try:
             text = read(p)
@@ -2181,9 +2199,15 @@ def report_manifest_at_rest(root, manifest_name=None):
                                    "— g5 will refuse the NEXT write to this file, whoever makes it"
                               % (m.group(1), line)))
 
-    if not found:
-        print("manifest-at-rest: all reachable manifests compliant "
-              "(parse + declaration_only) ✓")
+    if not checked:
+        # An empty candidate set is a COVERAGE statement, never a pass — the
+        # vacuous "all compliant" here is how a renamed instance's at-rest
+        # check silently verified nothing while printing a checkmark.
+        print("manifest-at-rest: NO manifests found to check — nothing verified. "
+              "(Not a pass; set ARCH_MANIFEST or run from the instance root.)")
+    elif not found:
+        print("manifest-at-rest: all %d reachable manifest(s) compliant "
+              "(parse + declaration_only) ✓" % len(checked))
     else:
         for rel, problem in found:
             print("  ! manifest-at-rest  %s %s" % (rel, problem))
@@ -2262,9 +2286,10 @@ def resolve_manifest(root):
     to the default filename, found nothing, and reported "no STATUS file
     declared or found — skipped" — three checks lost and a fallback journal cap
     used, in words indistinguishable from an instance that declares no STATUS.
-    Meanwhile report_manifest_at_rest FOUND the renamed manifest in the same
-    run, because it globs by content. A resolver that can be out-known by a
-    later line of its own report is worse than none.
+    (In that same run report_manifest_at_rest printed a vacuous all-compliant
+    line — its discovery is name-based too, so it had found NOTHING and read
+    an empty candidate set as a pass. Both failures argue the same direction:
+    resolve once, up front, and say what was resolved.)
 
     The ladder: ARCH_MANIFEST (an explicit pin — honored even when the file is
     missing, loudly, because a wrong pin should look wrong rather than silently
@@ -2321,28 +2346,31 @@ def main():
 
     d = os.path.abspath(args.dir)
 
-    # Resolve the manifest ONCE, say what was resolved, and export it: every
-    # downstream helper reads ARCH_MANIFEST, so a discovered manifest reaches
-    # all of them without threading a parameter through fifteen call sites —
-    # including the meter subprocess, which inherits the environment.
-    manifest_name_resolved, manifest_how = resolve_manifest(d)
-    if manifest_name_resolved and not os.environ.get("ARCH_MANIFEST"):
-        os.environ["ARCH_MANIFEST"] = manifest_name_resolved
-    if manifest_name_resolved:
-        print(f"manifest: {manifest_name_resolved} ({manifest_how})")
+    # Resolve the manifest ONCE, say what was resolved, and THREAD it through
+    # the helpers' existing manifest_name parameters. Never export it into
+    # os.environ: that converts a per-run inference into a process-global pin
+    # — the resolver's own ladder then treats it as an explicit user pin, a
+    # second in-process run against a different root inherits it, and nested
+    # default-named manifests silently drop out of at-rest coverage. The one
+    # place the name must cross a process boundary (the meter subprocess) gets
+    # a COPIED environment in _meter_boot.
+    mname, manifest_how = resolve_manifest(d)
+    if mname:
+        print(f"manifest: {mname} ({manifest_how})")
     else:
         print("manifest: NONE FOUND — ARCH_MANIFEST is unset and no root *.yaml "
               "declares sync_version:+boot:. Declared names, caps and every STATUS "
               "check now run on DEFAULTS; checks skipped below are UNREACHABLE, "
               "not passing.")
+    mname = mname or "4SYNC.yaml"
 
     # DECLARED, NOT ASSUMED (MP#83). Every one of these was a string literal here
     # while the manifest declared it — the ledger in three separate keys.
-    ledger_name = manifest_ledger_name(d)
-    bulletin_name = manifest_bulletin_name(d)
-    prefix = manifest_task_prefix(d)
+    ledger_name = manifest_ledger_name(d, mname)
+    bulletin_name = manifest_bulletin_name(d, mname)
+    prefix = manifest_task_prefix(d, mname)
     ledger = os.path.join(d, ledger_name)
-    history = os.path.join(d, manifest_journal_overflow(d))
+    history = os.path.join(d, manifest_journal_overflow(d, mname))
     abba = os.path.join(d, bulletin_name)
     archive = os.path.join(d, archive_name(bulletin_name))
 
@@ -2363,7 +2391,8 @@ def main():
 
     # Resolved BEFORE the rotate, not after: the size cap is now an input to the
     # move, not just a line in the report that follows it.
-    jmax = args.journal_max_bytes if args.journal_max_bytes is not None else manifest_journal_max(d)
+    jmax = (args.journal_max_bytes if args.journal_max_bytes is not None
+            else manifest_journal_max(d, mname))
 
     # PRINTED, because a resolver that silently falls back is a resolver nobody can
     # debug: a mistyped `prefix:` and an absent one produce the same `MP`, and the
@@ -2390,11 +2419,11 @@ def main():
         if args.subject_max > 0:
             report_subjects(ledger, args.subject_max, prefix)
         report_pickup_ready(ledger)
-        report_status_closed_refs(d, ledger, prefix=prefix)
-    report_status_size(d)
-    report_status_facts(d, run_meter=not args.no_meter)
-    report_boot_growth(d, run_meter=not args.no_meter)
-    report_manifest_at_rest(d)
+        report_status_closed_refs(d, ledger, manifest_name=mname, prefix=prefix)
+    report_status_size(d, manifest_name=mname)
+    report_status_facts(d, manifest_name=mname, run_meter=not args.no_meter)
+    report_boot_growth(d, manifest_name=mname, run_meter=not args.no_meter)
+    report_manifest_at_rest(d, mname)
     report_findings(d)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 

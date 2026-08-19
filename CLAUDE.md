@@ -7,12 +7,15 @@
 > honoring `freshness_check` before any ledger write. Close fires ONLY on an explicit ending
 > signal, never on silence, idle, or a pause — paused sessions resume, they don't wrap.
 
-> **Wiring check (per machine):** if no `4SYNC ARCH — BOOT RECEIPT` banner appeared at the
-> start of this session and this instance normally shows one, THIS MACHINE is not wired — hook
-> wiring is machine-local, so a clone on a second machine carries the protocol but not the
-> guards, the receipt, or the session-debt recorder, and it boots that way silently. Verify
-> with `python scripts/wire_hooks.py --status`; fix with `--write` (once per machine, per
-> instance root), then reload the session. See `arch/README.md` → *Hardening*.
+> **Wiring check (per machine):** hook wiring is machine-local, so a clone on a second
+> machine carries the protocol but not the guards, the receipt, or the session-debt
+> recorder — and it boots that way silently. The authoritative check is
+> `python scripts/wire_hooks.py --status`; a missing `4SYNC ARCH — BOOT RECEIPT` banner is
+> the visible *symptom*, but it only speaks for the receipt half, so verify with `--status`
+> rather than the banner. Fixing is TWO steps, not one: `--write` wires the guards (once per
+> machine, per instance root), and the receipt is a separate hand-paste — run the script and
+> copy its printed SessionStart block into `~/.claude/settings.json` yourself; `--write`
+> never wires it. Then reload the session. See `arch/README.md` → *Hardening*.
 
 At the start of every session, load (in this order):
 

@@ -1963,7 +1963,7 @@ class TestBootGrowthAlert(unittest.TestCase):
                 print(json.dumps({"boot_tokens": n}), file=fh)
 
     def _run(self, now):
-        rotate._meter_boot = lambda root, script: (now, now * 4)
+        rotate._meter_boot = lambda root, script, manifest_name=None: (now, now * 4)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             got = rotate.report_boot_growth(self.root)
@@ -2530,6 +2530,38 @@ class ResolveManifestFallbackCase(unittest.TestCase):
     def test_nothing_to_find(self):
         name, _ = rotate.resolve_manifest(self.root)
         self.assertIsNone(name)
+
+
+class DiscoverManifestsNestedCase(unittest.TestCase):
+    """A renamed ROOT manifest must not drop nested default-named manifests out
+    of at-rest and cap coverage — nested candidates are tried under BOTH the
+    resolved name and the default (a vendored pre-genesis checkout ships the
+    default; a genesis'd nested instance ships its own rename)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_discover_")
+        prev = os.environ.pop("ARCH_MANIFEST", None)
+        if prev is not None:
+            self.addCleanup(os.environ.__setitem__, "ARCH_MANIFEST", prev)
+
+    def _manifest(self, rel):
+        p = os.path.join(self.root, rel.replace("/", os.sep))
+        if os.path.dirname(rel):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write('sync_version: "1.0"\n\nboot:\n  - MERGE_PLAN.md\n')
+
+    def test_renamed_root_still_reaches_nested_default(self):
+        self._manifest("TRELLIS.yaml")
+        self._manifest("product/4SYNC.yaml")
+        rels = [r for r, _, _ in rotate.discover_manifests(self.root, "TRELLIS.yaml")]
+        self.assertIn("TRELLIS.yaml", rels)
+        self.assertIn("product/4SYNC.yaml", rels)
+
+    def test_resolver_never_mutates_environ(self):
+        self._manifest("TRELLIS.yaml")
+        rotate.resolve_manifest(self.root)
+        self.assertIsNone(os.environ.get("ARCH_MANIFEST"))
 
 
 class ProseFloorCase(unittest.TestCase):

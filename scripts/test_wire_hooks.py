@@ -304,13 +304,13 @@ class StatusCase(unittest.TestCase):
             fh.write("# hook body\n")
         self.user = os.path.join(self.root, "fake_user_settings.json")
 
-    def _run(self):
+    def _run(self, check_interpreter=False):
         import contextlib
         import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             code = wh.status(self.root, user_settings=self.user,
-                             check_interpreter=False)
+                             check_interpreter=check_interpreter)
         return code, buf.getvalue()
 
     def _wire_project(self):
@@ -355,6 +355,78 @@ class StatusCase(unittest.TestCase):
         self._wire_project()                    # guards wired, receipt not
         _, out = self._run()
         self.assertIn("receipt: NOT wired", out)
+
+    def test_shared_project_settings_json_counts_as_wired(self):
+        """Claude Code reads hooks from the SHARED .claude/settings.json too —
+        pre_tool_use.py's own docstring says to wire there. Committed team
+        wiring must not read as UNWIRED (the false alarm steers a redundant
+        --write)."""
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                "command": '"py" "/x/hooks/pre_tool_use.py"'}]}]}}
+        with open(os.path.join(sdir, "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("WIRED", out)
+
+    def test_missing_hook_script_is_a_problem(self):
+        """A wiring whose hook script is gone (machine-migration aftermath)
+        fails as silently as a dead interpreter — WIRED over it is the exact
+        'worse than no hook' state."""
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                "command": '"C:/nope/python.exe" "C:/nope/hooks/pre_tool_use.py"'}]}]}}
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        code, out = self._run(check_interpreter=True)
+        self.assertEqual(code, 1)
+        self.assertIn("missing hook script", out)
+
+    def test_receipt_at_project_level_is_found(self):
+        self._wire_project()
+        sdir = os.path.join(self.root, ".claude")
+        with open(os.path.join(sdir, "settings.local.json"), encoding="utf-8") as fh:
+            blob = json.load(fh)
+        blob["hooks"]["SessionStart"] = [{"hooks": [{"type": "command",
+            "command": '"py" "/x/hooks/session_start.py"'}]}]
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        _, out = self._run()
+        self.assertNotIn("receipt: NOT wired", out)
+        self.assertIn("wired at project-local level", out)
+
+    def test_unreadable_file_does_not_hide_other_wiring(self):
+        """One trailing comma must not mask valid wiring elsewhere — the old
+        early-return reported 'cannot tell' after two lines and never checked
+        the user level at all."""
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{ not json }")
+        blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                "command": '"py" "/x/hooks/pre_tool_use.py"'}]}]}}
+        with open(self.user, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("NOT READABLE", out)
+        self.assertIn("WIRED", out)
+
+    def test_unreadable_and_nothing_else_is_cannot_tell(self):
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{ not json }")
+        code, out = self._run()
+        self.assertEqual(code, 2)
+        self.assertIn("CANNOT TELL", out)
 
 
 if __name__ == "__main__":

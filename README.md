@@ -422,9 +422,11 @@ so git-syncing an instance to another machine carries the protocol and none of t
 enforcement layer: the clone boots `CLAUDE.md`-only, silently — no guards, no
 session-debt recorder, and no boot receipt, which is exactly the channel that would
 have announced the gap. Field-reported by an adopter running two machines. The routine
-is clone → `wire_hooks.py --write`, once per instance root, per machine — and
-`--status` turns "am I wired here?" into a report with an exit code instead of an
-inference from silence.
+is clone → `wire_hooks.py --write` for the guards, then paste the SessionStart block
+the script prints into `~/.claude/settings.json` for the receipt — `--write` never
+wires the receipt, so a machine that skips the paste has guards but no banner — once
+per instance root, per machine. `--status` turns "am I wired here?" into a report
+with an exit code instead of an inference from silence, and it checks both halves.
 
 It derives both paths from itself, **proves the interpreter runs before writing it**,
 and merges without disturbing settings you already have. Then **reload** — open

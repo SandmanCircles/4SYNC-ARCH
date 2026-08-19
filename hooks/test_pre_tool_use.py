@@ -1587,6 +1587,17 @@ class DebtSelfWriteCase(unittest.TestCase):
         hooks._record_debt(self._payload(alt))
         self.assertFalse(os.path.exists(alt))
 
+    def test_lookalike_debt_file_elsewhere_still_records(self):
+        """EXACT-path skip, not basename: editing a NESTED instance's debt file
+        (or any lookalike) is real work — the session's own liveness row must
+        keep moving, or a second boot reads 'probably idle' mid-maintenance."""
+        nested = os.path.join(self.root, "product")
+        os.makedirs(nested)
+        hooks._record_debt(self._payload(os.path.join(nested, ".session_debt.tsv")))
+        self.assertTrue(os.path.exists(self.debt))
+        with open(self.debt, encoding="utf-8") as fh:
+            self.assertIn("sid-under-test", fh.read())
+
     def test_ordinary_write_still_records(self):
         hooks._record_debt(self._payload(os.path.join(self.root, "notes.md")))
         with open(self.debt, encoding="utf-8") as fh:

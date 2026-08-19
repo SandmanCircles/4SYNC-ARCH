@@ -128,6 +128,56 @@ class ClearCase(unittest.TestCase):
         with open(top, encoding="utf-8") as fh:
             self.assertIn("a", fh.read())      # report mode wrote nothing
 
+    def test_arch_debt_file_override_is_cleared(self):
+        """The recorder honors ARCH_DEBT_FILE (relocated debt file); the clear
+        must too, or the documented override path silently reintroduces the
+        phantom-debt failure this script exists to close."""
+        alt = os.path.join(self.root, "elsewhere", "relocated_debt.tsv")
+        os.makedirs(os.path.dirname(alt))
+        self._seed(alt, ["mine"])
+        os.environ["ARCH_DEBT_FILE"] = alt
+        self.addCleanup(os.environ.pop, "ARCH_DEBT_FILE", None)
+        code, out = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(alt, encoding="utf-8") as fh:
+            self.assertNotIn("mine", fh.read())
+        self.assertIn("cleared", out)
+
+    def test_arch_debt_file_override_appears_in_report(self):
+        alt = os.path.join(self.root, "elsewhere", "relocated_debt.tsv")
+        os.makedirs(os.path.dirname(alt))
+        self._seed(alt, ["a"])
+        os.environ["ARCH_DEBT_FILE"] = alt
+        self.addCleanup(os.environ.pop, "ARCH_DEBT_FILE", None)
+        code, out = self._run("--dir", self.root)
+        self.assertEqual(code, 0)
+        self.assertIn("a", out)
+
+    def test_non_utf8_bytes_never_crash_and_are_preserved(self):
+        """A hand-edited debt file can carry non-UTF-8 bytes (cp1252 cwd). The
+        clear must not crash — bookkeeping never blocks a close — and must
+        preserve the alien bytes it does not own, byte for byte."""
+        top = os.path.join(self.root, ".session_debt.tsv")
+        with open(top, "wb") as fh:
+            fh.write(HEADER.encode("utf-8"))
+            fh.write(b"theirs\t2026-08-17T10:00:00\t2026-08-17T10:05:00\tC:\\\xfc\tunwrapped\n")
+            fh.write(row("mine").encode("utf-8"))
+        code, out = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(top, "rb") as fh:
+            data = fh.read()
+        self.assertNotIn(b"mine\t", data)
+        self.assertIn(b"C:\\\xfc", data)        # alien byte preserved exactly
+        code, _ = self._run("--dir", self.root)  # report mode must not crash either
+        self.assertEqual(code, 0)
+
+    def test_clear_is_atomic_no_tmp_left_behind(self):
+        top = os.path.join(self.root, ".session_debt.tsv")
+        self._seed(top, ["mine", "theirs"])
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(top + ".tmp"))
+
     def test_git_dir_is_not_walked(self):
         gitdir = os.path.join(self.root, ".git")
         os.makedirs(gitdir)

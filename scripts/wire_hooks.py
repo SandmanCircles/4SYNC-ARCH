@@ -271,6 +271,12 @@ def _command_exe(cmd):
     return cmd.split()[0] if cmd.split() else ""
 
 
+def _command_hook_path(cmd):
+    """The hook-script path out of a '"exe" "hook"' command string, or ""."""
+    parts = cmd.split('"')
+    return parts[3] if len(parts) > 3 else ""
+
+
 def status(root, user_settings=None, check_interpreter=True):
     """Report whether THIS machine is wired for THIS instance. Returns exit code.
 
@@ -282,57 +288,62 @@ def status(root, user_settings=None, check_interpreter=True):
     the one channel that would have announced the absence. Until this existed,
     the only detector was a session noticing that nothing had announced itself.
 
-    Exit codes: 0 = the PreToolUse guards are wired somewhere Claude Code will
-    read for a session in this instance; 1 = unwired (or wired with problems);
-    2 = cannot tell (a settings file exists but is not readable JSON). The boot
-    receipt is reported but never moves the exit code — recommended, not
-    required. `check_interpreter=False` skips executing the wired interpreter
-    (the report then says paths were not verified)."""
+    Exit codes: 0 = the PreToolUse guards are verifiably wired somewhere Claude
+    Code will read for a session in this instance; 1 = unwired, or wired with
+    problems (missing hook script, dead interpreter); 2 = cannot tell — no
+    clean wiring found AND some settings file exists but is not readable JSON.
+    An unreadable file never aborts the report: the remaining sources are
+    still checked, because a trailing comma in one file must not hide valid
+    wiring in another. The boot receipt is reported from every source but
+    never moves the exit code — recommended, not required. All three settings
+    sources Claude Code reads are checked: the shared project settings.json,
+    the project settings.local.json, and the user settings.json.
+    `check_interpreter=False` skips the on-disk path checks and interpreter
+    execution (the report then says paths were not verified)."""
     root = os.path.abspath(root)
     sroot, why_root = settings_root(root)
-    user_path = user_settings or os.path.join(
-        os.path.expanduser("~"), ".claude", "settings.json")
-    project_path = os.path.join(sroot, SETTINGS_REL)
     hook_base = os.path.basename(HOOK_REL)
+    boot_base = os.path.basename(BOOT_HOOK_REL)
+    sources = [
+        ("project", os.path.join(sroot, ".claude", "settings.json")),
+        ("project-local", os.path.join(sroot, SETTINGS_REL)),
+        ("user", user_settings or os.path.join(
+            os.path.expanduser("~"), ".claude", "settings.json")),
+    ]
 
     print("instance root : %s" % root)
     print("settings root : %s  (%s)" % (sroot, why_root))
 
-    wired_at = []
+    wired = []        # (label, command)
+    receipt_at = []
+    unreadable = []
     problems = []
 
-    proj = _load_settings(project_path)
-    if proj == "unreadable":
-        print("project       : %s — EXISTS BUT IS NOT READABLE JSON" % project_path)
-        return 2
-    pcmd = _hook_command(proj, "PreToolUse", hook_base)
-    if pcmd:
-        wired_at.append("project")
-        mode = (proj.get("env") or {}).get("ARCH_HOOKS_MODE")
-        print("project       : guards wired in %s%s"
-              % (project_path, ("  (ARCH_HOOKS_MODE=%s)" % mode) if mode else ""))
-    else:
-        print("project       : %s — %s"
-              % (project_path, "no guard entry" if proj is not None else "absent"))
+    for label, path in sources:
+        blob = _load_settings(path)
+        if blob == "unreadable":
+            unreadable.append(label)
+            print("%-14s: %s — EXISTS BUT IS NOT READABLE JSON" % (label, path))
+            continue
+        cmd = _hook_command(blob, "PreToolUse", hook_base)
+        if cmd:
+            wired.append((label, cmd))
+            mode = (blob.get("env") or {}).get("ARCH_HOOKS_MODE")
+            print("%-14s: guards wired in %s%s"
+                  % (label, path, ("  (ARCH_HOOKS_MODE=%s)" % mode) if mode else ""))
+        else:
+            print("%-14s: %s — %s"
+                  % (label, path, "no guard entry" if blob is not None else "absent"))
+        if _hook_command(blob, "SessionStart", boot_base):
+            receipt_at.append(label)
 
-    user = _load_settings(user_path)
-    if user == "unreadable":
-        print("user          : %s — EXISTS BUT IS NOT READABLE JSON" % user_path)
-        return 2
-    ucmd = _hook_command(user, "PreToolUse", hook_base)
-    if ucmd:
-        wired_at.append("user")
-        print("user          : guards wired in %s" % user_path)
-    else:
-        print("user          : %s — %s"
-              % (user_path, "no guard entry" if user is not None else "absent"))
-
-    if _hook_command(user, "SessionStart", os.path.basename(BOOT_HOOK_REL)):
-        print("receipt       : wired at user level")
+    if receipt_at:
+        print("receipt       : wired at %s level" % " + ".join(receipt_at))
     else:
         print("receipt: NOT wired — a session that skips boot announces nothing.")
-        print("                Run this script and paste its SessionStart block into")
-        print("                ~/.claude/settings.json yourself (user level, by hand).")
+        print("                `--write` does NOT wire the receipt: run this script and")
+        print("                paste its SessionStart block into ~/.claude/settings.json")
+        print("                yourself (user level, by hand).")
 
     # The stranded pre-v1.0.7 shape: settings written where nothing reads them.
     if os.path.normcase(sroot) != os.path.normcase(root):
@@ -343,34 +354,53 @@ def status(root, user_settings=None, check_interpreter=True):
             print("                at the repository root; this file is never read. Merge")
             print("                anything you set in it upward, then delete it.")
 
-    for where, cmd in (("project", pcmd), ("user", ucmd)):
-        if not cmd:
-            continue
-        exe = _command_exe(cmd)
-        if not check_interpreter:
-            continue
-        if not os.path.isfile(exe):
-            problems.append("%s wiring points at a missing interpreter: %s" % (where, exe))
-        elif not interpreter_works(exe):
-            problems.append("%s wiring's interpreter does not execute: %s" % (where, exe))
+    # Verify what the wired commands point at — BOTH halves. A wiring whose
+    # hook script is gone (the machine-migration aftermath) fails exactly as
+    # silently as a dead interpreter, and either one is worse than no hook.
+    if check_interpreter:
+        checked = set()
+        for label, cmd in wired:
+            hook = _command_hook_path(cmd)
+            if hook and not os.path.isfile(hook):
+                problems.append("%s wiring points at a missing hook script: %s"
+                                % (label, hook))
+            exe = _command_exe(cmd)
+            if exe in checked:
+                continue
+            checked.add(exe)
+            if not os.path.isfile(exe):
+                problems.append("%s wiring points at a missing interpreter: %s"
+                                % (label, exe))
+            elif not interpreter_works(exe):
+                problems.append("%s wiring's interpreter does not execute: %s"
+                                % (label, exe))
 
     print()
     for p in problems:
         print("PROBLEM       : %s" % p)
-    if wired_at and not problems:
+    wired_labels = [label for label, _ in wired]
+    if wired and not problems:
         note = ""
-        if len(wired_at) == 2:
+        if len(wired) > 1:
             note = " — Claude Code dedupes identical hook commands, so a guard fires once"
         if not check_interpreter:
-            note += "  (interpreter paths not verified)"
-        print("VERDICT       : WIRED (%s)%s" % (" + ".join(wired_at), note))
+            note += "  (paths not verified)"
+        if unreadable:
+            note += "  (could not read: %s)" % " + ".join(unreadable)
+        print("VERDICT       : WIRED (%s)%s" % (" + ".join(wired_labels), note))
         return 0
-    if wired_at:
+    if wired:
         print("VERDICT       : wired (%s) but with the problems above — treat as"
-              % " + ".join(wired_at))
+              % " + ".join(wired_labels))
         print("                unwired until fixed. A hook on a broken interpreter")
-        print("                fails silently, which is worse than no hook.")
+        print("                or a missing script fails silently, which is worse")
+        print("                than no hook.")
         return 1
+    if unreadable:
+        print("VERDICT       : CANNOT TELL — no wiring found in the readable files,")
+        print("                and the unreadable one(s) above may hold it. Fix that")
+        print("                file first; refusing to call this machine unwired.")
+        return 2
     print("VERDICT       : UNWIRED on this machine. The protocol still runs —")
     print("                CLAUDE.md + the manifest travel with the folder — but no")
     print("                guards, no boot receipt, no session-debt recorder. Fix:")
@@ -400,6 +430,10 @@ def main():
     root = os.path.abspath(args.dir) if args.dir else instance_root()
 
     if args.status:
+        if args.write:
+            print("NOTE: --status is read-only; --write is ignored in this run. Wire")
+            print("      first, then verify: run --write and --status as two commands.")
+            print()
         return status(root)
     hook_path = os.path.join(root, *HOOK_REL.split("/")).replace("\\", "/")
     exe = (args.python or sys.executable or "").replace("\\", "/")

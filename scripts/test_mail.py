@@ -201,15 +201,16 @@ class TestPeerManifestDiscovery(MailCase):
     Found live against the real neighbour on 2026-08-15, minutes after Michael
     declared the block correctly and it still did not resolve."""
 
-    def renamed(self, name, manifest, peers=()):
+    def renamed(self, name, manifest, peers=(), prologue=""):
         d = os.path.join(self.root, name)
         for sub in ("inbox", "outbox"):
             os.makedirs(os.path.join(d, sub))
         lines = ["sync_version: " + chr(34) + "1.0" + chr(34),
+                 "boot:", "  - config/KERNEL.yaml",
                  "mail:", "  name: " + name,
                  "  peers: [" + ", ".join(peers) + "]"]
         with open(os.path.join(d, manifest), "w", encoding="utf-8") as fh:
-            fh.write("".join(l + chr(10) for l in lines))
+            fh.write(prologue + "".join(l + chr(10) for l in lines))
         return d
 
     def test_a_peer_with_a_renamed_manifest_is_found(self):
@@ -223,6 +224,30 @@ class TestPeerManifestDiscovery(MailCase):
         actions, notes = mail.pull(a, apply=True)
         self.assertEqual(len(actions), 1, notes)
         self.assertEqual(self.ls(a, "inbox"), ["BETA-ALPHA-2026-08-15-renamed.md"])
+
+    def test_a_peer_manifest_is_found_behind_a_prologue_past_4kb(self):
+        """The read window must serve the 16,384-byte manifest cap, not a 4 KB guess.
+
+        A prologue well INSIDE the declared cap used to push `sync_version:` past a
+        fixed 4,096-byte read, and the peer then resolved as "not opted in" — which
+        fails as the SILENT MAIL-DROP that MP#84 names as this feature's one silent
+        failure mode. Nothing raises; the mail simply never arrives.
+
+        Same defect SYN-090 fixed in rotate.py and wire_hooks.py. That sweep CITED
+        this function as its prior art ("the same anchoring mail.py's peer-detect
+        already uses") and left it behind, so the argument written into rotate.py's
+        docstring — that 4 KB undercuts the very cap it exists to serve — went
+        unapplied in the one place it was borrowed FROM. Found by the SYN-091 ultra
+        review, which is the first instrument to look at mail.py since.
+        """
+        a = self.instance("ALPHA", peers=["../BETA"])
+        b = self.renamed("BETA", "BETA.yaml", peers=["../ALPHA"],
+                         prologue="# " + "pad " * 1400 + chr(10))
+        self.assertGreater(os.path.getsize(os.path.join(b, "BETA.yaml")), 4096)
+        self.assertEqual(mail.peer_name(b), "BETA")
+        self.put(b, "outbox", "BETA-ALPHA-2026-08-19-prologue.md")
+        actions, notes = mail.pull(a, apply=True)
+        self.assertEqual(len(actions), 1, notes)
 
     def test_a_directory_with_no_arch_manifest_is_still_skipped(self):
         """Discovery must not turn any stray yaml into a peer."""

@@ -69,6 +69,12 @@ import sys
 
 MANIFEST_DEFAULT = "4SYNC.yaml"
 
+# How much of a candidate file to read when testing whether it is a manifest.
+# 64 KB is four times the 16,384-byte cap every instance declares for its own
+# manifest, so a legal manifest always sits wholly inside the window; the bound
+# exists only to stop an unrelated multi-megabyte root-level YAML being slurped.
+MANIFEST_HEAD_BYTES = 65536
+
 
 def _read(path):
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -87,7 +93,18 @@ def manifest_path(root, manifest_name=None):
 
     So: use the declared name when a file is actually there, and otherwise
     DISCOVER it — the one `*.yaml` at the root that is an ARCH manifest. Discovery
-    requires `sync_version:`, so a stray `docker-compose.yaml` never becomes a peer.
+    requires BOTH `sync_version:` and `boot:`, each anchored with (?m)^, so a stray
+    `docker-compose.yaml` never becomes a peer.
+
+    THE WINDOW AND THE ANCHOR PAIR MATCH rotate.py AND wire_hooks.py DELIBERATELY
+    (SYN-091). SYN-090's manifest-discovery sweep cited THIS function as its prior
+    art — "the same anchoring mail.py's peer-detect already uses" — and then fixed
+    only those two, leaving 4,096 bytes here. That window UNDERCUTS the 16,384-byte
+    cap every manifest declares, so a prologue well inside the cap could push the
+    markers past the read; the peer then resolved as "not opted in" and the mail
+    was dropped SILENTLY, which MP#84 names as this feature's one silent failure.
+    The STRUCTURE around this test still legitimately differs from the siblings
+    (named-first, then discover). The test for what IS a manifest does not.
     """
     named = os.path.join(root, os.environ.get("ARCH_MANIFEST")
                          or manifest_name or MANIFEST_DEFAULT)
@@ -101,10 +118,11 @@ def manifest_path(root, manifest_name=None):
         p = os.path.join(root, fn)
         try:
             with open(p, "r", encoding="utf-8", errors="replace") as fh:
-                head = fh.read(4096)
+                head = fh.read(MANIFEST_HEAD_BYTES)
         except OSError:
             continue
-        if re.search(r"(?m)^sync_version:", head):
+        if (re.search(r"(?m)^sync_version:", head)
+                and re.search(r"(?m)^boot:", head)):
             return p
     return named
 

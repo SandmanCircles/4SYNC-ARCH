@@ -2,6 +2,8 @@
 
 [![tests](https://github.com/SandmanCircles/4SYNC-ARCH/actions/workflows/ci.yml/badge.svg)](https://github.com/SandmanCircles/4SYNC-ARCH/actions/workflows/ci.yml)
 
+**[4sync.ai](https://www.4sync.ai)** · [FAQ](https://www.4sync.ai/faq.html) · [Origin](https://www.4sync.ai/origin.html) · [Case study](https://www.4sync.ai/case-study.html) · [Return on Context](https://www.4sync.ai/whitepapers/return-on-context.html)
+
 **A Return on Context Harness.** Persistent, multi-session, multi-agent memory for
 Claude Code projects — as a drop-in filesystem, not an installation.
 

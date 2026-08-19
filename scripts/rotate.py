@@ -1947,6 +1947,16 @@ def discover_manifests(root, manifest_name=None):
     return out
 
 
+def _is_repo(path):
+    """Is this a git repo? True whether `.git` is a DIRECTORY or a FILE.
+
+    In a WORKTREE or a submodule `.git` is a FILE holding a `gitdir:` pointer.
+    Every detection site here tested isdir(), so those layouts were invisible in
+    BOTH directions (SYN-093). Not exotic: this harness offers worktree isolation
+    as a standard option, so an instance can sit in one by ordinary use."""
+    return os.path.exists(os.path.join(path, ".git"))
+
+
 def _git_roots(root, max_depth=MAX_REPO_DEPTH):
     """[(name, path)] for every git repo at or under `root`, to a bounded depth.
 
@@ -1969,7 +1979,7 @@ def _git_roots(root, max_depth=MAX_REPO_DEPTH):
     fed to the SHA cue list — a bare `web` is short enough to fire on ordinary
     prose, where `4cite/web` is not."""
     out = []
-    if os.path.isdir(os.path.join(root, ".git")):
+    if _is_repo(root):
         out.append((os.path.basename(root.rstrip("/\\")) or ".", root))
 
     def walk(path, depth, prefix):
@@ -1986,11 +1996,34 @@ def _git_roots(root, max_depth=MAX_REPO_DEPTH):
             if not os.path.isdir(p):
                 continue
             rel = prefix + d
-            if os.path.isdir(os.path.join(p, ".git")):
+            if _is_repo(p):
                 out.append((d if depth == 1 else rel, p))
             walk(p, depth + 1, rel + "/")
 
     walk(root, 1, "")
+
+    # UPWARD, to the NEAREST enclosing repo (SYN-093 item 2, from an adopter's
+    # field report). This walked DOWN and never UP, so an instance nested INSIDE
+    # a larger repo — a supported layout — had every true sha claim reported as
+    # "resolves in no repo, repos searched: none". MP#47/D2 fixed this same
+    # function for this same symptom and asked only how deep to DESCEND; the
+    # cry-wolf failure its docstring warns about survived, mirrored.
+    # NEAREST ONLY, which is what git itself resolves a directory to. Every
+    # ancestor would also feed every ancestor's basename to the SHA cue list,
+    # where a short generic name fires on ordinary prose.
+    # Unbounded, unlike the descent, and the asymmetry is the point: this is one
+    # stat per level up a single path, not a tree walk, so depth costs nothing.
+    seen = {os.path.abspath(q) for _n, q in out}
+    up = os.path.dirname(os.path.abspath(root.rstrip("/\\")))
+    while True:
+        if _is_repo(up):
+            if os.path.abspath(up) not in seen:
+                out.append((os.path.basename(up) or up, up))
+            break
+        nxt = os.path.dirname(up)
+        if nxt == up:               # filesystem root; nothing encloses it
+            break
+        up = nxt
     return out
 
 

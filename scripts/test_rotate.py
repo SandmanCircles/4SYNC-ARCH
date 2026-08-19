@@ -23,7 +23,6 @@ import os
 import shutil
 import subprocess
 import sys
-import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -2004,6 +2003,87 @@ class TestRepoDiscovery(unittest.TestCase):
     def test_skip_dirs_are_not_descended(self):
         self._mkrepo("node_modules", "pkg")
         self.assertEqual([n for n in dict(rotate._git_roots(self.root)) if "pkg" in n], [])
+
+
+    def test_an_enclosing_repo_above_the_instance_is_found(self):
+        """SYN-093 item 2, from an adopter's field report: `_git_roots` walked DOWN
+        and never UP, so an instance nested INSIDE a larger repo had all eight of
+        its true `status:` sha claims reported as "resolves in no repo — repos
+        searched: none". A nested instance is a supported layout.
+
+        MP#47/D2 fixed this same function for this same symptom in the DOWNWARD
+        direction and asked only how deep to descend. Nobody asked whether the walk
+        should go up at all — so the cry-wolf failure its own docstring warns about
+        survived, mirrored. This silo cannot reproduce it: it IS the git root with
+        the product nested beneath, which is the inverse arrangement."""
+        self._mkrepo("outer")
+        inst = os.path.join(self.root, "outer", "instance")
+        os.makedirs(inst, exist_ok=True)
+        self.assertIn("outer", dict(rotate._git_roots(inst)))
+
+    def test_only_the_nearest_enclosing_repo_is_taken(self):
+        """git resolves a directory to its NEAREST enclosing repo, and so does this.
+        Taking every ancestor would also feed every ancestor's basename to the SHA
+        cue list, where a short generic name fires on ordinary prose — the hazard
+        this function's own docstring already names."""
+        self._mkrepo("top")
+        self._mkrepo("top", "mid")
+        inst = os.path.join(self.root, "top", "mid", "instance")
+        os.makedirs(inst, exist_ok=True)
+        names = dict(rotate._git_roots(inst))
+        self.assertIn("mid", names)
+        self.assertNotIn("top", names)
+
+    def _mkworktree(self, *parts):
+        """A git WORKTREE or submodule: `.git` is a FILE holding a gitdir pointer."""
+        p = os.path.join(self.root, *parts)
+        os.makedirs(p, exist_ok=True)
+        with open(os.path.join(p, ".git"), "w", encoding="utf-8") as fh:
+            fh.write("gitdir: /elsewhere/.git/worktrees/wt" + chr(10))
+        return p
+
+    def test_a_dot_git_FILE_is_recognised_as_a_repo(self):
+        """Both detection sites tested isdir(), so a worktree or submodule was
+        invisible — in BOTH directions. Not an exotic layout: this harness offers
+        worktree isolation as a standard option."""
+        self._mkworktree("wt")
+        self.assertIn("wt", dict(rotate._git_roots(self.root)))
+
+    def test_an_enclosing_worktree_is_found_too(self):
+        """The upward walk and the isdir() blind spot are one fix, not two: an
+        instance inside a worktree misses on both counts at once."""
+        self._mkworktree("wt")
+        inst = os.path.join(self.root, "wt", "instance")
+        os.makedirs(inst, exist_ok=True)
+        self.assertIn("wt", dict(rotate._git_roots(inst)))
+
+
+class TestShaInEnclosingRepo(StatusFactsCase):
+    """The end-to-end half of SYN-093 item 2: a real commit in a real ENCLOSING
+    repo, with the instance root nested inside it — the adopter's actual layout."""
+
+    def test_a_commit_in_an_enclosing_repo_resolves(self):
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e")
+        outer = self.root
+        self.root = os.path.join(outer, "instance")
+        os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
+
+        def g(*a):
+            return subprocess.run(["git"] + list(a), cwd=outer, env=env,
+                                  capture_output=True, text=True)
+        if g("init", "-q").returncode != 0:
+            self.skipTest("git unavailable")
+        with open(os.path.join(outer, "seed.txt"), "w") as f:
+            f.write("x")
+        g("add", "seed.txt")
+        g("commit", "-qm", "seed")
+        sha = g("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(sha)
+        findings, _, _ = self.run_facts(
+            ('s: "pushed at %s."' % sha[:7]) + chr(10))
+        self.assertEqual(findings, [],
+                         "a true SHA in the ENCLOSING repo was called stale")
 
 
 class TestShaInNestedRepo(StatusFactsCase):

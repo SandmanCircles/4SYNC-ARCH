@@ -57,23 +57,40 @@ def find_debt_files(root):
     return found
 
 
+def _split_lines_lf(data):
+    """Split bytes into lines on \\n ONLY, keeping the terminators.
+
+    Never bytes.splitlines(): it also splits on a lone \\r, so a foreign row
+    carrying a stray 0x0D whose post-CR bytes happen to start with `sid\\t`
+    would be truncated at the CR — exactly the hand-edited-file case the
+    byte-preservation promise covers. CRLF endings pass through intact."""
+    parts = data.split(b"\n")
+    out = [p + b"\n" for p in parts[:-1]]
+    if parts[-1]:
+        out.append(parts[-1])            # final line without trailing newline
+    return out
+
+
 def clear_own_row(path, sid):
     """Delete `sid`'s row from one debt file. Returns True if a row was removed.
 
     Byte-level and atomic, deliberately: everything that is not this session's
     row — the header, other sessions' rows, malformed or non-UTF-8 lines — is
-    preserved byte-for-byte, and the rewrite goes through tmp + os.replace so
-    a concurrent reader never sees a truncated file and a crash mid-write
-    cannot destroy rows. (A concurrent recorder rewrite can still interleave —
-    neither writer takes a lock — but the window no longer includes an empty
-    file, which was the row-destroying case.)"""
+    preserved byte-for-byte, and the rewrite goes through a UNIQUE tmp +
+    os.replace so a concurrent reader never sees a truncated file and a crash
+    mid-write cannot destroy rows. The tmp name carries the pid because the
+    RECORDER is a second writer with the same atomic pattern: a shared fixed
+    tmp name would let the two writers truncate or unlink each other's
+    in-flight temp — the cross-process race the debt file exists to survive.
+    (Interleaving is still possible — neither writer takes a lock — but no
+    window includes an empty or half-written live file.)"""
     with open(path, "rb") as fh:
-        lines = fh.read().splitlines(keepends=True)
+        lines = _split_lines_lf(fh.read())
     prefix = sid.encode("utf-8") + b"\t"
     kept = [ln for ln in lines if not ln.startswith(prefix)]
     if len(kept) == len(lines):
         return False
-    tmp = path + ".tmp"
+    tmp = "%s.tmp.%d" % (path, os.getpid())
     try:
         with open(tmp, "wb") as fh:
             fh.write(b"".join(kept))

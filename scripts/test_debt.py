@@ -41,6 +41,8 @@ def row(sid):
 class ClearCase(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="debt_clear_")
+        import shutil
+        self.addCleanup(shutil.rmtree, self.root, True)
         # A nested instance (its own config/KERNEL.yaml) with its own debt file —
         # the manifest's at_close says EVERY debt file under the root, because a
         # session that edits both leaves a row in each.
@@ -177,6 +179,32 @@ class ClearCase(unittest.TestCase):
         code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
         self.assertEqual(code, 0)
         self.assertFalse(os.path.exists(top + ".tmp"))
+
+    def test_lone_cr_in_foreign_row_is_preserved(self):
+        """bytes.splitlines also splits on a lone \\r — which let a foreign row
+        carrying a stray 0x0D, whose post-CR bytes start with `sid\\t`, be
+        truncated at the CR. Splitting on \\n only keeps the promise: every
+        byte that is not this session's row survives exactly."""
+        top = os.path.join(self.root, ".session_debt.tsv")
+        payload = (b"sid-B\tnote-with\rmine\ttail\n"     # one FOREIGN line, embedded CR
+                   b"mine\t2026-08-17T10:00:00\t2026-08-17T10:05:00\tC:\\x\tunwrapped\n")
+        with open(top, "wb") as fh:
+            fh.write(HEADER.encode("utf-8") + payload)
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(top, "rb") as fh:
+            data = fh.read()
+        self.assertIn(b"sid-B\tnote-with\rmine\ttail\n", data)   # foreign row intact
+        self.assertNotIn(b"\nmine\t", data)                      # own row gone
+
+    def test_no_trailing_newline_final_row_still_cleared(self):
+        top = os.path.join(self.root, ".session_debt.tsv")
+        with open(top, "wb") as fh:
+            fh.write(HEADER.encode("utf-8") + b"mine\ta\tb\tc\tunwrapped")  # no \n
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(top, "rb") as fh:
+            self.assertNotIn(b"mine\t", fh.read())
 
     def test_git_dir_is_not_walked(self):
         gitdir = os.path.join(self.root, ".git")

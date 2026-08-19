@@ -1588,15 +1588,37 @@ class DebtSelfWriteCase(unittest.TestCase):
         self.assertFalse(os.path.exists(alt))
 
     def test_lookalike_debt_file_elsewhere_still_records(self):
-        """EXACT-path skip, not basename: editing a NESTED instance's debt file
-        (or any lookalike) is real work — the session's own liveness row must
-        keep moving, or a second boot reads 'probably idle' mid-maintenance."""
+        """Lookalike in a PLAIN folder (no instance): real work — the session's
+        own liveness row must keep moving, or a second boot reads 'probably
+        idle' mid-maintenance."""
         nested = os.path.join(self.root, "product")
         os.makedirs(nested)
         hooks._record_debt(self._payload(os.path.join(nested, ".session_debt.tsv")))
         self.assertTrue(os.path.exists(self.debt))
         with open(self.debt, encoding="utf-8") as fh:
             self.assertIn("sid-under-test", fh.read())
+
+    def test_nested_instances_debt_file_is_bookkeeping_too(self):
+        """The manifest's at_close says clear EVERY debt file under the root, so
+        a close that edits a NESTED INSTANCE's .session_debt.tsv must not have
+        that very write re-upsert the row it is clearing (observed live: the
+        silo clearing the product repo's file resurrected the silo row)."""
+        nested = os.path.join(self.root, "product")
+        os.makedirs(os.path.join(nested, "config"))
+        with open(os.path.join(nested, "config", "KERNEL.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("meta:\n  status: AUTHORITATIVE\n")
+        hooks._record_debt(self._payload(os.path.join(nested, ".session_debt.tsv")))
+        self.assertFalse(os.path.exists(self.debt))
+
+    def test_relative_override_resolves_against_payload_cwd(self):
+        """A relative ARCH_DEBT_FILE must resolve against the payload cwd — the
+        same base the write target resolves against — or the exact-path
+        exemption misses whenever the hook process cwd differs."""
+        os.environ["ARCH_DEBT_FILE"] = "custom_debt.tsv"     # relative, deliberately
+        self.addCleanup(os.environ.pop, "ARCH_DEBT_FILE", None)
+        hooks._record_debt(self._payload(os.path.join(self.root, "custom_debt.tsv")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "custom_debt.tsv")))
 
     def test_ordinary_write_still_records(self):
         hooks._record_debt(self._payload(os.path.join(self.root, "notes.md")))

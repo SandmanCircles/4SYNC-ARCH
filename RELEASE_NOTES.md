@@ -84,10 +84,16 @@ edit tool — or made any edit after the clear — silently restored it, so the 
 "cleared" while the next boot reported phantom debt. Observed live on a cold trial. A
 script's writes are invisible to the recorder, so `python scripts/debt.py --clear` is
 ordering-proof; the recorder itself now also refuses to record writes that target the
-debt file.
+debt file — its own, or a NESTED instance's (the manifest's at_close says clear every
+debt file under the root, and the clearing write must not resurrect the row it clears).
+Both writers rewrite through pid-unique temp files, so the clear and the recorder can
+no longer truncate or unlink each other's in-flight temp; row filtering splits on
+newline only, so a stray CR inside a foreign row cannot be truncated at the split.
 
 **Changed machinery** (replace wholesale, as always): `hooks/pre_tool_use.py` + suite,
-`scripts/rotate.py` + suite, `scripts/wire_hooks.py` + suite, `scripts/arch_build.py`.
+`scripts/rotate.py` + suite, `scripts/wire_hooks.py` + suite, `scripts/arch_build.py`
++ suite (its inventory pin moved 22 → 24 — replace both or the post-update test run
+fails on a correctly-applied update).
 
 - **rotate.py finds your manifest from a plain terminal.** Run without `ARCH_MANIFEST`
   in a genesis-renamed instance, it used to fall back to the default filename, find
@@ -101,9 +107,15 @@ debt file.
   day one of every fresh instance (a 1-row ledger's fixed scaffolding outweighs its one
   row by construction). A 2,048 B floor now sits under the ratio; real bloat still fires.
 - **`wire_hooks.py --status`** answers "is THIS machine wired for THIS instance?" with a
-  report and an exit code — project and user level, the boot receipt, interpreter
-  verification, and the stranded pre-v1.0.7 settings shape — instead of leaving absence
-  to be inferred from silence.
+  report and an exit code (0 wired · 1 unwired or unverifiable · 2 cannot tell) —
+  instead of leaving absence to be inferred from silence. It reads all three settings
+  sources Claude Code reads (shared project `settings.json`, project
+  `settings.local.json`, user `settings.json`), verifies the hook-script path as well
+  as the interpreter, reports the boot receipt at any level (with a caveat when it is
+  project-only), flags the stranded pre-v1.0.7 settings shape, and judges PER SOURCE —
+  the committed shared file carries one machine's absolute paths, so problems there
+  are reported without sinking a healthy local wiring's verdict. An unreadable or
+  malformed settings file is named and survived, never mistaken for absent.
 - **Template fixes, all from the cold trial:** the ledger template's `Tally` line now
   ships in rotate's canonical format (the first complaint an adopter ever saw from their
   own tooling was about a line the template itself wrote wrong); the bulletin ships

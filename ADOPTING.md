@@ -174,13 +174,19 @@ Clone it with git and the **protocol** arrives whole — but the **enforcement l
 not travel.** Hook wiring is machine-local (absolute interpreter and hook paths, in
 gitignored settings), so the second machine boots with no guards, no session-debt
 recorder, and no boot receipt — silently, because the receipt is the announcement
-channel and it is part of what is missing. Two commands close the gap, once per
-machine, per instance root:
+channel and it is part of what is missing. Closing the gap is a check, a wire, and a
+paste — once per machine, per instance root:
 
 ```
 python scripts/wire_hooks.py --status   # is THIS machine wired for THIS instance?
-python scripts/wire_hooks.py --write    # wire it, then reload the session
+python scripts/wire_hooks.py --write    # wire the GUARDS, then reload the session
 ```
+
+`--write` never wires the boot receipt — that is a deliberate hand-paste: run the
+script, copy the SessionStart block it prints into `~/.claude/settings.json` yourself.
+A machine that skips the paste has guards but no banner, and `--status` will say so —
+it checks both halves and is the authoritative answer; the missing banner only speaks
+for the receipt half.
 
 Also worth knowing: `.session_debt.tsv` is per-machine, so the "do you have company?"
 boot reading only sees sessions on the machine you are on. Two machines editing the

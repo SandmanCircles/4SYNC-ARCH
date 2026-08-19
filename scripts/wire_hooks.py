@@ -28,6 +28,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -239,42 +240,76 @@ def print_boot_hook_guidance(root, exe):
 
 
 def _load_settings(path):
-    """A settings file's parsed content, None if absent, or "unreadable"."""
+    """A settings file's parsed content, None if ABSENT, or "unreadable".
+
+    Absent means the path (or its .claude directory) does not exist. Anything
+    else that stops a read — permissions, a directory where a file should be,
+    JSON that does not parse — is "unreadable": the file EXISTS and may hold
+    the wiring, so treating it as absent would send the user to --write
+    against a file the tool could not even open."""
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
-    except OSError:
-        return None
-    except Exception:  # noqa: BLE001 — exists but does not parse
+    except Exception:  # noqa: BLE001 — exists but cannot be read or parsed
         return "unreadable"
 
 
+def _hooks_malformed(settings):
+    """True when a settings dict has a 'hooks' key that is not a JSON object —
+    the natural paste error (an entry ARRAY dropped in directly). Merging into
+    that shape corrupts it, and iterating it crashes; both callers must treat
+    it as fix-by-hand, never as absent."""
+    return (isinstance(settings, dict) and "hooks" in settings
+            and not isinstance(settings.get("hooks"), dict))
+
+
 def _hook_command(settings, event, basename):
-    """The command string wiring `basename` under `event`, or None."""
+    """The command string wiring `basename` under `event`, or None. Tolerant of
+    every malformed shape — a status report must survive what a hand edit can
+    produce."""
     if not isinstance(settings, dict):
         return None
-    for entry in (settings.get("hooks") or {}).get(event) or []:
-        for h in entry.get("hooks") or []:
-            cmd = h.get("command", "")
-            if basename in cmd:
-                return cmd
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return None
+    entries = hooks.get(event)
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        inner = entry.get("hooks")
+        if not isinstance(inner, list):
+            continue
+        for h in inner:
+            if isinstance(h, dict) and basename in h.get("command", ""):
+                return h.get("command", "")
     return None
 
 
+def _command_tokens(cmd):
+    """Tokens of a hook command — double-quoted, single-quoted, or unquoted.
+
+    wire_hooks writes double quotes, but hand-written wirings legitimately use
+    single quotes (POSIX) or none at all; assuming one format made --status
+    report a working single-quoted wiring as a missing interpreter and skip
+    the hook-path check entirely for unquoted ones."""
+    found = re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', cmd or "")
+    return [a or b or c for a, b, c in found]
+
+
 def _command_exe(cmd):
-    """The interpreter path out of a '"exe" "hook"' command string."""
-    if '"' in cmd:
-        parts = cmd.split('"')
-        return parts[1] if len(parts) > 1 else ""
-    return cmd.split()[0] if cmd.split() else ""
+    """The interpreter path out of a hook command string."""
+    toks = _command_tokens(cmd)
+    return toks[0] if toks else ""
 
 
 def _command_hook_path(cmd):
-    """The hook-script path out of a '"exe" "hook"' command string, or ""."""
-    parts = cmd.split('"')
-    return parts[3] if len(parts) > 3 else ""
+    """The hook-script path out of a hook command string, or ""."""
+    toks = _command_tokens(cmd)
+    return toks[1] if len(toks) > 1 else ""
 
 
 def status(root, user_settings=None, check_interpreter=True):
@@ -317,13 +352,18 @@ def status(root, user_settings=None, check_interpreter=True):
     wired = []        # (label, command)
     receipt_at = []
     unreadable = []
-    problems = []
 
     for label, path in sources:
         blob = _load_settings(path)
         if blob == "unreadable":
             unreadable.append(label)
-            print("%-14s: %s — EXISTS BUT IS NOT READABLE JSON" % (label, path))
+            print("%-14s: %s — EXISTS BUT IS NOT READABLE (bad JSON, permissions, "
+                  "or a directory)" % (label, path))
+            continue
+        if _hooks_malformed(blob):
+            unreadable.append(label)
+            print("%-14s: %s — 'hooks' is not a JSON object (a pasted entry array?); "
+                  "fix by hand" % (label, path))
             continue
         cmd = _hook_command(blob, "PreToolUse", hook_base)
         if cmd:
@@ -339,6 +379,11 @@ def status(root, user_settings=None, check_interpreter=True):
 
     if receipt_at:
         print("receipt       : wired at %s level" % " + ".join(receipt_at))
+        if "user" not in receipt_at:
+            print("                CAVEAT: a project-level receipt reaches only sessions")
+            print("                launched inside this repo. The sessions that skip boot")
+            print("                are launched OUTSIDE it and read only user settings —")
+            print("                the user-level paste is still recommended.")
     else:
         print("receipt: NOT wired — a session that skips boot announces nothing.")
         print("                `--write` does NOT wire the receipt: run this script and")
@@ -354,52 +399,64 @@ def status(root, user_settings=None, check_interpreter=True):
             print("                at the repository root; this file is never read. Merge")
             print("                anything you set in it upward, then delete it.")
 
-    # Verify what the wired commands point at — BOTH halves. A wiring whose
-    # hook script is gone (the machine-migration aftermath) fails exactly as
-    # silently as a dead interpreter, and either one is worse than no hook.
+    # Verify what each wired command points at — BOTH halves, PER SOURCE. A
+    # wiring whose hook script is gone (the machine-migration aftermath) fails
+    # exactly as silently as a dead interpreter. Per-source matters because the
+    # shared project settings.json is COMMITTED and necessarily carries one
+    # machine's absolute paths: on every other machine those paths fail, and a
+    # global problems list turned that expected condition into a false
+    # unwired-verdict over a perfectly healthy local wiring.
+    problems_by = {}
     if check_interpreter:
-        checked = set()
+        exe_runs = {}
         for label, cmd in wired:
+            probs = []
             hook = _command_hook_path(cmd)
             if hook and not os.path.isfile(hook):
-                problems.append("%s wiring points at a missing hook script: %s"
-                                % (label, hook))
+                probs.append("missing hook script: %s" % hook)
             exe = _command_exe(cmd)
-            if exe in checked:
-                continue
-            checked.add(exe)
             if not os.path.isfile(exe):
-                problems.append("%s wiring points at a missing interpreter: %s"
-                                % (label, exe))
-            elif not interpreter_works(exe):
-                problems.append("%s wiring's interpreter does not execute: %s"
-                                % (label, exe))
+                probs.append("missing interpreter: %s" % exe)
+            else:
+                if exe not in exe_runs:
+                    exe_runs[exe] = interpreter_works(exe)
+                if not exe_runs[exe]:
+                    probs.append("interpreter does not execute: %s" % exe)
+            if probs:
+                problems_by[label] = probs
 
     print()
-    for p in problems:
-        print("PROBLEM       : %s" % p)
-    wired_labels = [label for label, _ in wired]
-    if wired and not problems:
+    for label, probs in problems_by.items():
+        for p in probs:
+            print("PROBLEM (%s): %s" % (label, p))
+    if "project" in problems_by and len(problems_by) < len(wired):
+        print("NOTE          : the shared project settings.json carries absolute paths")
+        print("                from whichever machine wrote it — problems there are")
+        print("                expected on other machines and do not affect this")
+        print("                machine's verdict while a local wiring is healthy.")
+    healthy = [label for label, _ in wired if label not in problems_by]
+    if healthy:
         note = ""
-        if len(wired) > 1:
+        if len(healthy) > 1:
             note = " — Claude Code dedupes identical hook commands, so a guard fires once"
         if not check_interpreter:
             note += "  (paths not verified)"
         if unreadable:
             note += "  (could not read: %s)" % " + ".join(unreadable)
-        print("VERDICT       : WIRED (%s)%s" % (" + ".join(wired_labels), note))
+        print("VERDICT       : WIRED (%s)%s" % (" + ".join(healthy), note))
         return 0
     if wired:
-        print("VERDICT       : wired (%s) but with the problems above — treat as"
-              % " + ".join(wired_labels))
-        print("                unwired until fixed. A hook on a broken interpreter")
-        print("                or a missing script fails silently, which is worse")
-        print("                than no hook.")
+        print("VERDICT       : wired (%s) but no source verifies on THIS machine —"
+              % " + ".join(label for label, _ in wired))
+        print("                treat as unwired until fixed. A hook on a broken")
+        print("                interpreter or a missing script fails silently, which")
+        print("                is worse than no hook.")
         return 1
     if unreadable:
         print("VERDICT       : CANNOT TELL — no wiring found in the readable files,")
-        print("                and the unreadable one(s) above may hold it. Fix that")
-        print("                file first; refusing to call this machine unwired.")
+        print("                and the unreadable/malformed one(s) above may hold it.")
+        print("                Fix that file first; refusing to call this machine")
+        print("                unwired.")
         return 2
     print("VERDICT       : UNWIRED on this machine. The protocol still runs —")
     print("                CLAUDE.md + the manifest travel with the folder — but no")
@@ -421,7 +478,9 @@ def main():
                     help="initial ARCH_HOOKS_MODE (default: warn — logs, never blocks)")
     ap.add_argument("--status", action="store_true",
                     help="report whether THIS machine is wired for THIS instance "
-                         "(exit 0 wired, 1 unwired) — writes nothing")
+                         "(exit 0 wired, 1 unwired or unverifiable wiring, 2 cannot "
+                         "tell — a settings file exists but cannot be read) — "
+                         "writes nothing")
     args = ap.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -466,6 +525,12 @@ def main():
                   "       Fix or move it — refusing to overwrite a file I cannot merge."
                   % (settings_path, exc))
             return 2
+
+    if _hooks_malformed(existing):
+        print("ERROR: %s has a 'hooks' key that is not a JSON object (a pasted entry\n"
+              "       array?). Merging into that shape would corrupt it — fix the file\n"
+              "       by hand first." % settings_path)
+        return 2
 
     merged = merge(existing, exe, hook_path, sroot, args.mode, manifest)
     rendered = json.dumps(merged, indent=2)

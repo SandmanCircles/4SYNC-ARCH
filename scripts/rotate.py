@@ -943,7 +943,7 @@ def report_status_size(root, soft_max=None, manifest_name=None):
     for name, n in sorted(fields, key=lambda f: -f[1])[:3]:
         print(f"    {name}: {n:,} B")
     if total > soft_max:
-        dests = manifest_snapshot_overflow(root)
+        dests = manifest_snapshot_overflow(root, manifest_name)
         where = ("this instance declares where it goes: " + ", ".join(dests)) if dests else (
             "a fact needed at a MOMENT is a finding (with a Trigger: and an Exit:), a "
             "decided rule is doctrine, and the story of a finished row is already in "
@@ -1132,7 +1132,22 @@ def _block_under(text, key):
     return "\n".join(body) if ind is not None else None
 
 
-def manifest_snapshot_overflow(root, manifest_name="4SYNC.yaml"):
+def _manifest_path(root, manifest_name=None):
+    """The manifest path governing a helper call: PARAMETER first (a caller
+    that resolved the name knows best), then the env pin, then the default.
+
+    ONE precedence order for every helper. Before this, four helpers read
+    env-before-parameter while three read parameter-before-env — so one
+    in-process run could take journal caps from one manifest and STATUS checks
+    from another. And the reference is JOINED, never basenamed: a
+    dir-qualified pin (ARCH_MANIFEST=config/X.yaml) that resolve_manifest
+    honored was silently basenamed into a root lookup of a file that does not
+    exist there, splitting one run across two conventions."""
+    return os.path.join(root, manifest_name
+                        or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
+
+
+def manifest_snapshot_overflow(root, manifest_name=None):
     """close.snapshot.overflow_to — where THIS instance says STATUS overflow goes.
 
     MP#79, and it generalises the one key that already worked. The journal has
@@ -1149,7 +1164,7 @@ def manifest_snapshot_overflow(root, manifest_name="4SYNC.yaml"):
     adopter's files are not ours — so guessing a destination would send someone
     else's content to a path they never declared, which is the failure this row
     exists to prevent, wearing a helpful face."""
-    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    p = _manifest_path(root, manifest_name)
     if not os.path.exists(p):
         return []
     text = read(p)
@@ -1170,7 +1185,7 @@ def manifest_snapshot_overflow(root, manifest_name="4SYNC.yaml"):
             return [x.strip().strip("\"'") for x in raw.split(",") if x.strip()]
     return []
 
-def _manifest_scalar(root, path_keys, block_key, manifest_name="4SYNC.yaml"):
+def _manifest_scalar(root, path_keys, block_key, manifest_name=None):
     """One declared scalar, read with PyYAML if present and a scoped regex if not.
 
     The shape `manifest_journal_overflow` established, factored out once MP#83 needed
@@ -1178,7 +1193,7 @@ def _manifest_scalar(root, path_keys, block_key, manifest_name="4SYNC.yaml"):
     `^\\s*file:` search finds whichever `file:` appears first, which on this manifest
     is the debt tracker's — a resolver that quietly returns another key's value is
     worse than one that returns nothing."""
-    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    p = _manifest_path(root, manifest_name)
     if not os.path.exists(p):
         return None
     text = read(p)
@@ -1212,7 +1227,7 @@ def _manifest_scalar(root, path_keys, block_key, manifest_name="4SYNC.yaml"):
     return None
 
 
-def manifest_ledger_name(root, manifest_name="4SYNC.yaml"):
+def manifest_ledger_name(root, manifest_name=None):
     """close.ledger_sync.file (or close.journal.file) — the instance's ledger.
 
     MP#83, and it is MP#34 one line up: the manifest declared this name in THREE
@@ -1227,7 +1242,7 @@ def manifest_ledger_name(root, manifest_name="4SYNC.yaml"):
     return LEDGER_FILENAME
 
 
-def manifest_bulletin_name(root, manifest_name="4SYNC.yaml"):
+def manifest_bulletin_name(root, manifest_name=None):
     """close.bulletin.file — the instance's board, defaulting to the shipped name."""
     return _manifest_scalar(root, ("close", "bulletin", "file"), "bulletin",
                             manifest_name) or BULLETIN_FILENAME
@@ -1243,7 +1258,7 @@ def archive_name(name):
     return stem + "_ARCHIVE" + (ext or ".md")
 
 
-def manifest_task_prefix(root, manifest_name="4SYNC.yaml"):
+def manifest_task_prefix(root, manifest_name=None):
     """The task-document prefix: `MP` unless this instance opts in.
 
     RULED 2026-08-14 (Michael, MP#40(c) → MP#83). The problem is spoken, not visual:
@@ -1269,7 +1284,7 @@ def manifest_task_prefix(root, manifest_name="4SYNC.yaml"):
     return code or TASK_PREFIX_DEFAULT
 
 
-def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
+def manifest_journal_overflow(root, manifest_name=None):
     """close.journal.overflow_to from the manifest, or the default filename.
 
     Mirrors manifest_journal_max(), fallback and all. A manifest that declares
@@ -1278,7 +1293,7 @@ def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     blocks into a second file it never declared, with no error to notice. A
     manifest key that is parsed but never honoured is worse than an absent one,
     because it is trusted."""
-    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    p = _manifest_path(root, manifest_name)
     if not os.path.exists(p):
         return JOURNAL_HISTORY_DEFAULT
     text = read(p)
@@ -1297,12 +1312,12 @@ def manifest_journal_overflow(root, manifest_name="4SYNC.yaml"):
     return JOURNAL_HISTORY_DEFAULT
 
 
-def manifest_journal_max(root, manifest_name="4SYNC.yaml"):
+def manifest_journal_max(root, manifest_name=None):
     """close.journal.max_bytes from the manifest, or the default.
 
     Tries yaml, falls back to a scoped regex — rotate.py must run on a bare
     interpreter with no third-party packages, the same constraint meter.py has."""
-    p = os.path.join(root, os.environ.get("ARCH_MANIFEST") or manifest_name)
+    p = _manifest_path(root, manifest_name)
     if not os.path.exists(p):
         return JOURNAL_MAX_DEFAULT
     text = read(p)
@@ -1543,9 +1558,8 @@ def find_status_file(root, manifest_name=None):
     to config/<PROJECT>_STATUS.yaml, so a hardcoded config/STATUS.yaml silently
     checks nothing on every instance past its own genesis — a checker that reports
     clean because it found no file is the worst possible failure for this pass."""
-    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
     rels = []
-    p = os.path.join(root, name)
+    p = _manifest_path(root, manifest_name)
     if os.path.exists(p):
         m = re.search(r"(?ms)^boot:[^\n]*\n(.*?)(?=^\S|\Z)", read(p))
         if m:
@@ -1613,15 +1627,18 @@ def manifest_persistent_bytes(path):
 def discover_manifests(root, manifest_name=None):
     """Every ARCH manifest reachable from root: this instance's, plus any nested
     repo shipping one (the product repo does). [(relpath, bytes, max_bytes|None)]."""
-    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
-    # Nested candidates are tried under BOTH this instance's name AND the
-    # default. A nested instance that ran its own genesis carries a renamed
-    # manifest unknowable from here, but a vendored pre-genesis checkout ships
-    # the default name — and resolving the ROOT manifest to a renamed file
-    # must not silently drop those nested copies out of at-rest and cap
-    # coverage, which is exactly what a single-name lookup did.
-    names = [name] if name == "4SYNC.yaml" else [name, "4SYNC.yaml"]
-    rels = [name]
+    ref = manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml"
+    base = os.path.basename(ref)
+    # Candidates are tried under BOTH this instance's name AND the default, at
+    # the ROOT as well as nested. A nested instance that ran its own genesis
+    # carries a renamed manifest unknowable from here, but a vendored
+    # pre-genesis checkout ships the default name — and a stale default
+    # SITTING BESIDE a renamed real manifest at the root must not drop either
+    # file out of at-rest and cap coverage, which is exactly what a
+    # single-name lookup did. The root reference is joined as given (a
+    # dir-qualified pin stays honored); nested lookups use basenames.
+    rels = [ref] if base == "4SYNC.yaml" else [ref, "4SYNC.yaml"]
+    names = [base] if base == "4SYNC.yaml" else [base, "4SYNC.yaml"]
     try:
         for d in sorted(os.listdir(root)):
             if d in SKIP_DIRS or not os.path.isdir(os.path.join(root, d)):
@@ -1903,8 +1920,7 @@ def _check_suites(root, text, spans, findings, notes):
 
 def manifest_meter_script(root, manifest_name=None):
     """close.meter.script — the boot meter this instance declares."""
-    name = os.path.basename(manifest_name or os.environ.get("ARCH_MANIFEST") or "4SYNC.yaml")
-    p = os.path.join(root, name)
+    p = _manifest_path(root, manifest_name)
     if not os.path.exists(p):
         return None
     block = _block_under(read(p), "meter")
@@ -2301,14 +2317,13 @@ def resolve_manifest(root):
         if os.path.isfile(os.path.join(root, env)):
             return env, "ARCH_MANIFEST"
         return env, "ARCH_MANIFEST — FILE MISSING at this root; checks will misfire"
-    if os.path.isfile(os.path.join(root, "4SYNC.yaml")):
-        return "4SYNC.yaml", "default name"
+    discovered = None
     try:
         names = sorted(os.listdir(root))
     except OSError:
-        return None, "root unreadable"
+        names = []
     for name in names:
-        if not name.lower().endswith((".yaml", ".yml")):
+        if name == "4SYNC.yaml" or not name.lower().endswith((".yaml", ".yml")):
             continue
         try:
             with open(os.path.join(root, name), encoding="utf-8") as fh:
@@ -2316,8 +2331,22 @@ def resolve_manifest(root):
         except Exception:  # noqa: BLE001 — an unreadable candidate is not the manifest
             continue
         if "sync_version:" in head and "\nboot:" in head:
-            return name, ("discovered by content — set ARCH_MANIFEST=%s to pin it"
-                          % name)
+            discovered = name
+            break
+    if os.path.isfile(os.path.join(root, "4SYNC.yaml")):
+        if discovered:
+            # BOTH names present: the default wins the ladder, but silently
+            # resolving it while a renamed sibling also declares a manifest is
+            # how a stale vendored default hijacks every check — say so.
+            return "4SYNC.yaml", ("default name — but %s ALSO declares a manifest at "
+                                  "this root; if that is the real one, set "
+                                  "ARCH_MANIFEST=%s" % (discovered, discovered))
+        return "4SYNC.yaml", "default name"
+    if discovered:
+        return discovered, ("discovered by content — set ARCH_MANIFEST=%s to pin it"
+                            % discovered)
+    if not names:
+        return None, "root unreadable or empty"
     return None, "none"
 
 

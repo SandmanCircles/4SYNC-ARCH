@@ -298,6 +298,7 @@ class StatusCase(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="wh_status_")
+        self.addCleanup(shutil.rmtree, self.root, True)
         os.makedirs(os.path.join(self.root, "hooks"))
         with open(os.path.join(self.root, "hooks", "pre_tool_use.py"), "w",
                   encoding="utf-8") as fh:
@@ -427,6 +428,89 @@ class StatusCase(unittest.TestCase):
         code, out = self._run()
         self.assertEqual(code, 2)
         self.assertIn("CANNOT TELL", out)
+
+    def test_hooks_as_list_does_not_crash_and_is_flagged(self):
+        """The natural paste error — the entry ARRAY dropped in as 'hooks' — is
+        valid JSON, so it passed _load_settings and crashed the old iterator
+        with AttributeError. A status report must survive what a hand edit can
+        produce, and say what it found."""
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        blob = {"hooks": [{"matcher": "Write", "hooks": [
+            {"type": "command", "command": '"py" "/x/hooks/pre_tool_use.py"'}]}]}
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(blob, fh)
+        code, out = self._run()
+        self.assertEqual(code, 2)          # may hold the wiring — cannot tell
+        self.assertIn("not a JSON object", out)
+
+    def test_teammates_shared_paths_do_not_sink_a_healthy_local_wiring(self):
+        """The shared settings.json is COMMITTED and carries one machine's
+        absolute paths — problems there are expected on every other machine
+        and must not drag a healthy local wiring to exit 1 (per-source
+        verdict, the SYN-089 false alarm)."""
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        dead = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                "command": '"C:/other-machine/py.exe" "C:/other-machine/hooks/pre_tool_use.py"'}]}]}}
+        with open(os.path.join(sdir, "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump(dead, fh)
+        healthy = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                   "command": '"%s" "%s"' % (sys.executable,
+                                             os.path.join(self.root, "hooks",
+                                                          "pre_tool_use.py"))}]}]}}
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(healthy, fh)
+        code, out = self._run(check_interpreter=True)
+        self.assertEqual(code, 0)
+        self.assertIn("PROBLEM (project)", out)   # reported, not fatal
+        self.assertIn("WIRED (project-local)", out)
+
+    def test_settings_path_that_is_a_directory_is_cannot_tell(self):
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(os.path.join(sdir, "settings.local.json"))   # a DIRECTORY
+        code, out = self._run()
+        self.assertEqual(code, 2)
+        self.assertIn("NOT READABLE", out)
+
+
+class CommandTokenCase(unittest.TestCase):
+    """Hand-written wirings use double quotes, single quotes, or none — the
+    parser must read all three, or --status misjudges working wirings."""
+
+    def test_double_quoted(self):
+        cmd = '"C:/py/python.exe" "C:/inst/hooks/pre_tool_use.py"'
+        self.assertEqual(wh._command_exe(cmd), "C:/py/python.exe")
+        self.assertEqual(wh._command_hook_path(cmd), "C:/inst/hooks/pre_tool_use.py")
+
+    def test_single_quoted(self):
+        cmd = "'/usr/bin/python3' '/repo/hooks/pre_tool_use.py'"
+        self.assertEqual(wh._command_exe(cmd), "/usr/bin/python3")
+        self.assertEqual(wh._command_hook_path(cmd), "/repo/hooks/pre_tool_use.py")
+
+    def test_unquoted(self):
+        cmd = "C:/py/python.exe C:/inst/hooks/pre_tool_use.py"
+        self.assertEqual(wh._command_exe(cmd), "C:/py/python.exe")
+        self.assertEqual(wh._command_hook_path(cmd), "C:/inst/hooks/pre_tool_use.py")
+
+    def test_empty(self):
+        self.assertEqual(wh._command_exe(""), "")
+        self.assertEqual(wh._command_hook_path(""), "")
+
+
+class MergeMalformedCase(unittest.TestCase):
+    """--write must refuse a 'hooks' key that is not an object instead of
+    silently merging garbage into it (verified corruption: the list's keys
+    iterated as a dict yields {'matcher': 'hooks'})."""
+
+    def test_hooks_malformed_detector(self):
+        self.assertTrue(wh._hooks_malformed({"hooks": []}))
+        self.assertTrue(wh._hooks_malformed({"hooks": "x"}))
+        self.assertFalse(wh._hooks_malformed({"hooks": {}}))
+        self.assertFalse(wh._hooks_malformed({}))
+        self.assertFalse(wh._hooks_malformed(None))
 
 
 if __name__ == "__main__":

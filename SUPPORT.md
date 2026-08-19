@@ -75,7 +75,10 @@ SECTION 3 — PROTOCOL HEALTH
   - ledger: row counts by status, file size, whether every open row has a task document
   - journal: how many blocks retained, and its size
   - bulletin: how many OPEN messages, by recipient, and the roster names in use
-  - hooks: wired or not; project level, user level, or both; and the mode value
+  - hooks: paste the output of `python scripts/wire_hooks.py --status` verbatim — it
+    names which of the three settings sources carry wiring (shared project
+    settings.json, project settings.local.json, user settings.json), the receipt
+    state, any problems, and the verdict; add the ARCH_HOOKS_MODE value
   - every warning or finding the tools printed, quoted verbatim
 
 SECTION 4 — FRICTION (ask your user, record their answers in their own words)

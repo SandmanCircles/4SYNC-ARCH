@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -2486,6 +2487,7 @@ class ResolveManifestFallbackCase(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="rotate_resolve_")
+        self.addCleanup(shutil.rmtree, self.root, True)
         prev = os.environ.pop("ARCH_MANIFEST", None)
         if prev is not None:
             self.addCleanup(os.environ.__setitem__, "ARCH_MANIFEST", prev)
@@ -2531,6 +2533,16 @@ class ResolveManifestFallbackCase(unittest.TestCase):
         name, _ = rotate.resolve_manifest(self.root)
         self.assertIsNone(name)
 
+    def test_both_names_at_root_warns_about_the_sibling(self):
+        """The default wins the ladder, but resolving it SILENTLY while a
+        renamed sibling also declares a manifest is how a stale vendored
+        default hijacks every check — the how-string must name the sibling."""
+        self._manifest("4SYNC.yaml")
+        self._manifest("TRELLIS.yaml")
+        name, how = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "4SYNC.yaml")
+        self.assertIn("TRELLIS.yaml", how)
+
 
 class DiscoverManifestsNestedCase(unittest.TestCase):
     """A renamed ROOT manifest must not drop nested default-named manifests out
@@ -2540,6 +2552,7 @@ class DiscoverManifestsNestedCase(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="rotate_discover_")
+        self.addCleanup(shutil.rmtree, self.root, True)
         prev = os.environ.pop("ARCH_MANIFEST", None)
         if prev is not None:
             self.addCleanup(os.environ.__setitem__, "ARCH_MANIFEST", prev)
@@ -2558,9 +2571,26 @@ class DiscoverManifestsNestedCase(unittest.TestCase):
         self.assertIn("TRELLIS.yaml", rels)
         self.assertIn("product/4SYNC.yaml", rels)
 
-    def test_resolver_never_mutates_environ(self):
+    def test_stale_default_beside_renamed_root_manifest_stays_covered(self):
+        """Both names at the ROOT: at-rest and cap coverage must reach both —
+        a single-name lookup checked only whichever won resolution."""
+        self._manifest("TRELLIS.yaml")
+        self._manifest("4SYNC.yaml")
+        rels = [r for r, _, _ in rotate.discover_manifests(self.root, "TRELLIS.yaml")]
+        self.assertIn("TRELLIS.yaml", rels)
+        self.assertIn("4SYNC.yaml", rels)
+
+    def test_resolution_and_reports_never_mutate_environ(self):
+        """The removed main() export must stay removed: a discovered manifest is
+        an inference, and exporting it makes it a pin that outlives the run.
+        This guards the resolver, discovery and the at-rest report — main()'s
+        own non-mutation is the code-review invariant this test documents."""
         self._manifest("TRELLIS.yaml")
         rotate.resolve_manifest(self.root)
+        rotate.discover_manifests(self.root, "TRELLIS.yaml")
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            rotate.report_manifest_at_rest(self.root, "TRELLIS.yaml")
         self.assertIsNone(os.environ.get("ARCH_MANIFEST"))
 
 

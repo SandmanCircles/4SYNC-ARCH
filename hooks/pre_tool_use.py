@@ -995,6 +995,11 @@ def _record_debt(payload):
            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
     cwd = payload.get("cwd") or os.getcwd()
     debtfile = os.environ.get("ARCH_DEBT_FILE")
+    if debtfile and not os.path.isabs(debtfile):
+        # Resolve a relative override against the PAYLOAD cwd, the same base the
+        # target below resolves against — resolving it against the hook process's
+        # own cwd made the exact-path exemption miss whenever the two differed.
+        debtfile = os.path.join(cwd, debtfile)
     if not debtfile:
         root = _instance_root(cwd, strict=True, require_kernel=True)
         if root is None:
@@ -1012,9 +1017,22 @@ def _record_debt(payload):
     raw_target = ((payload.get("tool_input") or {}).get("file_path") or "")
     if raw_target:
         target = raw_target if os.path.isabs(raw_target) else os.path.join(cwd, raw_target)
-        if os.path.normcase(os.path.abspath(target)) == \
-                os.path.normcase(os.path.abspath(debtfile)):
+        target = os.path.abspath(target)
+        if os.path.normcase(target) == os.path.normcase(os.path.abspath(debtfile)):
             return
+        # A NESTED instance's own debt file is bookkeeping too: the manifest's
+        # at_close says clear EVERY debt file under the root, so a close that
+        # edits <nested-instance-root>/.session_debt.tsv must not have that very
+        # write re-upsert the row it is part of clearing (observed: the silo
+        # clearing the product repo's file resurrected the silo row). Exempt
+        # exactly <instance-root>/<DEBT_FILENAME>; a lookalike in a plain
+        # folder still records, so liveness keeps moving during ordinary work.
+        if os.path.basename(target).lower() == DEBT_FILENAME.lower():
+            tdir = os.path.dirname(target)
+            troot = _instance_root(tdir, strict=True, require_kernel=True)
+            if troot is not None and os.path.normcase(os.path.abspath(troot)) == \
+                    os.path.normcase(tdir):
+                return
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     rows = {}
@@ -1046,7 +1064,12 @@ def _record_debt(payload):
     started = rows[sid][1] if sid in rows else now
     rows[sid] = [sid, started, now, cwd, "unwrapped"]
 
-    tmp = debtfile + ".tmp"
+    # UNIQUE tmp name (pid): scripts/debt.py is a second writer with the same
+    # atomic pattern, and a shared fixed ".tmp" let the two processes truncate
+    # or unlink each other's in-flight temp — promoting a half-written file or
+    # dropping a liveness refresh. Same-name collision now requires pid reuse
+    # inside one write window, which is not a case worth code.
+    tmp = "%s.tmp.%d" % (debtfile, os.getpid())
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(DEBT_HEADER + "\n")

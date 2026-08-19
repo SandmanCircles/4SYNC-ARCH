@@ -14,7 +14,7 @@ venv/
 
 # Session-debt tracker — local runtime state, per-checkout (never committed)
 .session_debt.tsv
-.session_debt.tsv.tmp
+.session_debt.tsv.tmp*
 
 # Outbound mail in transit — STAGING, not project material. A message is committed
 # exactly ONCE, at the recipient: inbox/ is tracked and keeps what was handed in,

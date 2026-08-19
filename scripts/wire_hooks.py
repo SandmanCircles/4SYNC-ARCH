@@ -101,6 +101,44 @@ def settings_root(instance):
                  "settings from the repository root")
 
 
+# How much of a candidate file to read when testing whether it is a manifest.
+# 64 KB is four times the 16,384-byte cap every instance declares for its own
+# manifest, so a legal manifest always sits wholly inside the window; the bound
+# exists only to stop an unrelated multi-megabyte root-level YAML being slurped.
+MANIFEST_HEAD_BYTES = 65536
+
+
+def _declares_manifest(path):
+    """Does this file declare itself an ARCH instance manifest?
+
+    The test is the two top-level keys `sync_version:` and `boot:`, each anchored
+    with (?m)^ — the same anchoring mail.py's peer-detect already uses.
+
+    TWO BLIND SPOTS THIS CLOSES (SYN-090), and both had one symptom: a real
+    manifest reading as NO manifest, which is the silence SYN-088 closed one
+    layer up and the reason that resolver exists at all.
+      - The old test was `"\nboot:" in head`, requiring a PRECEDING newline, so a
+        manifest whose FIRST line is `boot:` could never match. Nothing in the
+        format requires a key above it.
+      - The old window was a fixed 4,096 bytes, which UNDERCUTS the 16,384-byte
+        manifest cap it is meant to serve: a prologue well within the declared
+        limit could push both marker keys past the read. This repo's own manifest
+        runs ~1,500 B of prologue, so the margin was three files' worth of
+        comments, not a safe multiple.
+
+    DUPLICATED DELIBERATELY in scripts/rotate.py. Machinery modules never import
+    one another — each is copied and wired standalone — so a shared module would
+    have to join MACHINERY and could be copied without its dependents. Keep the
+    two CODE-identical; only the sibling named above legitimately differs."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(MANIFEST_HEAD_BYTES)
+    except OSError:          # an unreadable candidate is not the manifest
+        return False
+    return bool(re.search(r"(?m)^sync_version:", head)
+                and re.search(r"(?m)^boot:", head))
+
+
 def find_manifest(instance):
     """The instance manifest's filename, or None if it cannot be identified.
 
@@ -114,14 +152,10 @@ def find_manifest(instance):
     for name in names:
         if not name.lower().endswith((".yaml", ".yml")):
             continue
-        try:
-            with open(os.path.join(instance, name), encoding="utf-8") as fh:
-                head = fh.read(4096)
-        except Exception:  # noqa: BLE001
-            continue
-        if "sync_version:" in head and "\nboot:" in head:
+        if _declares_manifest(os.path.join(instance, name)):
             return name
     return None
+
 
 
 def diagnose(exe):

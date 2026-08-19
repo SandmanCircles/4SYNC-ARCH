@@ -319,3 +319,5 @@ class TestANameIsNotAReceipt(MailCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ═══ EOF test_mail.py ═══

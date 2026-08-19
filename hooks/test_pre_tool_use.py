@@ -20,6 +20,7 @@ for. Imports pre_tool_use from the same hooks/ directory. Run either way:
 """
 
 import contextlib
+import json
 import os
 import shutil
 import sys
@@ -1286,14 +1287,49 @@ class TestDispatcherEndToEnd(GuardCase):
         self.assertIn("clipped", r.stderr)
         self.assertEqual("", r.stdout.strip(), "a block must not also emit ask JSON")
 
-    def test_warn_mode_is_unchanged_for_askable_guards(self):
-        """MP#44 changes what `enforce` does. `warn` must be byte-identical, which
-        is what makes this safe to ship mid-adoption."""
+    def test_warn_never_asks_even_for_an_askable_guard(self):
+        """MP#44 gave `enforce` a third verdict; `warn` deliberately has none.
+
+        An ask is a GATE, and a gated call in warn mode would be a refusal
+        wearing a prompt's clothes. SYN-090 changed warn from silent to spoken,
+        NOT from allowing to gating — the decision stays `allow` and the text is
+        the entire intervention. (This test previously asserted warn emitted
+        nothing on stdout; that was the MP#44 byte-identical rule, superseded
+        here on purpose, and the invariant worth keeping is this one.)"""
         kernel = os.path.join(self.root, "config", "KERNEL.yaml")
         self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
         r = self._run(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"), "warn")
         self.assertEqual(0, r.returncode)
-        self.assertEqual("", r.stdout.strip(), "warn must not emit ask JSON")
+        decision = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
+        self.assertEqual("allow", decision, "warn must never gate a call")
+
+    def test_warn_mode_tells_the_session_what_it_found(self):
+        """THE v1.1.2 FAILURE (SYN-090): g4 caught a STATUS write that did not
+        parse, logged it, and allowed the call — correctly, warn does not refuse.
+        But the session was told NOTHING: exit 0, empty stderr, the finding in a
+        log nobody reads mid-session. The guard was never the defect; its silence
+        was."""
+        self._put(self.status,
+                  'meta:\n  file: STATUS.yaml\n\n'
+                  'active_focus: "v1.1.2 published and verified\n'
+                  '  and the slot is held."\n\n# EOF STATUS.yaml\n')
+        r = self._run(edit_payload(self.status,
+                                   'active_focus: "v1.1.2 published and verified',
+                                   'active_focus: "v1.1.3 in flight"'), "warn")
+        self.assertEqual(0, r.returncode, "warn must not block")
+        out = json.loads(r.stdout)
+        self.assertIn("does not parse as YAML",
+                      out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIn("g4_status_write_guard", out["systemMessage"])
+        self.assertIn("enforce", out["hookSpecificOutput"]["permissionDecisionReason"],
+                      "the session should learn this would block under enforce")
+
+    def test_warn_says_nothing_when_no_guard_fires(self):
+        """A mode that speaks on every call is a mode nobody reads."""
+        self._put(self.status, 'meta:\n  file: STATUS.yaml\n# EOF STATUS.yaml\n')
+        r = self._run(edit_payload(self.status, "meta:", "meta:"), "warn")
+        self.assertEqual(0, r.returncode)
+        self.assertEqual("", r.stdout.strip())
 
     def test_malformed_payload_stays_silent(self):
         import subprocess

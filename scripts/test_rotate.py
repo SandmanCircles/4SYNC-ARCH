@@ -652,12 +652,37 @@ class TestTableProseReport(unittest.TestCase):
         return rows, pr, buf.getvalue()
 
     def test_prose_outweighing_rows_is_flagged(self):
-        # 300 repeats ≈ 3 KB — above PROSE_FLOOR_BYTES, so the ratio flag fires.
-        # (At 200 this fixture sat just under the floor and documented nothing.)
-        rows, pr, out = self._run("**Tally:** " + "narrative " * 300)
+        # RESTORED TO 200 (SYN-090). This fixture was bumped 200 -> 300 when the
+        # 2,048 B floor landed, because at 200 it stopped firing — the input was
+        # moved until the test passed rather than the behaviour being decided.
+        # 200 repeats is ~2 KB, inside the band the floor silenced, and it fires.
+        rows, pr, out = self._run("**Tally:** " + "narrative " * 200)
         self.assertGreater(pr, rows)
-        self.assertGreater(pr, rotate.PROSE_FLOOR_BYTES)
         self.assertIn("OVER THRESHOLD", out)
+
+    def test_the_sub_2kb_dead_zone_is_reported(self):
+        """THE BAND THE FLOOR SILENCED, now asserted directly.
+
+        Prose that outweighs rows but stays under the old 2,048 B floor was never
+        reported — permanently, and for every small or young ledger, which is the
+        whole adopter population this check protects. A ledger at 90% prose printed
+        'over the 50% threshold' and alarmed never."""
+        rows, pr, out = self._run("**Tally:** " + "narrative " * 150)
+        self.assertGreater(pr, rows)
+        self.assertLess(pr, 2048, "fixture must sit INSIDE the old dead zone")
+        self.assertIn("OVER THRESHOLD", out)
+
+    def test_template_scaffolding_is_not_counted(self):
+        """Each excluded class, one at a time, against the same real narrative."""
+        narrative = "Row 7 landed and here is the reason it took two sessions."
+        _, bare, _ = self._run(narrative)
+        for dressed in (
+                "<!-- an instruction to the reader -->\n\n" + narrative,
+                "**Tally:** " + narrative,
+                narrative + "\n\n[an unfilled placeholder]",
+        ):
+            _, got, _ = self._run(dressed)
+            self.assertEqual(got, bare, "scaffolding leaked into the count: " + dressed[:40])
 
     def test_a_short_tally_is_clean(self):
         rows, pr, out = self._run("**Tally:** 2 tasks. 1 completed, 1 pending.")
@@ -963,6 +988,38 @@ class TestTallyReconcile(unittest.TestCase):
         self.assertEqual(self._text().count(good), 1)
 
     # ── refusals ────────────────────────────────────────────────────────────
+    def test_the_old_period_form_reports_as_format_not_count_drift(self):
+        """SYN-090. An instance upgrading from before v1.1.2 carries the old
+        template's wording — `N tasks total.` where the current form has
+        `N tasks total —`. THE COUNTS ARE RIGHT. Comparing whole lines reported
+        that as "disagrees with the table", so the first rotate after an upgrade
+        (a dry run, by the first-use rule) opened by naming a problem the ledger
+        did not have — the cry-wolf shape SYN-088 already closed once."""
+        old = ("**Tally:** 3 tasks total. 1 completed, 0 in_progress, "
+               "1 pending, 0 blocked, 1 dropped.")
+        self._write(tally=old)
+        _, changed, out = self._run()
+        self.assertFalse(changed)
+        self.assertIn("older format", out)
+        self.assertNotIn("disagrees with the table", out)
+
+    def test_the_old_period_form_is_still_rewritten_on_apply(self):
+        """Reported differently, treated the same: --apply restores the canonical
+        line so the next run is silent."""
+        self._write(tally="**Tally:** 3 tasks total. 1 completed, 0 in_progress, "
+                          "1 pending, 0 blocked, 1 dropped.")
+        _, changed, _ = self._run(apply_=True)
+        self.assertTrue(changed)
+        self.assertIn("3 tasks total — 1 completed", self._text())
+
+    def test_a_genuine_count_error_still_reads_as_disagreement(self):
+        """The format path must not swallow a real miscount wearing old wording."""
+        self._write(tally="**Tally:** 99 tasks total. 99 completed, 0 in_progress, "
+                          "0 pending, 0 blocked, 0 dropped.")
+        _, _, out = self._run()
+        self.assertIn("disagrees with the table", out)
+        self.assertNotIn("older format", out)
+
     def test_unrecognised_status_blocks_the_rewrite(self):
         """A total that silently omits a row is worse than a stale one: it looks
         authoritative. Report it and leave the line alone, even on --apply."""
@@ -2529,6 +2586,28 @@ class ResolveManifestFallbackCase(unittest.TestCase):
         name, _ = rotate.resolve_manifest(self.root)
         self.assertIsNone(name)
 
+    def test_boot_on_the_first_line_is_discovered(self):
+        """`"\nboot:" in head` required a PRECEDING newline, so a manifest whose
+        FIRST line is `boot:` was invisible to discovery and reported as no
+        manifest — the exact silence SYN-088 closed one layer up. Nothing in the
+        format requires a key before `boot:`."""
+        with open(os.path.join(self.root, "FIRST.yaml"), "w", encoding="utf-8") as fh:
+            fh.write('boot:\n  - config/KERNEL.yaml\nsync_version: "1.0"\n')
+        name, how = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "FIRST.yaml")
+        self.assertIn("discovered", how)
+
+    def test_manifest_behind_a_long_prologue_is_discovered(self):
+        """Discovery read a fixed 4,096-byte head. A manifest may legally carry a
+        longer comment prologue than that — the declared cap is 16,384 — so both
+        marker keys could sit past the window and the file read as a non-manifest.
+        The bound must exceed what a manifest is allowed to be, not undercut it."""
+        with open(os.path.join(self.root, "PROLOGUE.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("# prologue line\n" * 400)      # ~6,000 B before any key
+            fh.write('sync_version: "1.0"\n\nboot:\n  - config/KERNEL.yaml\n')
+        name, _ = rotate.resolve_manifest(self.root)
+        self.assertEqual(name, "PROLOGUE.yaml")
+
     def test_nothing_to_find(self):
         name, _ = rotate.resolve_manifest(self.root)
         self.assertIsNone(name)
@@ -2594,41 +2673,194 @@ class DiscoverManifestsNestedCase(unittest.TestCase):
         self.assertIsNone(os.environ.get("ARCH_MANIFEST"))
 
 
-class ProseFloorCase(unittest.TestCase):
+class NewbornLedgerCase(unittest.TestCase):
     """report_table_prose must not cry wolf on a newborn ledger.
 
-    SYN-088, cold trial: the 50% ratio is structural on a 1-row ledger — the fixed
-    scaffolding (the Pickup-ready sentence, the legend) outweighs one row by
-    construction — so the FIRST rotate an adopter ever runs opened with a
-    complaint about a file genesis had just written. Below an absolute floor the
-    ratio carries no signal, and a report that fires on day one of every fresh
-    instance is a report adopters learn to ignore.
+    SYN-088, cold trial: the FIRST rotate an adopter ever ran opened with a
+    complaint about a file genesis had just written — 321 B prose / 119 B rows on
+    a 1-row ledger. A report that fires on day one of every fresh instance is a
+    report adopters learn to ignore.
+
+    WHAT CHANGED (SYN-090): that was first fixed with an absolute 2,048 B floor,
+    which bought the newborn's silence by silencing the entire band beneath it —
+    every small and every young ledger, permanently. This class now tests the
+    same intent through the mechanism that replaced it: the newborn is quiet
+    because the template's own comment, footer, bold labels and unfilled
+    placeholders are not counted as the adopter's narrative, and a newborn
+    carrying REAL narrative that outweighs its rows is now correctly reported.
     """
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="rotate_prose_")
+        self.root = tempfile.mkdtemp(prefix="rotate_newborn_")
+        self.addCleanup(shutil.rmtree, self.root, True)
         self.ledger = os.path.join(self.root, "MERGE_PLAN.md")
 
-    def _write(self, prose_chars):
+    def _write(self, prose):
         rows = "| ID | Status | Subject |\n|---|---|---|\n| 1 | ⏳ | a |\n"
-        prose = "**Pickup-ready:** " + "x" * prose_chars + "\n"
         with open(self.ledger, "w", encoding="utf-8") as fh:
-            fh.write("# L\n\n## Summary table\n\n" + rows + "\n" + prose)
+            fh.write("# L\n\n## Summary table\n\n" + rows + "\n" + prose + "\n")
 
     def _run(self):
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rotate.report_table_prose(self.ledger)
         return buf.getvalue()
 
-    def test_newborn_ledger_over_ratio_but_under_floor_stays_calm(self):
-        self._write(300)
+    def test_a_newborn_ledgers_own_scaffolding_stays_calm(self):
+        """The day-one file, as genesis writes it: labels and placeholders, no
+        narrative. This is the exact shape that produced the false alarm."""
+        self._write(
+            "**Tally:** [N] tasks total — [X] completed, [Y] pending.\n\n"
+            "<!-- rotate.py DERIVES the Tally from the rows and checks it every\n"
+            "     run — keep the exact shape above, em dash included. -->\n\n"
+            "**Pickup-ready right now (no blockers):** [List the pending rows as "
+            "bare `#3`, `#7` plus a one-line note on each.]\n\n"
+            "---\n\n*Part of 4SYNC ARCH. Adapt freely.*")
         self.assertNotIn("OVER THRESHOLD", self._run())
 
-    def test_real_bloat_still_fires(self):
-        self._write(4000)
+    def test_a_newborn_carrying_real_narrative_is_reported(self):
+        """THE DEAD ZONE, at the size that used to define it. 300 B of actual
+        prose against 56 B of rows is 84% — real bloat on a small ledger, and
+        under the old floor it was unreportable no matter how lopsided it got."""
+        self._write("**Pickup-ready:** " + "x" * 300)
         self.assertIn("OVER THRESHOLD", self._run())
+
+    def test_real_bloat_still_fires(self):
+        self._write("**Pickup-ready:** " + "x" * 4000)
+        self.assertIn("OVER THRESHOLD", self._run())
+
+
+class BulletinCoherenceCase(unittest.TestCase):
+    """SYN-090. `agents:` ⇔ `check_at_boot` was prose in the bootstrap, and
+    genesis deletes the bootstrap — so nothing checked the pair after an
+    instance's first close. Both directions fail silently."""
+
+    ROSTER = ("# Board\n\n## Roster — who this board can address\n\n"
+              "| Name | Aliases | Shell | Git |\n|---|---|---|---|\n")
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_coh_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.abba = os.path.join(self.root, "ABBA.md")
+
+    def _write(self, agents, check_at_boot, extra=""):
+        rows = "".join("| Agent%d | A%d | yes | yes |\n" % (i, i)
+                       for i in range(1, agents + 1))
+        with open(self.abba, "w", encoding="utf-8") as fh:
+            fh.write(self.ROSTER + rows + extra)
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write('sync_version: "1.0"\n\nboot:\n  - config/KERNEL.yaml\n\n'
+                     "close:\n  bulletin:\n    file: ABBA.md\n"
+                     "    check_at_boot: %s\n" % ("true" if check_at_boot else "false"))
+
+    def _run(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = rotate.report_bulletin_coherence(self.root, self.abba, "4SYNC.yaml")
+        return got, buf.getvalue()
+
+    def test_multi_agent_with_the_check_on_is_coherent(self):
+        self._write(2, True)
+        got, out = self._run()
+        self.assertEqual(got, (2, True))
+        self.assertNotIn("INCOHERENT", out)
+
+    def test_one_agent_with_the_check_off_is_coherent(self):
+        self._write(1, False)
+        _, out = self._run()
+        self.assertNotIn("INCOHERENT", out)
+
+    def test_multi_agent_with_the_check_off_is_reported(self):
+        """Mail queues forever and nothing tells the sender."""
+        self._write(3, False)
+        _, out = self._run()
+        self.assertIn("INCOHERENT", out)
+        self.assertIn("check_at_boot: true", out)
+
+    def test_a_lone_agent_paying_for_the_scan_is_reported(self):
+        self._write(1, True)
+        _, out = self._run()
+        self.assertIn("INCOHERENT", out)
+        self.assertIn("omit the agents: block", out)
+
+    def test_a_commented_example_row_is_not_an_agent(self):
+        """The shipped board shows the row shape inside an HTML comment. Counting
+        it would make every fresh one-surface instance read as multi-agent — the
+        cry-wolf-on-day-one shape again."""
+        self._write(1, False,
+                    extra="<!-- a role agent gets a declared Shell:\n"
+                          "     | Mailman | | declared | yes | -->\n")
+        got, out = self._run()
+        self.assertEqual(got[0], 1)
+        self.assertNotIn("INCOHERENT", out)
+
+    def test_a_board_with_no_roster_is_skipped_not_guessed(self):
+        with open(self.abba, "w", encoding="utf-8") as fh:
+            fh.write("# Board\n\nno roster here\n")
+        with open(os.path.join(self.root, "4SYNC.yaml"), "w", encoding="utf-8") as fh:
+            fh.write('sync_version: "1.0"\n\nboot:\n  - k\n\nclose:\n  bulletin:\n'
+                     "    file: ABBA.md\n    check_at_boot: true\n")
+        got, out = self._run()
+        self.assertIsNone(got)
+        self.assertEqual(out, "")
+
+
+class ThirdPartyNamesCase(unittest.TestCase):
+    """SYN-090. The genesis guard for this was a RULE — it told the session to
+    grep for names — and a rule addressed to a practice nobody thinks is wrong
+    does not fire: the practice that produced the original leak was deliberate,
+    reviewed four times and shipped four times."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_names_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _f(self, name, text):
+        p = os.path.join(self.root, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return p
+
+    def _run(self, *paths):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            found = rotate.report_third_party_names(self.root, list(paths))
+        return found, buf.getvalue()
+
+    def test_each_attribution_shape_is_caught(self):
+        for text in ("A defect reported by Fixture Persona on the cold trial.",
+                     "This broke in Fixture Persona's repo during the upgrade.",
+                     "The fix landed after review (Fixture Persona, 2026-08-14)."):
+            found, out = self._run(self._f("t.md", text))
+            self.assertEqual(len(found), 1, text)
+            self.assertEqual(found[0][3], "Fixture Persona")
+            self.assertIn("?", out)
+
+    def test_a_single_first_name_is_not_a_finding(self):
+        """The two-word requirement is what makes this quiet enough to ship —
+        an owner's own first name runs through this project's prose constantly."""
+        found, _ = self._run(self._f("t.md", "Per Michael's ruling the row runs first."))
+        self.assertEqual(found, [])
+
+    def test_tooling_proper_nouns_are_allowed(self):
+        found, _ = self._run(self._f("t.md", "Measured in Claude Code's ledger."))
+        self.assertEqual(found, [])
+
+    def test_it_asks_rather_than_decides(self):
+        """Whether a name belongs in a file that may become public is a consent
+        question about a human being. The output must not read as a verdict."""
+        _, out = self._run(self._f("t.md", "Found by Fixture Persona."))
+        self.assertIn("Does this person know", out)
+        self.assertIn("Asked, not blocked", out)
+
+    def test_clean_prose_prints_nothing_at_all(self):
+        found, out = self._run(self._f("t.md", "The rotate script grew a new check."))
+        self.assertEqual(found, [])
+        self.assertEqual(out, "")
+
+    def test_an_unreadable_path_is_skipped_not_fatal(self):
+        found, _ = self._run(os.path.join(self.root, "does-not-exist.md"))
+        self.assertEqual(found, [])
 
 
 if __name__ == "__main__":

@@ -864,6 +864,43 @@ def _extract(payload):
     return tool, path, text, cmd
 
 
+def _warn_visibly(guard_name, kind, reason):
+    """Put a warn-mode finding in front of the SESSION without blocking it.
+
+    THE FAILURE THIS CLOSES (SYN-090, observed at the v1.1.2 close): g4 detected a
+    STATUS write that did not parse, logged it, and allowed the call — CORRECTLY,
+    because warn is the default mode and warn does not refuse. But the session
+    that made the edit was told nothing at all: exit 0, empty stderr, the finding
+    sitting in ~/.arch_hooks_warn.log, which nobody reads mid-session. The close's
+    `yaml_parse` verify caught it instead — the last line of defence holding where
+    the second should have. The guard was never the defect; its silence was.
+
+    EXIT STAYS 0 AND THE CHANNEL IS JSON, deliberately, and this is the whole
+    safety argument. The other way to put text in front of a user is a non-zero
+    exit, which risks the one thing warn must never do — refuse a call. If a
+    harness ignores these fields the outcome is today's silence, i.e. exactly the
+    current behaviour, so this can only improve the result and cannot break the
+    mode. That asymmetry is why it is worth shipping without certainty about how
+    any given harness renders it.
+
+    NEVER "ask", whatever the guard returned. MP#44 gave enforce a third verdict;
+    warn deliberately does not have one, because an ask is a gate and a gated call
+    in warn mode would be a refusal wearing a prompt's clothes. The decision here
+    is always `allow` — the text is the entire intervention."""
+    label = "ask" if kind == "ask" else "block"
+    json.dump({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason":
+                f"ARCH {guard_name} — warn mode, ALLOWED (this would {label} under "
+                f"ARCH_HOOKS_MODE=enforce): {reason}",
+        },
+        "systemMessage": f"ARCH [warn] {guard_name}: {reason}",
+    }, sys.stdout)
+    sys.stdout.write("\n")
+
+
 def _log(msg):
     logpath = os.environ.get("ARCH_HOOKS_LOG", os.path.expanduser("~/.arch_hooks_warn.log"))
     try:
@@ -1005,12 +1042,10 @@ def _record_debt(payload):
         if root is None:
             return          # not inside an ARCH instance — record nothing, litter nothing
         debtfile = os.path.join(root, DEBT_FILENAME)
-    # A write TARGETING this instance's own debt file is bookkeeping, not work —
-    # recording it is self-defeating: a close that clears its own row with a
-    # file-edit tool would be upserted right back by this very function, so the
-    # close reports "cleared" and the next boot reports phantom debt (SYN-087,
-    # observed live; scripts/debt.py is the ordering-proof clear, this closes
-    # the edit-tool path). EXACT-PATH match against the file THIS call would
+    # A write TARGETING this instance's own debt file is bookkeeping, not work,
+    # and recording it is self-defeating — scripts/debt.py's docstring has the
+    # full account (SYN-087); this is the edit-tool half of the same fix.
+    # EXACT-PATH match against the file THIS call would
     # write, resolved above — never a basename match: a lookalike elsewhere (a
     # fixture, a NESTED instance's debt file being maintained) is real work,
     # and skipping it would silently drop this session's liveness refresh.
@@ -1195,8 +1230,9 @@ def main():
                     sys.exit(0)
                 sys.stderr.write(reason + "\n")
                 sys.exit(2)
-            else:  # warn — byte-identical to pre-MP#44 behavior, ask included
+            else:  # warn — never blocks, and since SYN-090 never silent either
                 _log(f"[{guard.__name__}] tool={tool} path={path} :: {reason}")
+                _warn_visibly(guard.__name__, kind, reason)
                 sys.exit(0)
 
     sys.exit(0)
@@ -1204,3 +1240,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ═══ EOF pre_tool_use.py ═══

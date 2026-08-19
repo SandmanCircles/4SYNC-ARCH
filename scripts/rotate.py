@@ -688,6 +688,33 @@ def render_tally(counts):
     return f"**Tally:** {sum(counts.values())} tasks total — {parts}."
 
 
+# A written Tally is read for its NUMBERS, not its punctuation — see the
+# counts-first branch in reconcile_tally for why. `tasks` is skipped because
+# "3 tasks total" would otherwise register as a status named `tasks`.
+_TALLY_TOTAL_RE = re.compile(r"(\d[\d,]*)\s+tasks\s+total")
+_TALLY_PAIR_RE = re.compile(r"(\d[\d,]*)\s+([a-z][a-z_]*)")
+
+
+def parse_tally_counts(line):
+    """(total, {status_name: count}) read from a WRITTEN Tally line, or None.
+
+    WORDING-AGNOSTIC ON PURPOSE. render_tally spells the canonical line; this
+    has to recognise a correct count in a spelling render_tally would never
+    emit, which is exactly the upgrade case — otherwise a format change turns
+    every pre-upgrade instance's correct ledger into a reported disagreement."""
+    total_m = _TALLY_TOTAL_RE.search(line)
+    if not total_m:
+        return None
+    counts = {}
+    for num, name in _TALLY_PAIR_RE.findall(line):
+        if name == "tasks":
+            continue
+        counts[name] = int(num.replace(",", ""))
+    if not counts:
+        return None
+    return int(total_m.group(1).replace(",", "")), counts
+
+
 def reconcile_tally(ledger_path, apply_):
     """Derive the Tally line from the table and, on --apply, WRITE it.
 
@@ -743,11 +770,28 @@ def reconcile_tally(ledger_path, apply_):
         print("  written Tally matches the table ✓")
         return counts, False
 
-    print("  ! the written Tally disagrees with the table")
+    # COUNTS FIRST, WORDING SECOND (SYN-090). The pre-v1.1.2 template spelled
+    # this line `N tasks total. X completed, …` where the current form has an em
+    # dash. An instance upgrading across that change carries a CORRECT tally in
+    # the old wording, and comparing whole lines called that "disagrees with the
+    # table" — so the first rotate after an upgrade, which is a dry run by the
+    # first-use rule, opened by naming a problem the ledger did not have. That is
+    # the cry-wolf shape SYN-088 closed once already, arriving from the side that
+    # only shows up on somebody else's instance.
+    parsed = parse_tally_counts(written)
+    format_only = parsed is not None and parsed == (total, dict(counts))
+    if format_only:
+        print("  ! the written Tally has the right COUNTS in an older format")
+    else:
+        print("  ! the written Tally disagrees with the table")
     print(f"      written:  {written}")
     print(f"      computed: {computed}")
     if not apply_:
-        print("  Run with --apply to rewrite it from the rows. (Reported, not blocked.)")
+        if format_only:
+            print("  Wording only — nothing is miscounted. Run with --apply to restore "
+                  "the canonical form. (Reported, not blocked.)")
+        else:
+            print("  Run with --apply to rewrite it from the rows. (Reported, not blocked.)")
         return counts, False
 
     new_text = text[:match.start()] + computed + text[match.end():]
@@ -819,13 +863,52 @@ def report_subjects(ledger_path, subject_max, prefix=TASK_PREFIX_DEFAULT):
 
 # ── table-prose report ───────────────────────────────────────────────────────
 
-# Below this, prose CANNOT meaningfully outweigh rows: a newborn ledger's fixed
-# scaffolding (the Pickup-ready sentence, the legend) outweighs its first rows
-# by construction, so the ratio alone made the FIRST rotate an adopter ever runs
-# open with a complaint about a file genesis had just written (SYN-088, cold
-# trial: 321 B prose / 119 B rows flagged a 1-row ledger). A report that fires
-# on day one of every fresh instance is a report adopters learn to ignore.
-PROSE_FLOOR_BYTES = 2048
+# ── what the TEMPLATE wrote, as opposed to what a ledger accumulated ─────────
+#
+# THE FLOOR THIS REPLACES (SYN-090). The alarm used to require prose >= 2,048 B,
+# so any ledger whose prose outweighed its rows while staying under 2 KB was never
+# reported — permanently. That band is every small and every young ledger, i.e.
+# precisely the adopters the check exists to protect: a 200 B / 1,900 B ledger is
+# 90% prose, prints "over the 50% threshold", and alarms never. The floor also
+# contradicted this function's own reasoning that there is "no honest fixed
+# number here", and the suite recorded the moment it bit — the must-flag fixture
+# was bumped from 200 repeats to 300 to get it firing again, moving the input
+# rather than deciding the behaviour.
+#
+# The floor was aimed at ONE false positive: a newborn ledger's fixed scaffolding
+# outweighs its first rows by construction (SYN-088's cold trial, 321 B prose /
+# 119 B rows on a 1-row ledger). Removing that false positive AT ITS SOURCE needs
+# no number at all — so these five classes are subtracted from the prose count,
+# and every one of them is something the TEMPLATE put there rather than something
+# a session wrote:
+#   · HTML comments — instructions to the reader, never accumulated narrative
+#   · horizontal rules
+#   · wholly-italic lines — the attribution footer
+#   · the bold LABEL that leads a paragraph (`**Tally:**`) — required, and only
+#     the label: everything after it on the line is content and is counted, which
+#     is what catches a Tally that grew to explain every row
+#   · unfilled `[bracket]` placeholders — the template's own prompt text, which
+#     is 260 B of the Pickup-ready line alone. Markdown links `[text](url)` are
+#     NOT placeholders and stay counted.
+_COMMENT_OPEN, _COMMENT_CLOSE = "<!--", "-->"
+_RULE_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
+_ITALIC_LINE_RE = re.compile(r"^\s*\*[^*].*\*\s*$")
+_BOLD_LEAD_RE = re.compile(r"^\s*\*\*[^*]+?\*\*")
+_PLACEHOLDER_RE = re.compile(r"\[[^\]\n]*\](?!\()")
+
+
+def _narrative_bytes(line):
+    """Bytes of ADOPTER narrative in one non-row line — scaffolding subtracted.
+
+    Returns 0 for a line that is entirely template scaffolding."""
+    if _RULE_RE.match(line) or _ITALIC_LINE_RE.match(line):
+        return 0
+    text = line
+    lead = _BOLD_LEAD_RE.match(text)
+    if lead:
+        text = text[lead.end():]
+    text = _PLACEHOLDER_RE.sub("", text)
+    return len(text.strip().encode("utf-8"))
 
 
 def report_table_prose(ledger_path):
@@ -848,18 +931,35 @@ def report_table_prose(ledger_path):
     legitimately carries more prose than a 20-row one), but prose outweighing
     rows means the section stopped being a table with a note on it.
 
+    Template scaffolding is SUBTRACTED rather than allowanced — see the comment
+    above _narrative_bytes for the floor this replaced and why.
+
     Reports; never blocks. Returns (row_bytes, prose_bytes)."""
     table = summary_table_section(read(ledger_path))
     if table is None:
         print("table-prose: no '## Summary table' found — skipped")
         return 0, 0
-    rows = prose = 0
+    rows = prose = scaffold = 0
+    in_comment = False
     for line in table.splitlines(keepends=True):
         n = len(line.encode("utf-8"))
         if line.lstrip().startswith("|"):
             rows += n
-        elif line.strip():
-            prose += n
+            continue
+        if not line.strip():
+            continue
+        opened = in_comment
+        if _COMMENT_OPEN in line:
+            in_comment = True
+        was_comment = opened or _COMMENT_OPEN in line
+        if _COMMENT_CLOSE in line:
+            in_comment = False
+        if was_comment:
+            scaffold += n
+            continue
+        kept = _narrative_bytes(line)
+        prose += kept
+        scaffold += n - kept
     total = rows + prose
     # Phrased as a RATIO AGAINST A THRESHOLD rather than as two byte counts.
     # MP#56: this line printed the number that eventually produced a whole
@@ -870,18 +970,15 @@ def report_table_prose(ledger_path):
     share = (100.0 * prose / total) if total else 0.0
     verdict = "over" if prose > rows else "under"
     print(f"table: prose is {share:.0f}% of the summary section "
-          f"({prose:,} B prose / {rows:,} B rows, ~{total // 4:,} tok of boot) "
+          f"({prose:,} B prose / {rows:,} B rows, ~{total // 4:,} tok of boot"
+          f"{f'; {scaffold:,} B template scaffolding excluded' if scaffold else ''}) "
           f"— {verdict} the 50% threshold")
-    if prose > rows and prose >= PROSE_FLOOR_BYTES:
+    if prose > rows:
         print(f"  ! OVER THRESHOLD. A tally is a count; once it explains why each row "
               f"closed it is a second copy of {TASKS_DIRNAME}/closed/, and it drifts from "
               "both. TRIM IT BACK TO A COUNT — the explanations already live in "
               f"{TASKS_DIRNAME}/closed/, so move nothing, just stop restating it here. "
               "(Reported, not blocked.)")
-    elif prose > rows:
-        print(f"  (over the ratio but under the {PROSE_FLOOR_BYTES:,} B floor — a "
-              "newborn ledger's fixed scaffolding outweighs its first rows by "
-              "construction; not reported as bloat)")
     return rows, prose
 
 
@@ -1246,6 +1343,189 @@ def manifest_bulletin_name(root, manifest_name=None):
     """close.bulletin.file — the instance's board, defaulting to the shipped name."""
     return _manifest_scalar(root, ("close", "bulletin", "file"), "bulletin",
                             manifest_name) or BULLETIN_FILENAME
+
+
+# ── bulletin ⇔ roster coherence (SYN-090) ────────────────────────────────────
+
+_ROSTER_HEADING_RE = re.compile(r"(?mi)^#{1,6}\s+Roster\b")
+_SEPARATOR_CELLS = set("-: ")
+
+
+def count_roster_entries(text):
+    """How many agents the board's Roster names, or None if it has no roster.
+
+    Data rows of the first markdown table under a `Roster` heading. Header and
+    separator rows are not entries, and neither is a row inside an HTML comment
+    — the shipped board carries a commented example row precisely so it can show
+    the shape without claiming an agent exists, and counting it would make every
+    fresh instance look multi-agent."""
+    m = _ROSTER_HEADING_RE.search(text)
+    if not m:
+        return None
+    entries, seen_table, in_comment = 0, False, False
+    for line in text[m.end():].splitlines():
+        s = line.strip()
+        if in_comment:
+            if "-->" in s:
+                in_comment = False
+            continue
+        if "<!--" in s:
+            in_comment = "-->" not in s
+            continue
+        if not s.startswith("|"):
+            if seen_table and s:
+                break                       # the table ended
+            continue
+        seen_table = True
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if not cells or not cells[0]:
+            continue
+        if set("".join(cells)) <= _SEPARATOR_CELLS:
+            continue                        # |---|---|
+        if cells[0].casefold() in ("name", "agent"):
+            continue                        # header
+        entries += 1
+    return entries if seen_table else None
+
+
+def manifest_checks_bulletin_at_boot(root, manifest_name=None):
+    """close.bulletin.check_at_boot, or None if no bulletin block is declared.
+
+    Deliberately the SAME read hooks/session_start.py and scripts/meter.py both
+    use, so three tools cannot disagree about whether this instance's board is
+    live."""
+    p = _manifest_path(root, manifest_name)
+    if not os.path.exists(p):
+        return None
+    block = _block_under(read(p), "bulletin")
+    if block is None:
+        return None
+    return bool(re.search(r"(?m)^\s*check_at_boot:\s*true\b", block))
+
+
+def report_bulletin_coherence(root, bulletin_path, manifest_name=None):
+    """The roster and `close.bulletin.check_at_boot` must say the same thing.
+
+    Michael's ruling at the v1.1.2 close pairs them: ONE surface means omit the
+    `agents:` block and ship `check_at_boot: false`; more than one means the
+    board is live and every session checks it at boot. That pairing was written
+    as PROSE in the bootstrap — and genesis DELETES the bootstrap block, so from
+    an instance's first close onward nothing checked it. Both directions fail
+    silently, which is why it needs a check rather than a rule:
+      · a roster of 2+ with the check OFF — agents address a board no session
+        ever reads, mail queues forever, and nothing tells the sender.
+      · a lone agent with the check ON — every session pays the bulletin scan
+        for a board nobody else can post to, which is the cost omitting the
+        `agents:` block exists to avoid.
+
+    Reports; never blocks. Returns (entries, checks_at_boot), or None when
+    either side is absent — an instance with no roster has nothing to disagree
+    with, and that is the normal one-surface shape, not a fault."""
+    if not os.path.exists(bulletin_path):
+        return None
+    entries = count_roster_entries(read(bulletin_path))
+    checks = manifest_checks_bulletin_at_boot(root, manifest_name)
+    if entries is None or checks is None:
+        return None
+    multi = entries >= 2
+    print(f"bulletin: roster names {entries} agent(s); check_at_boot is "
+          f"{'true' if checks else 'false'}"
+          f"{' ✓' if multi == checks else ''}")
+    if multi and not checks:
+        print("  ! INCOHERENT. Agents address this board and no session reads it at "
+              "boot, so messages queue unseen and no sender is told. Set "
+              "close.bulletin.check_at_boot: true. (Reported, not blocked.)")
+    elif checks and not multi:
+        print("  ! INCOHERENT. One agent, but every session pays the bulletin scan "
+              "for a board nobody else can post to. Set check_at_boot: false and "
+              "omit the agents: block. (Reported, not blocked.)")
+    return entries, checks
+
+
+# ── third-party names in authored prose (SYN-090) ────────────────────────────
+#
+# WHY A CHECK AND NOT JUST A RULE. This is release.py's argument, one layer down
+# and pointed at the adopter instead of at us. The genesis step that guards this
+# is a RULE — it instructs the session to grep for names — and a rule addressed
+# to a practice nobody thinks is wrong does not fire: the practice that produced
+# the original leak (anchoring every note to its provenance, this project's
+# stated mitigation for a bus factor of one) was deliberate, reviewed four times
+# and shipped four times. Provenance is exactly the private part.
+#
+# WHAT AN ADOPTER HAS, which is the KERNEL `product:` invariant applied honestly:
+# no PRIVATE_NAMES.txt and no privacy policy of ours, so the DENYLIST half of
+# release.py's scanner cannot ship. Only the heuristics do — and they are the
+# half that matters here anyway, because they know no names at all and catch the
+# ATTRIBUTION SHAPE, which is what catches the person nobody thought to list.
+#
+# QUIET ENOUGH TO SHIP, measured before it was written: zero hits across this
+# silo's ledger, journal history, bulletin, KERNEL, STATUS and naming file. The
+# two-word requirement is what buys that — "Michael's ruling" is not a match,
+# "Michael S. Massey's report" is.
+#
+# REPORTS, NEVER BLOCKS, and the wording is a QUESTION. Whether a name belongs in
+# a file that may become public is a consent question about a human being, and no
+# script should be deciding it.
+NAME_RE = r"([A-Z][a-z]+(?:\s+[A-Z][A-Za-z'\-]+)+)"
+# The VERB and NOUN groups are case-insensitive; the NAME group is not, and that
+# asymmetry is the point. A sentence-initial "Found by Fixture Persona." slipped
+# through a wholly case-sensitive verb list — caught by this file's own test, and
+# the same blind spot exists in the silo-only scanner this is modelled on. Making
+# the whole pattern IGNORECASE instead would destroy the two-capitals rule that
+# keeps it quiet, so the flags are scoped with (?i:...) rather than global.
+ATTRIBUTION_RES = [
+    (re.compile(r"\b(?i:(?:field-)?(?:reported|contributed|found|caught|raised|"
+                r"suggested|flagged|filed))\s+by\s+" + NAME_RE),
+     "attributed to a named person"),
+    (re.compile(r"\b" + NAME_RE + r"'s\s+(?i:field\s+report|report|layout|instance|"
+                r"setup|repo|repository|project|machine|box|clone|tree|ledger|"
+                r"config|install)\b"),
+     "a named person's own thing"),
+    (re.compile(r"\(" + NAME_RE + r",\s*\d{4}-\d{2}-\d{2}\)"),
+     "name beside a date"),
+]
+
+# Phrases the heuristics match that are not a third party. Every entry is a hole,
+# so each one must be a proper noun that belongs to the tooling itself.
+NAME_ALLOW = ("Claude Code", "Return on Context", "Anthropic")
+
+
+def scan_third_party_names(paths):
+    """[(path, lineno, kind, evidence)] for attribution shapes in authored prose."""
+    findings = []
+    for p in paths:
+        try:
+            text = read(p)
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for rx, kind in ATTRIBUTION_RES:
+                m = rx.search(line)
+                if not m:
+                    continue
+                who = m.group(1)
+                if any(a.lower() in who.lower() for a in NAME_ALLOW):
+                    continue
+                findings.append((p, lineno, kind, who))
+                break
+    return findings
+
+
+def report_third_party_names(root, paths):
+    """Name the attribution shapes and ask; never decide. Returns the findings."""
+    findings = scan_third_party_names(paths)
+    if not findings:
+        return findings
+    print(f"names: {len(findings)} possible third-party attribution(s) in authored prose")
+    for p, lineno, kind, who in findings[:10]:
+        rel = os.path.relpath(p, root)
+        print(f"  ? {rel}:{lineno} — {kind}: {who!r}")
+    if len(findings) > 10:
+        print(f"  … and {len(findings) - 10} more")
+    print("  Does this person know they are named here, and is this file ever "
+          "published? 'Identifiable' is wider than a name — a repo layout, an "
+          "employer, a dated incident tied to one person. (Asked, not blocked.)")
+    return findings
 
 
 def archive_name(name):
@@ -1930,8 +2210,24 @@ def manifest_meter_script(root, manifest_name=None):
     return s.group(1) if s else None
 
 
+# One close asks the meter for boot cost TWICE — report_status_facts to check
+# STATUS's claim, report_boot_growth to compare against the last logged row — and
+# each ask was a fresh interpreter spawn with a 120-second timeout (SYN-090).
+# Keyed on every input, so a different root or a different declared meter is a
+# different answer; within one run the two readings are of the same tree, and
+# they SHOULD agree — two tools measuring one thing that disagree are both
+# untrusted. Cleared by reset_meter_cache() so a long-lived process (the suite)
+# never serves one test's measurement to another.
+_METER_CACHE = {}
+
+
+def reset_meter_cache():
+    """Drop memoized meter readings. For tests and for any in-process re-run."""
+    _METER_CACHE.clear()
+
+
 def _meter_boot(root, script_rel, manifest_name=None):
-    """(tokens, bytes) from the declared meter's --json, or None.
+    """(tokens, bytes) from the declared meter's --json, or None. Memoized.
 
     The meter is DECLARED, not discovered: close.meter.script is where this
     instance says its meter lives, and in this silo that is the product's copy,
@@ -1942,8 +2238,12 @@ def _meter_boot(root, script_rel, manifest_name=None):
     per-run inference into a global pin that outlives the run."""
     if not script_rel:
         return None
+    key = (os.path.abspath(root), script_rel, manifest_name)
+    if key in _METER_CACHE:
+        return _METER_CACHE[key]
     p = os.path.join(root, script_rel.replace("/", os.sep))
     if not os.path.exists(p):
+        _METER_CACHE[key] = None
         return None
     env = os.environ.copy()
     if manifest_name and not env.get("ARCH_MANIFEST"):
@@ -1952,9 +2252,11 @@ def _meter_boot(root, script_rel, manifest_name=None):
         out = subprocess.run([sys.executable, p, "--dir", root, "--json"],
                              capture_output=True, text=True, timeout=120, env=env)
         d = json.loads(out.stdout)
-        return d.get("boot_total_tokens"), d.get("boot_total_bytes")
+        got = (d.get("boot_total_tokens"), d.get("boot_total_bytes"))
     except Exception:  # noqa: BLE001 — no meter, no --json, bad output: skip
-        return None
+        got = None
+    _METER_CACHE[key] = got
+    return got
 
 
 def _check_boot(text, spans, boot, findings):
@@ -2294,6 +2596,44 @@ def verify_moves(moved_blocks, src, dst, restore):
 # ── manifest resolution ──────────────────────────────────────────────────────
 
 
+# How much of a candidate file to read when testing whether it is a manifest.
+# 64 KB is four times the 16,384-byte cap every instance declares for its own
+# manifest, so a legal manifest always sits wholly inside the window; the bound
+# exists only to stop an unrelated multi-megabyte root-level YAML being slurped.
+MANIFEST_HEAD_BYTES = 65536
+
+
+def _declares_manifest(path):
+    """Does this file declare itself an ARCH instance manifest?
+
+    The test is the two top-level keys `sync_version:` and `boot:`, each anchored
+    with (?m)^ — the same anchoring mail.py's peer-detect already uses.
+
+    TWO BLIND SPOTS THIS CLOSES (SYN-090), and both had one symptom: a real
+    manifest reading as NO manifest, which is the silence SYN-088 closed one
+    layer up and the reason that resolver exists at all.
+      - The old test was `"\nboot:" in head`, requiring a PRECEDING newline, so a
+        manifest whose FIRST line is `boot:` could never match. Nothing in the
+        format requires a key above it.
+      - The old window was a fixed 4,096 bytes, which UNDERCUTS the 16,384-byte
+        manifest cap it is meant to serve: a prologue well within the declared
+        limit could push both marker keys past the read. This repo's own manifest
+        runs ~1,500 B of prologue, so the margin was three files' worth of
+        comments, not a safe multiple.
+
+    DUPLICATED DELIBERATELY in scripts/wire_hooks.py. Machinery modules never
+    import one another — each is copied and wired standalone — so a shared module
+    would have to join MACHINERY and could be copied without its dependents. Keep
+    the two CODE-identical; only the sibling named above legitimately differs."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(MANIFEST_HEAD_BYTES)
+    except OSError:          # an unreadable candidate is not the manifest
+        return False
+    return bool(re.search(r"(?m)^sync_version:", head)
+                and re.search(r"(?m)^boot:", head))
+
+
 def resolve_manifest(root):
     """Which manifest file governs this run, and how it was found.
 
@@ -2325,12 +2665,7 @@ def resolve_manifest(root):
     for name in names:
         if name == "4SYNC.yaml" or not name.lower().endswith((".yaml", ".yml")):
             continue
-        try:
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
-                head = fh.read(4096)
-        except Exception:  # noqa: BLE001 — an unreadable candidate is not the manifest
-            continue
-        if "sync_version:" in head and "\nboot:" in head:
+        if _declares_manifest(os.path.join(root, name)):
             discovered = name
             break
     if os.path.isfile(os.path.join(root, "4SYNC.yaml")):
@@ -2442,6 +2777,7 @@ def main():
         reconcile_tally(ledger, args.apply)
     if os.path.exists(abba):
         rotate_abba(abba, archive, args.age, args.apply)
+        report_bulletin_coherence(d, abba, mname)
     if os.path.exists(ledger):
         report_sizes(d, ledger, jmax)
         report_table_prose(ledger)
@@ -2454,6 +2790,16 @@ def main():
     report_boot_growth(d, manifest_name=mname, run_meter=not args.no_meter)
     report_manifest_at_rest(d, mname)
     report_findings(d)
+    # The adopter's OWN authored prose — ledger, journal overflow, board and task
+    # documents. Not config/: identity files name the instance's own people by
+    # design, and asking about those every close is the false alarm that teaches
+    # a reader to scroll past the real one.
+    name_targets = [p for p in (ledger, history, abba, archive) if os.path.exists(p)]
+    tasks_dir = os.path.join(d, TASKS_DIRNAME)
+    for base, _dirs, files in os.walk(tasks_dir) if os.path.isdir(tasks_dir) else []:
+        name_targets += [os.path.join(base, f) for f in sorted(files)
+                         if f.lower().endswith(".md")]
+    report_third_party_names(d, name_targets)
     print("mode:", "APPLIED" if args.apply else "dry-run (pass --apply to write)")
 
     # A live row with no document is an unexecutable task. Exit non-zero so a

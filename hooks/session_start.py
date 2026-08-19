@@ -308,8 +308,12 @@ def boot_growth_lines(root, sizes):
     return out
 
 
-def build_receipt(root, manifest_name, manifest_text, mode):
-    """The context block. Returns (text, boot_files)."""
+def build_receipt(root, manifest_name, manifest_text, mode, session_id=None):
+    """The context block. Returns (text, boot_files).
+
+    `session_id` is the HOOK PAYLOAD's id — the same key hooks/pre_tool_use.py
+    records debt rows under. It is passed in so the receipt can warn when it
+    disagrees with $CLAUDE_CODE_SESSION_ID; see the mismatch block below."""
     boot = parse_boot_list(manifest_text)
     # The manifest itself is read to START boot, so it is part of the cost —
     # the same accounting meter.py uses, and the reason the two agree.
@@ -376,6 +380,32 @@ def build_receipt(root, manifest_name, manifest_text, mode):
         lines.append("  NOTE: last_activity tracks FILE WRITES only — every git command after "
                      "one is invisible. 'Not live' means probably idle, never gone.")
 
+    # THE TWO IDS THAT MUST AGREE (SYN-090). The recorder keys rows by the hook
+    # PAYLOAD's session id; `debt.py --clear` defaults to $CLAUDE_CODE_SESSION_ID.
+    # A nested or scripted run INHERITS its parent's env value, so the two diverge
+    # and the close clears a row that does not exist while the real row sits
+    # untouched — reported as "cleared nothing", which reads like success.
+    #
+    # SILENT WHEN THEY AGREE, which is every ordinary session: a warning printed
+    # at every boot is one the reader stops seeing, and this file has already made
+    # that mistake once (the boot-cost line that "read as scenery for weeks").
+    # The id is surfaced HERE rather than left to be guessed at close, because the
+    # only other way to find it is to read the debt file and pick a row — and
+    # picking wrong deletes a LIVE session's row.
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if session_id and env_sid and session_id != env_sid:
+        lines += ["",
+                  "⚠ SESSION ID MISMATCH — your debt row will NOT clear by default.",
+                  f"    the recorder keys your row by:  {session_id}   (hook payload)",
+                  f"    debt.py --clear will look for:  {env_sid}   ($CLAUDE_CODE_SESSION_ID)",
+                  "    A nested or scripted run inherits its parent's env id. At close run:",
+                  f"      python scripts/debt.py --clear --session {session_id}"]
+    elif session_id and not env_sid:
+        lines += ["",
+                  f"Debt row id for this session: {session_id}",
+                  "    $CLAUDE_CODE_SESSION_ID is unset, so `debt.py --clear` refuses rather "
+                  "than guess — pass the id above."]
+
     if mode == "inject":
         lines += ["", "═══ BOOT CONTENT (injected — you have already loaded these) ═══"]
         for rel in boot:
@@ -426,7 +456,8 @@ def main():
     if not os.path.isfile(manifest_path):
         return 0                      # config/ without a manifest is not our instance
 
-    text, _ = build_receipt(root, manifest_name, _read(manifest_path), mode)
+    text, _ = build_receipt(root, manifest_name, _read(manifest_path), mode,
+                            payload.get("session_id"))
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "SessionStart",
         "additionalContext": text,

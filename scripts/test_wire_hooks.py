@@ -264,6 +264,22 @@ class TestManifestWiring(unittest.TestCase):
             fh.write("services:\n  web:\n    image: nginx\n")
         self.assertIsNone(wh.find_manifest(self.root))
 
+    def test_boot_on_the_first_line_is_found(self):
+        """Sibling of the rotate.py case: `"\nboot:" in head` needed a preceding
+        newline, so a manifest opening with `boot:` was unfindable and wiring
+        silently declined to pin ARCH_MANIFEST for a renamed instance."""
+        with open(os.path.join(self.root, "FIRST.yaml"), "w", encoding="utf-8") as fh:
+            fh.write('boot:\n  - config/K.yaml\nsync_version: "1.0"\n')
+        self.assertEqual(wh.find_manifest(self.root), "FIRST.yaml")
+
+    def test_manifest_behind_a_long_prologue_is_found(self):
+        """The 4,096-byte head undercut the 16,384-byte manifest cap, so a
+        legally-sized prologue could hide both marker keys."""
+        with open(os.path.join(self.root, "PROLOGUE.yaml"), "w", encoding="utf-8") as fh:
+            fh.write("# prologue line\n" * 400)
+            fh.write('sync_version: "1.0"\nboot:\n  - config/K.yaml\n')
+        self.assertEqual(wh.find_manifest(self.root), "PROLOGUE.yaml")
+
     def test_default_named_manifest_is_not_wired(self):
         """Wiring ARCH_MANIFEST=4SYNC.yaml would be a no-op that reads as a
         decision — the hook already defaults to it."""
@@ -515,3 +531,5 @@ class MergeMalformedCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ═══ EOF test_wire_hooks.py ═══

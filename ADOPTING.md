@@ -32,9 +32,10 @@ So: a real folder, somewhere you can find it, that you delete afterward.
 mkdir ~/arch-trial && cd ~/arch-trial && git init
 ```
 
-The `git init` is not dressing: **ARCH requires a repository.** Rotation's dirty-tree
-gate, the close's commit step, and every exit in this document run on git — and genesis
-will ask ("has git been initiated?") and offer to run it if you skipped it.
+The `git init` is not dressing: **ARCH — A Return on Context Harness — requires a
+repository.** Rotation's dirty-tree gate, the close's commit step, and every exit in
+this document run on git — and genesis will ask ("has git been initiated?") and offer
+to run it if you skipped it.
 
 ### What a trial should actually show you
 

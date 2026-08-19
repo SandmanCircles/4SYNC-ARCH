@@ -2,14 +2,9 @@
 """
 Stdlib unittest suite for debt.py — the close-time session-debt clearer.
 
-WHY A SCRIPT OWNS THE CLEAR (SYN-087, observed live on a cold trial): the
-recorder in hooks/pre_tool_use.py upserts this session's row on every
-file-write TOOL call, so a close that cleared its own row with a file-edit
-tool — or made any write-tool call afterwards — silently restored the row,
-and the next boot reported phantom debt from a session that closed properly.
-A script's writes are invisible to the recorder (its WRITE_TOOLS excludes
-Bash), so clearing by script makes the ordering problem disappear instead of
-documenting it.
+WHY A SCRIPT OWNS THE CLEAR: see debt.py's own module docstring, which is the
+canonical telling (SYN-087). It was retold in six places and had already begun
+to diverge in wording; one copy is maintainable, six are not.
 
 Everything runs in-process (debt.main(argv)) — no subprocess, deliberately:
 this box has an intermittent _winapi.DuplicateHandle fault that fails
@@ -93,14 +88,24 @@ class ClearCase(unittest.TestCase):
         var carries the PARENT session's id, so --clear targets a row that does
         not exist while the real row sits one line away — and "no own row" reads
         like success. When nothing was cleared anywhere but unwrapped rows
-        exist, the tool must say so and name them, so the closing session can
-        recognize its own row and re-run with --session."""
+        exist, the tool must say so and name them."""
         top = os.path.join(self.root, ".session_debt.tsv")
         self._seed(top, ["48edbd23-real"])
         code, out = self._run("--clear", "--dir", self.root, "--session", "wrong-id")
         self.assertEqual(code, 0)
         self.assertIn("48edbd23-real", out)    # the surviving row is NAMED
-        self.assertIn("--session", out)        # and the remedy is named too
+        self.assertIn("BOOT RECEIPT", out)     # and the id is SOURCED, not guessed
+
+    def test_the_miss_never_invites_picking_a_row(self):
+        """SYN-090. This block used to end "re-run with --session <that id>",
+        which invites choosing from a list whose other entries may belong to
+        sessions that are LIVE right now. A deleted row is the only evidence
+        that session was working — the one thing the tracker exists to keep."""
+        top = os.path.join(self.root, ".session_debt.tsv")
+        self._seed(top, ["live-other-session"])
+        _, out = self._run("--clear", "--dir", self.root, "--session", "wrong-id")
+        self.assertIn("DO NOT pick one", out)
+        self.assertIn("LIVE right now", out)
 
     def test_session_id_from_environment(self):
         os.environ["CLAUDE_CODE_SESSION_ID"] = "env-sid"
@@ -205,6 +210,48 @@ class ClearCase(unittest.TestCase):
         self.assertEqual(code, 0)
         with open(top, "rb") as fh:
             self.assertNotIn(b"mine\t", fh.read())
+
+    def _seed_at(self, *parts):
+        """Seed a debt file at root/<parts...>/ and return its path."""
+        d = os.path.join(self.root, *parts)
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, ".session_debt.tsv")
+        self._seed(p, ["mine"])
+        return p
+
+    def test_build_and_dist_are_not_walked(self):
+        """SKIP_DIRS here was a THIRD divergent copy of a set rotate.py and
+        meter.py both carry — this one silently omitted `dist` and `build`
+        (SYN-090). A build artefact tree is not instance state, and clearing a
+        row out of one is a write into generated output."""
+        paths = [self._seed_at("build"), self._seed_at("dist")]
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        for p in paths:
+            with open(p, encoding="utf-8") as fh:
+                self.assertIn("mine", fh.read(), p + " was walked")
+
+    def test_dot_directories_are_not_walked(self):
+        """Named dot-dirs were skipped one at a time, so every dot-dir nobody
+        listed was walked — `.cache`, `.tox`, `.next`, `.terraform`. Pruning the
+        whole class is the fix that does not need a maintainer to keep guessing."""
+        p = self._seed_at(".cache")
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(p, encoding="utf-8") as fh:
+            self.assertIn("mine", fh.read())
+
+    def test_walk_is_depth_bounded(self):
+        """os.walk over the WHOLE instance root ran at every close — multi-second
+        on a large adopter repo, for a file that only ever sits at an instance
+        root. Three levels reaches any nested-instance layout; the same bound and
+        the same reason as rotate.py's MAX_REPO_DEPTH."""
+        shallow = self._seed_at("a", "b", "c")            # depth 3 — still found
+        deep = self._seed_at("a", "b", "c", "d")          # depth 4 — out of range
+        found = debt.find_debt_files(self.root)
+        norm = [os.path.normcase(os.path.abspath(f)) for f in found]
+        self.assertIn(os.path.normcase(os.path.abspath(shallow)), norm)
+        self.assertNotIn(os.path.normcase(os.path.abspath(deep)), norm)
 
     def test_git_dir_is_not_walked(self):
         gitdir = os.path.join(self.root, ".git")

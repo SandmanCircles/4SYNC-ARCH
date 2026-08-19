@@ -133,10 +133,7 @@ MACHINERY = [
     "scripts/test_actuals.py",
     "scripts/split_ledger.py",
     "scripts/test_split_ledger.py",
-    # debt.py exists because the recorder made self-clearing via edit tools
-    # self-defeating (SYN-087): it upserts the session's row on every file-write
-    # tool call, so only a script's writes — invisible to it — can clear a row
-    # that STAYS cleared regardless of close-step ordering.
+    # Why this file exists at all: scripts/debt.py's module docstring (SYN-087).
     "scripts/debt.py",
     "scripts/test_debt.py",
     "scripts/wire_hooks.py",

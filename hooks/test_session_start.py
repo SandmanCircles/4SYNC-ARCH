@@ -423,6 +423,53 @@ class TestMainContract(InstanceCase):
         self.assertEqual(out.stdout.strip(), "")
 
 
+class SessionIdMismatchCase(InstanceCase):
+    """SYN-090. The recorder keys debt rows by the hook PAYLOAD's session id;
+    `debt.py --clear` defaults to $CLAUDE_CODE_SESSION_ID. A nested or scripted
+    run inherits its parent's env value, the two diverge, and the close clears a
+    row that does not exist while the real one sits untouched — reported as
+    "cleared nothing", which reads like success. The receipt is where the id can
+    be SOURCED; the alternative is reading the debt file and picking a row, and
+    picking wrong deletes a live session's evidence."""
+
+    def _receipt_with(self, session_id, env_sid):
+        prev = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        if prev is not None:
+            self.addCleanup(os.environ.__setitem__, "CLAUDE_CODE_SESSION_ID", prev)
+        if env_sid is not None:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = env_sid
+            self.addCleanup(os.environ.pop, "CLAUDE_CODE_SESSION_ID", None)
+        with open(os.path.join(self.root, "4SYNC.yaml"), encoding="utf-8") as fh:
+            text = fh.read()
+        return ss.build_receipt(self.root, "4SYNC.yaml", text, "announce", session_id)[0]
+
+    def test_matching_ids_say_nothing(self):
+        """SILENT IN THE ORDINARY CASE. A warning printed at every boot is one
+        the reader stops seeing — this file has already made that mistake once."""
+        out = self._receipt_with("abc123", "abc123")
+        self.assertNotIn("MISMATCH", out)
+        self.assertNotIn("Debt row id", out)
+
+    def test_diverging_ids_warn_and_give_the_command(self):
+        out = self._receipt_with("payload-id", "inherited-parent-id")
+        self.assertIn("SESSION ID MISMATCH", out)
+        self.assertIn("payload-id", out)
+        self.assertIn("inherited-parent-id", out)
+        self.assertIn("--session payload-id", out)
+
+    def test_absent_env_surfaces_the_id_because_clear_will_refuse(self):
+        out = self._receipt_with("payload-id", None)
+        self.assertIn("Debt row id for this session: payload-id", out)
+        self.assertIn("refuses rather than guess", out)
+
+    def test_no_payload_id_is_not_an_error(self):
+        """A hook payload without session_id must not produce a warning about
+        nothing — the receipt never fails a boot over a report."""
+        out = self._receipt_with(None, "env-only")
+        self.assertNotIn("MISMATCH", out)
+        self.assertNotIn("Debt row id", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 # ═══ EOF test_session_start.py ═══

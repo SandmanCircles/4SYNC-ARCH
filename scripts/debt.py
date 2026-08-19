@@ -36,16 +36,41 @@ import os
 import sys
 
 DEBT_FILENAME = ".session_debt.tsv"
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+
+# KEPT IN STEP with the same set in scripts/rotate.py and scripts/meter.py. This
+# was a third divergent copy and the divergence was silent: `dist` and `build`
+# were in the other two and missing here, so a close walked build artefacts that
+# no other tool did (SYN-090). Dot-directories are pruned as a CLASS below rather
+# than listed, because listing them one at a time is what left `.cache`, `.tox`,
+# `.next` and `.terraform` walked — a maintainer cannot keep guessing the set.
+SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+
+# How far under the instance root to look. A debt file only ever sits at an
+# instance root, so an unbounded walk of the whole tree was paying a multi-second
+# cost at every close on a large adopter repo to look where the file cannot be.
+# Three levels reaches any nested-instance layout and stops — the same bound and
+# the same reasoning as rotate.py's MAX_REPO_DEPTH.
+MAX_DEBT_DEPTH = 3
 
 
 def find_debt_files(root):
-    """Every debt file under `root`, bounded by the skip list, plus the
-    ARCH_DEBT_FILE override when set — the recorder writes there instead, so a
-    walk that ignored it would clear nothing while reporting success."""
+    """Every debt file under `root`, plus the ARCH_DEBT_FILE override when set.
+
+    Bounded two ways: SKIP_DIRS and the dot-directory class prune what is not
+    instance state, and MAX_DEBT_DEPTH stops the descent. The override is added
+    AFTER the walk and is exempt from both — the recorder writes there instead of
+    the default path, so a walk that dropped it would clear nothing while
+    reporting success, and it may legitimately sit outside the bounded region."""
     found = []
+    root = os.path.abspath(root)
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
+        if depth >= MAX_DEBT_DEPTH:
+            dirnames[:] = []                    # bounded: descend no further
+        else:
+            dirnames[:] = [d for d in dirnames
+                           if d not in SKIP_DIRS and not d.startswith(".")]
         if DEBT_FILENAME in filenames:
             found.append(os.path.join(dirpath, DEBT_FILENAME))
     override = os.environ.get("ARCH_DEBT_FILE")
@@ -171,6 +196,14 @@ def main(argv=None):
     # INHERITS the parent's value, so the clear targets a row that does not
     # exist while the real row sits one line away. "no own row" alone reads
     # like success; naming the survivors turns it into an actionable miss.
+    #
+    # NAMING THEM IS NOT PERMISSION TO PICK ONE (SYN-090). This block used to end
+    # "re-run with --session <that id>", which invites choosing a row from a list
+    # whose other entries may belong to sessions that are LIVE RIGHT NOW — and a
+    # deleted row is the only evidence that session was working, which is the one
+    # thing the tracker exists to preserve. The id is not something to deduce
+    # here: the boot receipt prints it whenever it differs from the environment,
+    # which is exactly when this branch fires.
     if not cleared_any:
         leftover = []
         for f in files:
@@ -181,9 +214,12 @@ def main(argv=None):
         if leftover:
             print("NOTE: cleared nothing for session id %r, but %d unwrapped row(s) "
                   "remain: %s" % (sid, len(leftover), ", ".join(leftover)))
-            print("      If one of these is THIS session (a nested or scripted run "
-                  "inherits the parent's $CLAUDE_CODE_SESSION_ID), re-run with "
-                  "--session <that id>.")
+            print("      DO NOT pick one from this list. Any of these may belong to a "
+                  "session that is LIVE right now, and clearing another session's row "
+                  "destroys the only evidence it was working.")
+            print("      Your own id is on your BOOT RECEIPT — it prints the payload id "
+                  "whenever it differs from $CLAUDE_CODE_SESSION_ID, which is exactly "
+                  "the case that lands you here. Re-run with that id.")
     return 0
 
 

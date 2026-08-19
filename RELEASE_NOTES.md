@@ -70,6 +70,69 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## v1.1.4
+
+*The reviewed release. A multi-agent audit of nine releases' worth of change returned two nits;
+the one machinery file it could not see held three real defects. Both halves are here.*
+
+**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite,
+`scripts/mail.py` + suite, `scripts/actuals.py` + suite. **The inventory is unchanged at 24
+files**, so as with v1.1.3 this release does not invalidate previously published build ids for
+inventory reasons — your id changes because the code changed, which is the ordinary case.
+
+- **`rotate.py` could not see the repository your instance lives in.** Reported by an adopter
+  running an instance nested inside a larger git repo: eight true `status:` sha claims came back
+  as "resolves in no repo — repos searched: none". Repo discovery walked *down* from the
+  instance root and never *up*, so an enclosing repository was invisible — the same shape as the
+  depth fix two releases earlier, which asked only how deep to descend. It now also walks up to
+  the **nearest** enclosing repo, which is the one git itself resolves your directory to.
+  **If you run ARCH inside a bigger repo, sha claims that were uniformly reported as
+  unresolvable will start resolving** — and any that still do not are real.
+
+- **Git worktrees and submodules were invisible in both directions.** Both places that recognise
+  a repository tested whether `.git` is a *directory*. In a worktree or a submodule it is a
+  *file* holding a pointer, so those repos were skipped entirely. One predicate now covers both
+  shapes wherever a repo is recognised.
+
+- **`mail.py` could miss a peer whose manifest opens with a long comment.** Peer discovery read a
+  fixed 4,096-byte window — the same defect v1.1.3 fixed in `rotate.py` and `wire_hooks.py`, left
+  standing in the one file that fix had borrowed the approach from. A prologue well inside the
+  16,384-byte manifest cap could push the marker key past the read, and the peer then resolved as
+  "not opted in": **mail was silently not delivered**, which is this feature's one silent failure
+  mode. The window is now 64 KB, matching its siblings.
+
+- **`actuals.py` dropped subagent sessions from the series.** Rows are de-duplicated on a short
+  session id taken from the transcript filename, but a subagent transcript is named
+  `agent-<uuid>`, so that id kept `agent-` plus **two** hex characters — 256 possible values per
+  project. Distinct subagent sessions collided and were skipped as already recorded, while the
+  run still reported how many rows it had appended. The id now comes from the identifying part
+  of the name.
+
+- **`actuals.py` could count a neighbouring project as yours.** The instance match was a plain
+  string prefix with no path boundary, so a sibling directory whose *name* merely extends your
+  root — `myproject-legacy` beside `myproject` — counted as part of your instance, and its
+  sessions were written into your permanent series.
+
+- **A malformed line in the series file crashed the append.** A line that is valid JSON but not
+  an object (`null`, a bare number) raised straight past the guard and aborted the run, so
+  `--log` failed at every close until the file was repaired by hand. Such lines are now skipped,
+  which is what the rest of that module already did.
+
+**Manifest:** nothing required. This release adds no keys and changes no declared shapes.
+
+**By hand:** three things, and the first is the one to read twice. **`mail.py` now requires a
+peer's manifest to declare BOTH `sync_version:` and `boot:`** before it is recognised as an ARCH
+manifest, where it previously accepted `sync_version:` alone. This matches what `rotate.py` and
+`wire_hooks.py` have always required, but if you keep a hand-written peer manifest with no
+`boot:` block, that peer stops being discovered until you add one. Second: if your instance sits
+inside a larger repository, that repository's directory name now joins the words that mark a
+nearby short hex string as a commit reference, so expect the sha check to have an opinion about
+hex it previously ignored. Third: nothing to do for `actuals.py` — the series de-duplication key
+gained a field, but every row ever written already carries it, so existing series files are read
+unchanged and nothing is re-appended.
+
+---
+
 ## v1.1.3
 
 *The false-alarm release: four checks that fired when nothing was wrong, one that could never

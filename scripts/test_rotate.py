@@ -2829,6 +2829,27 @@ class BulletinCoherenceCase(unittest.TestCase):
         self.assertIn("INCOHERENT", out)
         self.assertIn("omit the agents: block", out)
 
+    def test_template_placeholder_rows_are_not_agents(self):
+        """THE SHIPPED TEMPLATE'S OWN ROWS. ABBA.md ships two placeholder rows —
+        `<your git-capable agent>` / `<your bridge-only agent>` — against a
+        manifest that correctly ships `check_at_boot: false` and the `agents:`
+        block commented. Counting placeholders as agents made this check fire
+        `! INCOHERENT` on a coherent template, i.e. on the FIRST close of every
+        fresh instance, about files genesis had just written. That is the SYN-088
+        cry-wolf failure, and it is the same template-scaffolding mistake the
+        prose check already fixed — a placeholder is not content."""
+        self._write(0, False, extra="| `<your git-capable agent>` | | yes | yes |\n"
+                                    "| `<your bridge-only agent>` | | no | no |\n")
+        got, out = self._run()
+        self.assertEqual(got[0], 0, "placeholder rows counted as agents")
+        self.assertNotIn("INCOHERENT", out)
+
+    def test_a_placeholder_beside_a_real_agent_counts_only_the_real_one(self):
+        """Half-completed rosters are the normal mid-genesis state."""
+        self._write(1, False, extra="| `<your bridge-only agent>` | | no | no |\n")
+        got, _ = self._run()
+        self.assertEqual(got[0], 1)
+
     def test_a_commented_example_row_is_not_an_agent(self):
         """The shipped board shows the row shape inside an HTML comment. Counting
         it would make every fresh one-surface instance read as multi-agent — the

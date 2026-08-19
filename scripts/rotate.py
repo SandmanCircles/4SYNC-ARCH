@@ -1351,6 +1351,17 @@ _ROSTER_HEADING_RE = re.compile(r"(?mi)^#{1,6}\s+Roster\b")
 _SEPARATOR_CELLS = set("-: ")
 
 
+# A roster row whose NAME is still the template's prompt text is not an agent.
+# The shipped ABBA.md carries two — `<your git-capable agent>` and
+# `<your bridge-only agent>` — against a manifest that correctly ships
+# `check_at_boot: false` with the `agents:` block commented, so counting them
+# made this check report `! INCOHERENT` on a COHERENT template: the first close
+# of every fresh instance, complaining about files genesis had just written.
+# That is the SYN-088 cry-wolf failure, and it is the same mistake the prose
+# check fixed one screen up — template scaffolding is not the adopter's content.
+# Both bracket conventions this project uses for placeholders are matched.
+_PLACEHOLDER_NAME_RE = re.compile(r"^\s*[<\[].*[>\]]\s*$")
+
 def count_roster_entries(text):
     """How many agents the board's Roster names, or None if it has no roster.
 
@@ -1384,6 +1395,8 @@ def count_roster_entries(text):
             continue                        # |---|---|
         if cells[0].casefold() in ("name", "agent"):
             continue                        # header
+        if _PLACEHOLDER_NAME_RE.match(cells[0].strip("` ")):
+            continue                        # `<your git-capable agent>` — template, not an agent
         entries += 1
     return entries if seen_table else None
 

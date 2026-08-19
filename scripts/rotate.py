@@ -2319,7 +2319,34 @@ def report_status_facts(root, manifest_name=None, run_meter=True):
 
 # ── pickup-ready report ──────────────────────────────────────────────────────
 
-PICKUP_RE = re.compile(r"^\*\*Pickup-ready[^\n]*$", re.M)
+# THE HEADER PLUS THE BLOCK BENEATH IT. This was `[^\n]*$` — one LINE — and the
+# row scan below runs against the match, so a list written as bullets under the
+# header was never read: `named` came back empty, `missing` was therefore EVERY
+# pending row, and the complaint named exactly the rows a genuinely stale list
+# would name. Reported by an adopter whose 27-row ledger flagged all five pending
+# rows while every one of them was correctly listed.
+#
+# IT COULD ONLY EVER FIRE ONE WAY, which is what made it read as a real finding:
+# `extra = named - pending` was empty for the same reason, so the check said
+# "pending but not named" and never the reverse. A one-sided complaint looks like
+# a drifted ledger, not a blind parser — and being report-only, nothing forced
+# the issue. It also killed the `_named_in_another_form` branch outright, which
+# is the branch that exists FOR an adopter writing `MP-003`.
+#
+# THE DESIGN WAS ALWAYS THE BLOCK — the docstring below says "inside this
+# paragraph" and "the paragraph is a list with commentary" — and the shipped
+# template asks for "a one-line note on each", so the guidance produced the
+# shape that broke. This is a capture bug, not a design question.
+#
+# THE STOP CONDITION EARNS ITS KEEP: halting at the next bold header or `---`
+# keeps a following `**Blocked, but closer:**` note out of the list. Reading to
+# the next `---` instead would swallow it and manufacture a fresh false positive
+# in the other direction — "named but not pending".
+PICKUP_RE = re.compile(
+    r"^\*\*Pickup-ready[^\n]*$"          # the header line …
+    r"(?:\n(?!\*\*|---)[^\n]*)*",        # … and every line under it until **bold or ---
+    re.M,
+)
 # `#NN`, but never `MP#NN`. A ledger cross-reference names a task in an argument
 # ("the same disease MP#39 cured"); a bare `#NN` names a row in the list. Letting
 # the two collide made a closed row look like a pickup candidate on the real file.

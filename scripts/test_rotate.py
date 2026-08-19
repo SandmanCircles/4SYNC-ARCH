@@ -1684,6 +1684,52 @@ class TestPickupReady(unittest.TestCase):
         missing, extra = rotate.report_pickup_ready(self.ledger)
         self.assertEqual((missing, extra), ([], [6]))
 
+    # ── the block, not the header (adopter field report, 2026-08-19) ────────
+    def test_a_multi_line_pickup_list_is_read_whole(self):
+        """THE FALSE POSITIVE ON EVERY CLOSE. PICKUP_RE matched `[^\n]*$` — one
+        LINE — and the row scan ran against that match, so a list written as
+        bullets underneath the header was never read: `named` was always empty,
+        `missing` was always every pending row, and the complaint named exactly
+        the rows a genuinely stale list would name. Reported by an adopter whose
+        27-row ledger flagged all five pending rows while every one was correctly
+        listed. The shipped template ASKS for this shape — "plus a one-line note
+        on each" — so the guidance produced the bug, and the suite never caught it
+        because every fixture here was a single line."""
+        self._write("**Pickup-ready right now (no blockers):**\n"
+                    "- `#5` — ready, nothing in front of it.\n"
+                    "- `#7` — ready too.\n")
+        (missing, extra), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([], []))
+        self.assertIn("✓", out)
+
+    def test_the_other_form_branch_is_reachable(self):
+        """DEAD CODE UNTIL NOW, and it is the branch that exists FOR an adopter:
+        `_named_in_another_form` takes a `segment`, handles `MP-003`/`row 3`, and
+        was only ever fed the header line, so it always returned {}. Its message
+        was written because an outside adopter writing `MP-003` "cost him two
+        wrong fixes and a source read before he found the pattern himself" — and
+        it could never print for him."""
+        self._write("**Pickup-ready right now:**\n"
+                    "- `#5` — ready.\n"
+                    "- `MP-007` — named in the form used everywhere else in ARCH.\n")
+        (missing, _), out = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual(missing, [7])
+        self.assertIn("named as `MP-007`", out)
+        self.assertNotIn("pending but not named", out)
+
+    def test_a_following_bold_note_is_not_part_of_the_list(self):
+        """The stop condition earns its keep, and a naive read-to-`---` would not:
+        a `**Blocked, but closer:**` note under the list mentioning a NON-pending
+        row must not be swallowed, or the fix trades one false positive for a
+        fresh one pointing the other way."""
+        self._write("**Pickup-ready right now:**\n"
+                    "- `#5` — ready.\n"
+                    "- `#7` — ready.\n"
+                    "\n"
+                    "**Blocked, but closer:** #6 landed its dependency today.\n")
+        (missing, extra), _ = _capture(rotate.report_pickup_ready, self.ledger)
+        self.assertEqual((missing, extra), ([], []), "the bold note leaked into the list")
+
     def test_an_mp_cross_reference_is_not_a_list_entry(self):
         """`MP#39` names a task inside an argument; `#39` would name a row in the
         list. Letting the two collide made a closed row read as pickup-ready."""

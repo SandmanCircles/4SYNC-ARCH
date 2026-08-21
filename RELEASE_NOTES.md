@@ -76,9 +76,47 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
-**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite, `scripts/mail.py` + suite. **The inventory
+**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite, `scripts/mail.py` + suite, `scripts/split_ledger.py` + suite, `scripts/test_wire_hooks.py`. **The inventory
 is unchanged at 24 files**, so this does not invalidate previously published build ids for
 inventory reasons — your id changes because the code changed, which is the ordinary case.
+
+### THIS ONE IS A MIGRATION, NOT A FIX — read before you update
+
+**`rotate.py` now decides where a journal entry begins by its DATE HEADER, not by blank lines.**
+A block starts at a column-0 line whose date leads it — `2026-08-20 [agent] — ...`, or a short
+label and a dash first, `GENESIS — 2026-07-20 [...]` — and runs to the next such line. The
+section now ends only at the next `## ` heading; a `---` no longer terminates it.
+
+**What this changes for you.** If your entries already start with a date: nothing, except that
+multi-paragraph entries stop being split, and any blocks sitting below a `---` become visible to
+rotation and to the byte cap for the first time. **Look at your journal once before running
+`--apply`** — an entry that was invisible may now be eligible to move to history. That is
+correct, but it will look sudden.
+
+**If your entries are NOT dated,** `rotate.py` falls back to the old blank-line behavior and
+prints a line saying so. Nothing breaks; you are told once.
+
+**Both defects were reachable by writing ordinary markdown.** A multi-paragraph entry counted as
+several blocks, so the keep-N cap could shear the bottom paragraphs into history and leave the
+header behind — entries were dismembered, not lost. And a `---` anywhere in the section hid every
+block below it from rotation *and* from the size cap, so typing a horizontal rule silently
+disabled the cap. The second was live in the project's own silo for a month: its founding entry
+had never once been eligible to rotate.
+
+The shipped `KEEP-5` comment read "blank-line-separated blocks" — it was instructing the shape
+that breaks. Corrected in the template; correct yours when you update.
+
+### Also in this batch
+
+- **`split_ledger.py` refuses a dirty tree,** with the same `--allow-dirty` escape `rotate.py`
+  already offers. It is the one irreversible script in the set, and it was the one with no gate.
+- **`test_wire_hooks.py` passes `stdin=subprocess.DEVNULL`.** Three sessions recorded a
+  Windows-only "intermittent subprocess fault." There is no fault: `subprocess` inherits the
+  parent's stdin unless told otherwise, and under pytest's capture that handle is invalid, so
+  `DuplicateHandle` fails before `git` starts. It surfaces only in full runs, which is what made
+  it look random — and what taught three sessions to discount a genuinely red suite. Sibling call
+  sites elsewhere are not yet swept.
+
 
 - **The published "clone it and run both suites" path returned a failure.** Reported by an outside
   evaluation running in a desktop VM: `test_end_to_end_rotation_lands_in_the_declared_file`

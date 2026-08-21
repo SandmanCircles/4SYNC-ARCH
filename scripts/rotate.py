@@ -355,36 +355,99 @@ def mount_gate(verdict, detail, apply_mode, override):
 
 # ── journal rotation ─────────────────────────────────────────────────────────
 
+# A journal block begins here: a column-0 line whose \d{4}-\d{2}-\d{2} LEADS IT — either the
+# date itself, or a single short label and a dash ahead of it (`GENESIS — 2026-07-20`,
+# the shape of this project's own founding entry).
+#
+# THE LOOSER RULE WAS TRIED FIRST AND IS WRONG: "a date anywhere in the first 48
+# characters" also matches ordinary body prose, because journal entries cite dates
+# constantly — `It ruled on 2026-08-11 that ...` at column 0 would have opened a
+# spurious block and split an entry in half. Caught by its own fixture. Leading `**`
+# is already excluded by the first character class, which is why this silo's
+# bold-led paragraphs were never at risk, but an unbolded one would have been.
+JOURNAL_BLOCK_HEAD = re.compile(
+    r"(?m)^(?=(?:[A-Z][A-Za-z0-9]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
+
+
 def split_journal(ledger_text):
-    """Return (before, blocks, after) where blocks are the blank-line-separated
-    journal blocks inside the recent-journal section.
+    """Return (before, blocks, after) — journal blocks delimited by their DATE HEADER.
 
-    Leading HTML-comment blocks are INSTRUCTIONS, not journal entries — the KEEP-N
-    rule lives at the top of that section in the shipped template. Counting them as
-    blocks inflated the count by one, so a section holding exactly `keep` real blocks
-    looked over-cap and the oldest real block was rotated out on every close.
+    WHAT DELIMITS A BLOCK (SYN-100, decided 2026-08-21). A block begins at a
+    column-0 line carrying a `YYYY-MM-DD` date in its first 48 characters, and
+    runs to the next such line or the end of the section. This is not a new
+    convention: every entry in every ARCH ledger and history file already starts
+    that way, and the shipped template does too. It is the existing convention
+    finally being the thing the parser reads.
 
-    They cannot simply be filtered: rotate_journal rebuilds the ledger as
-    `before + blocks`, so a dropped comment would be DELETED on write-back. They move
-    into `before` instead, where they survive verbatim and out of the count."""
+    WHAT IT REPLACED, and why the old rule was unsafe in two directions at once.
+    Blocks used to be split on BLANK LINES, and the section used to end at the
+    first `## ` heading OR `---` rule. Both were punctuation standing in for
+    structure, so both broke on ordinary markdown:
+
+      * A multi-paragraph entry counted as several blocks, so KEEP-N could shear
+        the bottom paragraphs of one session into history while its date header
+        stayed behind. Content survived; entries were DISMEMBERED. The shipped
+        KEEP-5 comment says "blank-line-separated blocks" — the documentation was
+        instructing the very shape that breaks.
+      * A `---` anywhere in the section truncated the parse. Blocks below it were
+        invisible to rotation AND to the byte cap, so an adopter who typed a
+        horizontal rule silently disabled the cap. **This was live in the silo
+        that found it:** its GENESIS block sat below a rule, unrotatable and
+        unmeasured, from 2026-07-20 until this fix.
+
+    A date header survives blank lines, bullet lists, code fences and horizontal
+    rules INSIDE an entry — which is the whole point, because those are things
+    people type, not adversarial input.
+
+    FALLBACK, and it is loud. A section with no date headers at all is parsed the
+    old way and SAYS SO. An adopter whose journal predates this convention keeps
+    working; they are told once, rather than having their journal silently
+    re-split underneath them.
+
+    Leading HTML-comment blocks are INSTRUCTIONS, not entries — the KEEP-N rule
+    lives at the top of that section in the shipped template. They cannot simply
+    be filtered: rotate_journal rebuilds the ledger as `before + blocks`, so a
+    dropped comment would be DELETED on write-back. Everything ahead of the first
+    date header moves into `before` instead, where it survives verbatim and out
+    of the count."""
     # anchor on the real column-0 heading line — a plain .find() matches prose
     # MENTIONS of the heading (e.g. the ledger's line-3 layout pointer) first
     h = re.search(r"^" + re.escape(JOURNAL_HEAD) + r"[ \t]*$", ledger_text, re.M)
     if not h:
         return None
-    body_start = ledger_text.index("\n", h.start()) + 1
-    # section ends at the next '## ' heading or '---' rule at column 0
-    m = re.search(r"^(## |---\s*$)", ledger_text[body_start:], re.M)
-    body_end = body_start + (m.start() if m else len(ledger_text) - body_start)
-    body = ledger_text[body_start:body_end]
-    blocks = [b for b in re.split(r"\n\s*\n", body) if b.strip()]
+    body_start = ledger_text.index(chr(10), h.start()) + 1
 
+    # The section ends at the next `## ` heading. NOT at `---` any more — that was
+    # defect 2. A horizontal rule sitting immediately BEFORE that heading is
+    # document furniture rather than journal content, so it is excluded from the
+    # body and left in `after` where it is written back untouched.
+    m = re.search(r"^## ", ledger_text[body_start:], re.M)
+    body_end = body_start + (m.start() if m else len(ledger_text) - body_start)
+    trimmed = re.search(r"\n---[ \t]*\n\s*$",
+                        ledger_text[body_start:body_end])
+    if trimmed:
+        body_end = body_start + trimmed.start() + 1
+    body = ledger_text[body_start:body_end]
+
+    heads = list(JOURNAL_BLOCK_HEAD.finditer(body))
+    if heads:
+        before = ledger_text[:body_start] + body[:heads[0].start()]
+        blocks = [body[a.start():(heads[i + 1].start() if i + 1 < len(heads) else len(body))]
+                  for i, a in enumerate(heads)]
+        blocks = [b for b in blocks if b.strip()]
+        return before, blocks, ledger_text[body_end:]
+
+    # No date header anywhere — legacy shape. Old behaviour, announced.
+    print("journal: no dated block headers found — falling back to blank-line "
+          "splitting. Start each entry with a YYYY-MM-DD header so a "
+          "multi-paragraph entry is never split across the keep boundary.")
+    blocks = [b for b in re.split(r"\n\s*\n", body) if b.strip()]
     before = ledger_text[:body_start]
     lead = []
     while blocks and blocks[0].strip().startswith("<!--") and blocks[0].strip().endswith("-->"):
         lead.append(blocks.pop(0).strip())
     if lead:
-        before += "\n" + "\n\n".join(lead) + "\n\n"
+        before += chr(10) + (chr(10) * 2).join(lead) + chr(10) * 2
     return before, blocks, ledger_text[body_end:]
 
 

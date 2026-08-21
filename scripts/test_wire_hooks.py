@@ -194,7 +194,16 @@ class TestSettingsRoot(unittest.TestCase):
     def _git_init(path):
         import subprocess
         os.makedirs(path, exist_ok=True)
+        # stdin=DEVNULL IS LOAD-BEARING ON WINDOWS, and its absence is what three
+        # sessions recorded as "this box's intermittent subprocess fault." There is
+        # no fault. subprocess inherits the parent's stdin handle unless told
+        # otherwise; under pytest's capture, sys.stdin is a stand-in with no valid
+        # OS handle, so DuplicateHandle fails with WinError 6 BEFORE git starts.
+        # It surfaces only in a FULL run — capture state differs from a single-file
+        # run — which is exactly what made it look random and made a genuinely red
+        # suite easy to discount. ~26 sibling call sites are still unswept (SYN-105).
         subprocess.run(["git", "init", "-q", path],
+                       stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return path
 

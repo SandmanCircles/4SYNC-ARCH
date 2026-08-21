@@ -51,7 +51,7 @@ def no_pyyaml():
         yield
 
 
-KEEP_COMMENT = """<!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
+KEEP_COMMENT = """<!-- KEEP-5 RULE: newest-first, one block per DATED HEADER, cap = 5.
      At session close: PREPEND your new block here. If that makes 6 blocks, move the
      oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. -->"""
 
@@ -495,6 +495,137 @@ class TestJournalOverflowTarget(ManifestEnvCase):
             self.assertIn("2026-07-15", fh.read())          # the oldest block, rotated out
         self.assertFalse(os.path.exists(os.path.join(self.root, "JOURNAL_HISTORY.md")),
                          "rotation created a history file the manifest never declared")
+
+N = chr(10)
+
+
+class TestWhatDelimitsAJournalBlock(unittest.TestCase):
+    """SYN-100 items 1-2. The delimiter is the DATE HEADER, not punctuation.
+
+    Both defects here are one defect: the parser inferred entry boundaries from
+    blank lines and horizontal rules, which are things authors type for reasons
+    of their own. Every fixture below is ordinary markdown, not adversarial
+    input -- that framing is the report's and it is the right one."""
+
+    MULTI = (
+        "# L" + N + N + "## Session journal (recent)" + N + N
+        + "2026-08-20 [agent] - opening paragraph." + N + N
+        + "**Second paragraph.** Separated by a blank line, exactly as the"
+        + " shipped KEEP-5 comment tells authors to write." + N + N
+        + "**Third paragraph.** Still the same session." + N + N
+        + "2026-08-19 [agent] - the previous session." + N + N
+        + "---" + N + N + "## Summary table" + N)
+
+    def test_a_multi_paragraph_entry_is_one_block(self):
+        """DEFECT 1. Blank-line splitting made this three blocks, so keep-N could
+        shear the bottom paragraphs into history and leave the date header
+        behind. Content survived; the entry was dismembered."""
+        before, blocks, after = rotate.split_journal(self.MULTI)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("Third paragraph", blocks[0])
+
+    def test_the_paragraphs_stay_with_their_own_header(self):
+        before, blocks, after = rotate.split_journal(self.MULTI)
+        self.assertTrue(blocks[0].startswith("2026-08-20"))
+        self.assertTrue(blocks[1].startswith("2026-08-19"))
+        self.assertNotIn("Second paragraph", blocks[1])
+
+    def test_a_rule_inside_the_section_does_not_truncate_it(self):
+        """DEFECT 2, and it was LIVE in the silo that found it: the GENESIS block
+        sat below a rule, invisible to rotation and to the byte cap, from
+        2026-07-20 until this fix."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-20 [agent] - newest." + N + N
+                + "---" + N + N
+                + "2026-07-20 [agent] - below the rule." + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("below the rule", blocks[1])
+
+    def test_a_block_below_a_rule_counts_toward_the_byte_cap(self):
+        """The truncation did not merely hide blocks from rotation -- it hid them
+        from the SIZE cap, so an adopter who typed a rule silently disabled it."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-20 [agent] - newest." + N + N + "---" + N + N
+                + "2026-07-20 [agent] - " + "x" * 500 + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertGreater(rotate.journal_bytes(blocks), 500)
+
+    def test_the_rule_before_the_next_heading_is_furniture_not_content(self):
+        """A rule immediately preceding the next `## ` heading is document
+        structure. It stays in `after`, written back untouched, so the ledger
+        looks the same after a rotate as before one."""
+        before, blocks, after = rotate.split_journal(self.MULTI)
+        self.assertTrue(after.lstrip(N).startswith("---"))
+        self.assertNotIn("---", blocks[-1])
+
+    def test_the_split_is_lossless(self):
+        """rotate_journal rebuilds the file as before + blocks + after. If that
+        does not reconstruct the input, a rotate DELETES whatever fell out.
+
+        Canonical input only: the write-back joins blocks on a blank line, so a
+        ledger written with single-newline gaps gains one. That normalisation
+        predates this change and is cosmetic -- losslessness is about CONTENT."""
+        for text in (self.MULTI, ledger(range(5), comment=True)):
+            before, blocks, after = rotate.split_journal(text)
+            rebuilt = before + (N * 2).join(b.strip() for b in blocks) + N * 2 + after.lstrip(N)
+            self.assertEqual(rebuilt, text)
+
+    def test_the_keep_comment_still_lands_in_before(self):
+        """It is an instruction, not an entry -- and it cannot merely be filtered,
+        because anything not in `before` or `blocks` is deleted on write-back."""
+        before, blocks, after = rotate.split_journal(ledger(range(3), comment=True))
+        self.assertIn("KEEP-5 RULE", before)
+        self.assertEqual(len(blocks), 3)
+
+    def test_a_date_mid_sentence_does_not_open_a_block(self):
+        """The date must LEAD the line. Body prose cites dates constantly -- this
+        silo's own entries do it in nearly every paragraph -- so a rule that
+        accepted a date anywhere near the front split entries in half. This
+        fixture failed against that looser rule and is why it was tightened."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-20 [agent] - opening." + N
+                + "It ruled on 2026-08-11 that the thing was so, at length,"
+                + " well past the forty-eighth character of this line." + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 1)
+
+    def test_a_list_item_or_heading_never_opens_a_block(self):
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-20 [agent] - opening." + N
+                + "- 2026-08-11 a bullet with a date" + N
+                + "# 2026-08-10 a heading with a date" + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 1)
+
+    def test_a_journal_with_no_dated_headers_falls_back_and_says_so(self):
+        """An adopter whose journal predates this convention keeps working, and is
+        TOLD once. Silently re-splitting somebody's journal underneath them is the
+        failure this fallback exists to avoid."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "first undated entry." + N + N
+                + "second undated entry." + N + N
+                + "## Summary table" + N)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("no dated block headers", buf.getvalue())
+
+    def test_genesis_style_label_before_the_date_still_opens_a_block(self):
+        """The real shape this had to accommodate: the silo's founding entry reads
+        `GENESIS - 2026-07-20 [...]`, a label ahead of the date."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-20 [agent] - newest." + N + N
+                + "GENESIS - 2026-07-20 [agent] - the founding entry." + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertTrue(blocks[1].startswith("GENESIS"))
 
 
 def fat_ledger(sizes, comment=True):

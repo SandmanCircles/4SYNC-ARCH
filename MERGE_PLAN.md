@@ -39,7 +39,7 @@ same rule names.
 
 ## Session journal (recent)
 
-<!-- KEEP-5 RULE: newest-first, blank-line-separated blocks, cap = 5.
+<!-- KEEP-5 RULE: newest-first, one block per DATED HEADER, cap = 5.
      At session close: PREPEND your new block here. If that makes 6 blocks, move the
      oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. Keep the journal
      here as blocks — never re-chain it onto the one-line `**Last updated:**` pointer. -->

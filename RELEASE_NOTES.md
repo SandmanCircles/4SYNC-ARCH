@@ -108,6 +108,21 @@ that breaks. Corrected in the template; correct yours when you update.
 
 ### Also in this batch
 
+- **Archiving the last bulletin message no longer swallows the rest of the file.** Every
+  message block ended at the next `### [n]` header — and the last one at EOF, so a board footer
+  or roster below it belonged to that message and went into the archive with it.
+- **The bulletin's blank-line tidy-up is now seam-local.** It was a global
+  `re.sub(r"
+{4,}", ...)` over the whole file, which rewrote bytes arbitrarily far from any
+  excision — in a file whose own header promises verbatim moves with nothing rewritten. The
+  tidy-up was worth keeping; its scope was the defect.
+- **`atomic_write` uses a process-unique temp name.** A fixed `.rotate_tmp` is a cross-process
+  race: two rotates on one instance wrote the same path and the loser's `os.replace` published
+  the winner's bytes. `debt.py` had already diagnosed and fixed this one file away.
+- **Moving a task document preserves its line endings.** The CRLF restore fired only
+  `if os.path.exists(destination)`, and a document moving into `tasks/closed/` is a new file —
+  so every CRLF task document was silently rewritten to LF. The verify step could not see it
+  either: it re-reads through universal newlines, where both versions decode identically.
 - **`split_ledger.py` refuses a dirty tree,** with the same `--allow-dirty` escape `rotate.py`
   already offers. It is the one irreversible script in the set, and it was the one with no gate.
 - **`test_wire_hooks.py` passes `stdin=subprocess.DEVNULL`.** Three sessions recorded a

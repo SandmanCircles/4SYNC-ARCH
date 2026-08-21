@@ -489,7 +489,7 @@ class TestJournalOverflowTarget(ManifestEnvCase):
         env = dict(os.environ, ARCH_ROTATE_SANDBOX_OK="1")
         subprocess.run([sys.executable, os.path.abspath(rotate.__file__),
                         "--dir", self.root, "--keep", "5", "--apply", "--allow-dirty"],
-                       capture_output=True, text=True, check=False, env=env)
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, env=env)
 
         with open(declared, encoding="utf-8") as fh:
             self.assertIn("2026-07-15", fh.read())          # the oldest block, rotated out
@@ -626,6 +626,154 @@ class TestWhatDelimitsAJournalBlock(unittest.TestCase):
         before, blocks, after = rotate.split_journal(text)
         self.assertEqual(len(blocks), 2)
         self.assertTrue(blocks[1].startswith("GENESIS"))
+
+
+class TestBulletinArchiveDoesNotEatTheFooter(unittest.TestCase):
+    """SYN-100 item 3. The LAST message block ran to EOF.
+
+    `split_messages` ends every block at the next `### [n]` header, and the last
+    one at `len(text)`. Anything after the final message -- the board's footer,
+    a roster, a closing section -- therefore belonged to that message, and
+    archiving it carried the rest of the file into the archive."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_abba_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.abba = os.path.join(self.root, "ABBA.md")
+        self.arch = os.path.join(self.root, "ABBA_ARCHIVE.md")
+
+    FOOTER = "## Roster" + chr(10) + chr(10) + "LoCo — Local Claude Code" + chr(10)
+
+    def _board(self):
+        return ("# Bulletin" + chr(10) * 2
+                + "### [1] To: LoCo · From: X · 2020-01-01 · Status: DONE" + chr(10) * 2
+                + "an old, handled message." + chr(10) * 2
+                + "---" + chr(10) * 2 + self.FOOTER)
+
+    def _write(self):
+        with io.open(self.abba, "w", encoding="utf-8", newline="") as fh:
+            fh.write(self._board())
+
+    def test_the_footer_stays_on_the_board(self):
+        self._write()
+        rotate.rotate_abba(self.abba, self.arch, 10, True)
+        self.assertIn("## Roster", rotate.read(self.abba))
+
+    def test_the_footer_does_not_land_in_the_archive(self):
+        self._write()
+        rotate.rotate_abba(self.abba, self.arch, 10, True)
+        self.assertNotIn("## Roster", rotate.read(self.arch))
+
+    def test_the_message_itself_still_moves(self):
+        self._write()
+        rotate.rotate_abba(self.abba, self.arch, 10, True)
+        self.assertIn("an old, handled message", rotate.read(self.arch))
+        self.assertNotIn("an old, handled message", rotate.read(self.abba))
+
+
+class TestBulletinBytesAwayFromTheSeamAreNotRewritten(unittest.TestCase):
+    """SYN-100 item 4. A global `re.sub(r"\n{4,}")` over the whole file.
+
+    The bulletin's own header promises verbatim moves with nothing rewritten. A
+    whole-file collapse of blank runs edits bytes nowhere near the excision, in a
+    file whose entire value is being an unedited trail."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_abba2_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.abba = os.path.join(self.root, "ABBA.md")
+        self.arch = os.path.join(self.root, "ABBA_ARCHIVE.md")
+
+    def test_a_blank_run_far_from_the_excision_survives(self):
+        # The wide gap must be FAR from the excision. An earlier version of this
+        # fixture put it immediately before the deleted message, where collapsing
+        # it is correct seam repair -- the test failed and the code was right.
+        board = ("# Bulletin" + chr(10) * 5          # <- deliberate wide gap, top of file
+                 + "### [1] To: LoCo · From: X · 2099-01-01 · Status: OPEN" + chr(10) * 2
+                 + "current." + chr(10) * 2
+                 + "### [2] To: LoCo · From: X · 2020-01-01 · Status: DONE" + chr(10) * 2
+                 + "old." + chr(10))
+        with io.open(self.abba, "w", encoding="utf-8", newline="") as fh:
+            fh.write(board)
+        rotate.rotate_abba(self.abba, self.arch, 10, True)
+        after = rotate.read(self.abba)
+        self.assertIn("# Bulletin" + chr(10) * 5, after,
+                      "a blank run far from the excision seam was rewritten")
+
+
+class TestAtomicWriteTempNameIsProcessUnique(unittest.TestCase):
+    """SYN-100 item 5. A fixed `.rotate_tmp` name is a cross-process race.
+
+    Two rotates on one instance -- two sessions, or a close racing a cron -- wrote
+    the same temp path and the loser's `os.replace` published the winner's bytes.
+    `debt.py` diagnosed this and fixed it with a pid suffix; the fix was one file
+    away the whole time."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_tmp_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_the_temp_path_carries_the_pid(self):
+        seen = []
+        target = os.path.join(self.root, "f.md")
+        real_replace = os.replace
+
+        def spy(a, b):
+            seen.append(a)
+            return real_replace(a, b)
+
+        with mock.patch.object(os, "replace", spy):
+            rotate.atomic_write(target, "hello" + chr(10))
+        self.assertTrue(seen, "atomic_write did not go through os.replace")
+        self.assertIn(str(os.getpid()), os.path.basename(seen[0]),
+                      "temp name is not process-unique: %r" % seen[0])
+
+    def test_a_failed_write_leaves_no_temp_file_behind(self):
+        target = os.path.join(self.root, "g.md")
+        with mock.patch.object(os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                rotate.atomic_write(target, "hello" + chr(10))
+        leftovers = [f for f in os.listdir(self.root) if "tmp" in f]
+        self.assertEqual(leftovers, [], "a temp file survived a failed write")
+
+
+class TestTaskDocMovePreservesLineEndings(unittest.TestCase):
+    """SYN-100 item 7. Moving a CRLF task document silently rewrote it to LF.
+
+    `atomic_write` restores the destination's endings only `if os.path.exists(p)`
+    -- and a document being moved into `tasks/closed/` is a NEW file, so the
+    branch never fired. The verify step could not see it either: it re-reads
+    through universal newlines, where both versions decode identically. Every
+    line of the document changed, in a repo where this hazard has already cost
+    two sessions."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="rotate_crlf_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_crlf_document_arrives_as_crlf(self):
+        src = os.path.join(self.root, "SYN-001.md")
+        dst = os.path.join(self.root, "closed", "SYN-001.md")
+        os.makedirs(os.path.dirname(dst))
+        body = "# Task" + chr(13) + chr(10) + "line two." + chr(13) + chr(10)
+        with io.open(src, "w", encoding="utf-8", newline="") as fh:
+            fh.write(body)
+        rotate.atomic_write(dst, rotate.read(src), like=src)
+        with open(dst, "rb") as fh:
+            landed = fh.read()
+        self.assertTrue(landed.count(bytes([13, 10])) == 2,
+                        "CRLF was normalised away: %r" % landed)
+
+    def test_an_lf_document_is_not_given_crlf(self):
+        src = os.path.join(self.root, "SYN-002.md")
+        dst = os.path.join(self.root, "closed2", "SYN-002.md")
+        os.makedirs(os.path.dirname(dst))
+        with io.open(src, "w", encoding="utf-8", newline="") as fh:
+            fh.write("# Task" + chr(10) + "line two." + chr(10))
+        rotate.atomic_write(dst, rotate.read(src), like=src)
+        with open(dst, "rb") as fh:
+            landed = fh.read()
+        self.assertNotIn(bytes([13]), landed)
 
 
 def fat_ledger(sizes, comment=True):
@@ -1713,7 +1861,7 @@ class TestStatusShaClaims(StatusFactsCase):
 
         def g(*a):
             return subprocess.run(["git"] + list(a), cwd=self.root, env=env,
-                                  capture_output=True, text=True)
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if g("init", "-q").returncode != 0:
             self.skipTest("git unavailable")
         with open(os.path.join(self.root, "seed.txt"), "w") as f:
@@ -2209,7 +2357,7 @@ class TestShaInEnclosingRepo(StatusFactsCase):
 
         def g(*a):
             return subprocess.run(["git"] + list(a), cwd=outer, env=env,
-                                  capture_output=True, text=True)
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if g("init", "-q").returncode != 0:
             self.skipTest("git unavailable")
         with open(os.path.join(outer, "seed.txt"), "w") as f:
@@ -2235,7 +2383,7 @@ class TestShaInNestedRepo(StatusFactsCase):
 
         def g(*a):
             return subprocess.run(["git"] + list(a), cwd=nested, env=env,
-                                  capture_output=True, text=True)
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if g("init", "-q").returncode != 0:
             self.skipTest("git unavailable")
         with open(os.path.join(nested, "seed.txt"), "w") as f:
@@ -2254,7 +2402,7 @@ class TestCliFlags(unittest.TestCase):
         it, so the first flag a cautious adopter reaches for was the one certain
         to fail. argparse lists only registered options in --help."""
         out = subprocess.run([sys.executable, rotate.__file__, "--help"],
-                             capture_output=True, text=True, timeout=60)
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stderr[:200])
         self.assertIn("--dry-run", out.stdout)
 

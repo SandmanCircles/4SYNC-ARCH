@@ -152,7 +152,7 @@ def read(p):
         return f.read()
 
 
-def atomic_write(p, s):
+def atomic_write(p, s, like=None):
     """Write `s` to `p` atomically, KEEPING THE FILE'S OWN LINE ENDINGS.
 
     `read()` opens in universal-newline mode, so a CRLF file arrives here as "\\n"
@@ -167,25 +167,48 @@ def atomic_write(p, s):
     actually hurt is the one not using git for this folder, whose file simply
     changes under them.
 
+    `like` NAMES THE FILE WHOSE ENDINGS TO COPY, and it exists because the
+    destination is not always the right sample. Moving a task document into
+    `tasks/closed/` writes a file that does NOT yet exist, so the branch below
+    never fired and every CRLF document was silently rewritten to LF on the way.
+    `verify_moves` could not catch it either — it re-reads through the same
+    universal-newline path, where both versions decode identically. Defaults to
+    `p`, which is the in-place-rewrite case and stays unchanged.
+
     RESTORED AT THE BOUNDARY rather than by preserving "\\r\\n" through the whole
     module, deliberately: every regex here anchors on "\\n", and a stray "\\r"
     inside `[^\\n]*` captures would leak into rewritten table rows and journal
     blocks. That is a real audit of ~2,200 lines, not a pre-release change.
     """
-    if os.path.exists(p) and "\r\n" not in s:
+    if like is None:
+        like = p
+    if os.path.exists(like) and "\r\n" not in s:
         try:
-            with open(p, "rb") as f:
+            with open(like, "rb") as f:
                 existing = f.read()
             if b"\r\n" in existing:
                 s = s.replace("\n", "\r\n")
         except OSError:                     # unreadable: write it the way we have it
             pass
-    tmp = p + ".rotate_tmp"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        f.write(s)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, p)
+    # PROCESS-UNIQUE TEMP NAME. A fixed `.rotate_tmp` is a cross-process race:
+    # two rotates on one instance — two sessions, or a close racing a scheduled
+    # run — wrote the same path, and the loser's os.replace published the
+    # winner's bytes over the loser's target. `debt.py` diagnosed this and fixed
+    # it with a pid suffix; the fix sat one file away in the same repo. Cleaned
+    # up on failure so a crash does not litter the instance with temp files.
+    tmp = "%s.tmp.%d" % (p, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(s)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def git_dirty(repo_dir, paths):
@@ -369,6 +392,24 @@ JOURNAL_BLOCK_HEAD = re.compile(
     r"(?m)^(?=(?:[A-Z][A-Za-z0-9]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
 
 
+def _end_of_section(text, body_start):
+    """End offset of a section that runs to the next `## ` heading.
+
+    A `---` sitting immediately before that heading is DOCUMENT FURNITURE, not
+    content: it separates sections, so it belongs to neither. Excluding it keeps
+    it out of whatever the section's contents get moved into.
+
+    Shared by the journal and the bulletin ON PURPOSE. Both had the same defect
+    from opposite ends — the journal ENDED at a `---` and so lost everything
+    below it, the bulletin ended at EOF and so swallowed everything after the
+    last message — and both fixes are this one rule. Two copies of it would be
+    two things to keep in step."""
+    m = re.search(r"^## ", text[body_start:], re.M)
+    end = body_start + (m.start() if m else len(text) - body_start)
+    rule = re.search(r"\n---[ \t]*\n\s*$", text[body_start:end])
+    return body_start + rule.start() + 1 if rule else end
+
+
 def split_journal(ledger_text):
     """Return (before, blocks, after) — journal blocks delimited by their DATE HEADER.
 
@@ -421,12 +462,7 @@ def split_journal(ledger_text):
     # defect 2. A horizontal rule sitting immediately BEFORE that heading is
     # document furniture rather than journal content, so it is excluded from the
     # body and left in `after` where it is written back untouched.
-    m = re.search(r"^## ", ledger_text[body_start:], re.M)
-    body_end = body_start + (m.start() if m else len(ledger_text) - body_start)
-    trimmed = re.search(r"\n---[ \t]*\n\s*$",
-                        ledger_text[body_start:body_end])
-    if trimmed:
-        body_end = body_start + trimmed.start() + 1
+    body_end = _end_of_section(ledger_text, body_start)
     body = ledger_text[body_start:body_end]
 
     heads = list(JOURNAL_BLOCK_HEAD.finditer(body))
@@ -541,9 +577,31 @@ def split_messages(text):
     heads = [m for m in re.finditer(r"^### \[\d+\][^\n]*$", text, re.M)]
     out = []
     for i, m in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        if i + 1 < len(heads):
+            end = heads[i + 1].start()
+        else:
+            # THE LAST MESSAGE USED TO RUN TO EOF, so anything after it — the
+            # board's footer, a roster, a closing section — was part of that
+            # message, and archiving it carried the rest of the file along.
+            end = _end_of_section(text, m.end())
         out.append((m.start(), end, m.group(0)))
     return out
+
+
+def _splice_out(text, start, end):
+    """Remove text[start:end] and tidy ONLY the seam it leaves.
+
+    This replaced a global `re.sub(r"\\n{4,}", ...)` over the whole bulletin,
+    which rewrote bytes arbitrarily far from any excision — in a file whose own
+    header promises verbatim moves with nothing rewritten. The tidy-up was worth
+    keeping; its SCOPE was the defect. A collapse that can reach the top of the
+    file to fix a deletion at the bottom is not a tidy-up, it is an edit."""
+    left, right = text[:start], text[end:]
+    if not left.strip():
+        return right.lstrip(chr(10))
+    if not right.strip():
+        return left.rstrip(chr(10)) + chr(10)
+    return left.rstrip(chr(10)) + chr(10) * 2 + right.lstrip(chr(10))
 
 
 def rotate_abba(abba_path, archive_path, age_days, apply_):
@@ -581,8 +639,7 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
     arch = arch.rstrip("\n") + "\n\n" + "\n\n".join(b.strip() for b in blocks) + "\n"
     new_text = text
     for s, e, _ in sorted(to_move, key=lambda t: -t[0]):  # delete bottom-up
-        new_text = new_text[:s] + new_text[e:]
-    new_text = re.sub(r"\n{4,}", "\n\n\n", new_text)
+        new_text = _splice_out(new_text, s, e)
     atomic_write(archive_path, arch)
     atomic_write(abba_path, new_text)
     verify_moves(blocks, src=read(abba_path), dst=read(archive_path),
@@ -735,7 +792,7 @@ def rotate_task_docs(root, ledger_path, apply_, prefix=TASK_PREFIX_DEFAULT):
         os.makedirs(closed_dir, exist_ok=True)
         for tid, name, src, dst in moved:
             payload = read(src)
-            atomic_write(dst, payload)
+            atomic_write(dst, payload, like=src)
             if read(dst) != payload:                    # verify BEFORE unlinking
                 print(f"VERIFY FAILED — {name} did not land in {CLOSED_DIRNAME}/; "
                       "source left in place.", file=sys.stderr)

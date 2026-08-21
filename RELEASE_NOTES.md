@@ -76,6 +76,17 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
+*(nothing yet)*
+
+---
+
+## v1.1.5
+
+*The parser release. Three findings from an outside substance eval, and the two that bite hardest
+were both reachable by writing ordinary markdown — a multi-paragraph journal entry, or a horizontal
+rule. **One change here is a MIGRATION**: read the journal-delimiter note below before running
+`rotate.py --apply`.*
+
 **Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite, `scripts/mail.py` + suite, `scripts/split_ledger.py` + suite, `scripts/test_wire_hooks.py`. **The inventory
 is unchanged at 24 files**, so this does not invalidate previously published build ids for
 inventory reasons — your id changes because the code changed, which is the ordinary case.

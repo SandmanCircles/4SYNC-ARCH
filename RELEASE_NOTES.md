@@ -119,6 +119,15 @@ that breaks. Corrected in the template; correct yours when you update.
 
 ### Also in this batch
 
+- **`wire_hooks.py` could report "not a git repository" about a repository.** It spawned
+  `git rev-parse --show-toplevel` with an inherited stdin handle; where that handle is not a
+  valid inheritable one, the spawn fails before git runs — and a bare `except Exception`
+  turned that into `return None`, which the caller renders as a confident fact about your
+  layout. The consequence is MP#64's defect through a different door: **the settings file is
+  written to the instance root instead of the repository root, and the run reports success.**
+  If ARCH lives in a subfolder of a larger repo, re-run `python scripts/wire_hooks.py --status`
+  after updating and check where it says settings live.
+- **`meter.py` had the same call shape** and is fixed with it.
 - **Archiving the last bulletin message no longer swallows the rest of the file.** Every
   message block ended at the next `### [n]` header — and the last one at EOF, so a board footer
   or roster below it belonged to that message and went into the archive with it.

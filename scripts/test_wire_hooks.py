@@ -14,9 +14,11 @@ Run either way:
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wire_hooks as wh  # noqa: E402
@@ -157,6 +159,50 @@ class TestInterpreterRefusals(unittest.TestCase):
         exe = sys.executable.replace("\\", "/")
         self.assertIsNone(wh.diagnose(exe))
         self.assertTrue(wh.interpreter_works(exe))
+
+
+class TestGitIsCalledWithoutInheritingStdin(unittest.TestCase):
+    """A spawn failure here does not look like a failure -- it looks like an ANSWER.
+
+    `settings_root` runs `git rev-parse --show-toplevel` and catches everything
+    with a bare `except Exception: return None`. The caller renders None as "not
+    a git repository — settings stay with the instance", so a subprocess that
+    never started is reported as a confident fact about the repository, and
+    wire_hooks writes the settings file to the instance root and calls it a
+    success. That is MP#64's defect resurfacing through a different door.
+
+    The trigger is stdin. subprocess INHERITS the parent's handle unless told
+    otherwise, and when that handle is not a valid inheritable one -- pytest's
+    capture is the reproducible case, but any embedded or service context does
+    it -- DuplicateHandle fails with WinError 6 before git runs. It surfaced as
+    an intermittent full-run failure that three sessions wrote off as a quirk of
+    one machine.
+
+    Asserted at the CALL rather than through behaviour on purpose: the bug is
+    invisible in outcome (you get a plausible answer, not an error), so the only
+    honest guard is that the keyword is actually passed."""
+
+    def _stdin_kwarg(self, fn, *a, **k):
+        seen = {}
+        real = subprocess.run
+
+        def spy(cmd, **kw):
+            seen.update(kw)
+            return real(cmd, **kw)
+
+        with mock.patch.object(subprocess, "run", spy):
+            fn(*a, **k)
+        return seen
+
+    def test_settings_root_does_not_inherit_stdin(self):
+        seen = self._stdin_kwarg(wh.settings_root, os.path.dirname(os.path.abspath(__file__)))
+        self.assertEqual(seen.get("stdin"), subprocess.DEVNULL,
+                         "git was spawned with an inherited stdin handle")
+
+    def test_interpreter_works_does_not_inherit_stdin(self):
+        seen = self._stdin_kwarg(wh.interpreter_works, sys.executable.replace(chr(92), "/"))
+        self.assertEqual(seen.get("stdin"), subprocess.DEVNULL,
+                         "the interpreter probe was spawned with an inherited stdin handle")
 
 
 class TestSettingsRoot(unittest.TestCase):

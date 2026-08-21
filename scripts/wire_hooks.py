@@ -54,7 +54,7 @@ def git_root(path):
     """The git repository root containing `path`, or None if there isn't one."""
     try:
         p = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
     except Exception:  # noqa: BLE001 — no git, or it hung; treat as "cannot tell"
         return None
     if p.returncode != 0:
@@ -176,7 +176,7 @@ def interpreter_works(exe):
     """Actually execute it. Everything else is inference; this is evidence."""
     try:
         r = subprocess.run([exe, "-c", "print('ok')"],
-                           capture_output=True, text=True, timeout=20)
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
         return r.returncode == 0 and r.stdout.strip() == "ok"
     except Exception:  # noqa: BLE001 — any failure to run means unusable, full stop
         return False

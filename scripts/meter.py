@@ -505,7 +505,7 @@ def _git_commit(root):
     valid measurement; it just cannot be re-derived later."""
     try:
         out = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=10)
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
         return out.stdout.strip() or None if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None

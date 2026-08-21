@@ -190,8 +190,32 @@ def atomic_write(p, s):
 
 def git_dirty(repo_dir, paths):
     try:
+        # stdin=DEVNULL IS LOAD-BEARING, not hygiene. git never reads stdin here,
+        # but subprocess INHERITS the parent's handle unless told otherwise — and
+        # on Windows, when that handle is not a valid inheritable one (pytest's fd
+        # capture is the reproducible case), DuplicateHandle fails with WinError 6
+        # "the handle is invalid" BEFORE git starts. The `except` below then reads
+        # that as "cannot verify" and refuses a perfectly clean tree.
+        #
+        # THAT IS THE "INTERMITTENT WINDOWS SUBPROCESS FAULT" this project has been
+        # recording as a property of one machine since 2026-08-11. It is neither
+        # intermittent nor confined to a machine: it is this missing argument, and
+        # it flips with whether output is being captured. Diagnosed under SYN-100.
         out = subprocess.run(["git", "status", "--porcelain", "--"] + paths,
-                             cwd=repo_dir, capture_output=True, text=True, timeout=30)
+                             cwd=repo_dir, capture_output=True, text=True,
+                             timeout=30, stdin=subprocess.DEVNULL)
+        # THE RETURN CODE IS THE "NOT A GIT REPO" CASE, and ignoring it made the
+        # refusal message a lie for two releases. Outside a repo, `git status`
+        # exits 128 with EMPTY STDOUT — so `bool(out.stdout.strip())` read that
+        # as CLEAN and let the write through, while the message printed on the
+        # other branch promised it had refused "(or not a git repo)".
+        #
+        # Nobody could see it, because the missing stdin=DEVNULL above raised
+        # first on the machine where anyone would have noticed. Fixing that one
+        # exposed this one. An adopter running with no `git init` — the SYN-086
+        # case, and not rare — got no protection at all from either script.
+        if out.returncode != 0:
+            return True
         return bool(out.stdout.strip())
     except Exception:
         return True  # can't verify => treat as dirty (refuse)
@@ -2427,8 +2451,11 @@ def _meter_boot(root, script_rel, manifest_name=None):
     if manifest_name and not env.get("ARCH_MANIFEST"):
         env["ARCH_MANIFEST"] = manifest_name
     try:
+        # stdin=DEVNULL for the same reason as git_dirty above — the meter never
+        # reads stdin, and inheriting an invalid handle makes it fail to launch.
         out = subprocess.run([sys.executable, p, "--dir", root, "--json"],
-                             capture_output=True, text=True, timeout=120, env=env)
+                             capture_output=True, text=True, timeout=120, env=env,
+                             stdin=subprocess.DEVNULL)
         d = json.loads(out.stdout)
         got = (d.get("boot_total_tokens"), d.get("boot_total_bytes"))
     except Exception:  # noqa: BLE001 — no meter, no --json, bad output: skip

@@ -18,6 +18,13 @@ instead of reporting `not statically countable` (the 35-assertions-from-32-call-
 sites special case is gone — the four heading forms that shared a loop are four
 methods now), and the count stays 35, so no published figure moves.
 
+MOST `--apply` CALLS BELOW PASS `--allow-dirty`, AND THAT IS DELIBERATE. SYN-100
+gave this script rotate's dirty-tree gate, and these fixtures run in bare temp
+directories that are not git repos — which the gate correctly refuses. Those tests
+are about migration logic, so they opt out of a check they are not testing.
+`TestDirtyTreeGate` is the one class that must NEVER be given the flag by default:
+it is the only place the refusal itself is exercised.
+
 THE CASES THAT MATTER ARE THE REFUSALS. This script restructures a whole ledger
 once, irreversibly; a bug that drops content has no second run to catch it. So
 the suite spends most of its weight proving the script declines to run on the
@@ -29,6 +36,7 @@ heading, which the heading-bound scan skipped without a word.
 import io
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import contextlib
@@ -175,24 +183,24 @@ class TestRefusals(TempRoot):
 
     def test_duplicate_description_id_is_fatal(self):
         root = make(self.tmp, extra="\n### #2 — dupe ⏳\n\nsecond body.\n")
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertNotEqual(code, 0)
         self.assertIn("TWO descriptions", out)
 
     def test_duplicate_creates_no_tasks_dir(self):
         root = make(self.tmp, extra="\n### #2 — dupe ⏳\n\nsecond body.\n")
-        run(root, "--apply")
+        run(root, "--apply", "--allow-dirty")
         self.assertFalse(os.path.exists(os.path.join(root, "tasks")))
 
     def test_description_with_no_table_row_is_fatal(self):
         root = make(self.tmp, extra="\n### #9 — orphan ⏳\n\nno row for this.\n")
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertNotEqual(code, 0)
         self.assertIn("NO table row", out)
 
     def test_open_row_with_no_description_is_fatal(self):
         root = make(self.tmp, extra_rows="| 3 | ⏳ | Undocumented open row | — |\n")
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertNotEqual(code, 0)
         self.assertIn("OPEN row", out)
 
@@ -204,14 +212,115 @@ class TestRefusals(TempRoot):
 
     def test_ledger_with_no_final_newline_is_fatal(self):
         root = make(self.tmp, ledger=PLAIN.rstrip("\n"))
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertNotEqual(code, 0)
         self.assertIn("TRUNCATED", out)
 
     def test_no_final_newline_override_lets_it_through(self):
         root = make(self.tmp, ledger=PLAIN.rstrip("\n"))
-        code, out = run(root, "--apply", "--allow-no-final-newline")
+        code, out = run(root, "--apply", "--allow-dirty", "--allow-no-final-newline")
         self.assertEqual(code, 0, out[:160])
+
+
+class TestDirtyTreeGate(TempRoot):
+    """SYN-100 item 6. The one IRREVERSIBLE script had no git gate at all.
+
+    rotate.py -- which only moves blocks between files -- refuses a dirty tree on
+    the stated principle that "git is the undo." This script performs a one-time,
+    whole-file restructure with no second run, and it did not. The protection was
+    on the recoverable operation and absent from the unrecoverable one.
+
+    The gate mirrors rotate's exactly, including the part that looks harsh: a
+    directory git cannot answer for is treated as DIRTY. "Cannot verify" and "clean"
+    are not the same state, and this is the script where guessing wrong is permanent.
+    """
+
+    def _git(self, root, *a):
+        # stdin=DEVNULL IS LOAD-BEARING ON WINDOWS, not tidiness. Under pytest's
+        # default fd capture, sys.stdin's handle is not a valid inheritable
+        # handle, and subprocess inherits it unless told otherwise --
+        # DuplicateHandle then fails with WinError 6, "the handle is invalid",
+        # before git ever starts. It presents as an INTERMITTENT git fault and is
+        # neither intermittent nor a git fault: capture on = fails, `-s` = passes.
+        return subprocess.run(["git"] + list(a), cwd=root, capture_output=True,
+                              text=True, timeout=30, stdin=subprocess.DEVNULL)
+
+    def _repo(self, **kw):
+        """A migratable instance inside a real git repo, ledger committed."""
+        root = make(self.tmp, **kw)
+        try:
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "t@example.com")
+            self._git(root, "config", "user.name", "t")
+            self._git(root, "add", "MERGE_PLAN.md")
+            r = self._git(root, "commit", "-q", "-m", "ledger")
+        except OSError as exc:
+            # WinError 6/50 -- this box's intermittent subprocess fault. A suite
+            # that reports that as a FAILURE blames the code for the box.
+            self.skipTest("git unusable here (%s)" % exc.__class__.__name__)
+        if self._git(root, "status", "--porcelain").returncode != 0:
+            self.skipTest("git unusable here (status returned non-zero)")
+        del r
+        return root
+
+    def _dirty(self, root):
+        with open(os.path.join(root, "MERGE_PLAN.md"), "a", encoding="utf-8") as fh:
+            fh.write("\nuncommitted edit\n")
+
+    def test_apply_refuses_when_the_ledger_has_uncommitted_changes(self):
+        root = self._repo()
+        self._dirty(root)
+        code, out = run(root, "--apply")
+        self.assertNotEqual(code, 0)
+        self.assertIn("uncommitted", out.lower())
+
+    def test_the_refusal_writes_nothing(self):
+        """A gate that refuses after writing half the documents is not a gate."""
+        root = self._repo()
+        self._dirty(root)
+        run(root, "--apply")
+        self.assertFalse(os.path.exists(os.path.join(root, "tasks")))
+
+    def test_allow_dirty_is_the_escape_rotate_already_offers(self):
+        root = self._repo()
+        self._dirty(root)
+        code, out = run(root, "--apply", "--allow-dirty")
+        self.assertEqual(code, 0, out[:200])
+        self.assertTrue(os.path.exists(os.path.join(root, "tasks")))
+
+    def test_a_clean_repo_migrates_without_the_flag(self):
+        """The gate must not cost the ordinary case it exists to protect."""
+        root = self._repo()
+        code, out = run(root, "--apply")
+        self.assertEqual(code, 0, out[:200])
+        self.assertTrue(os.path.exists(os.path.join(root, "tasks")))
+
+    def test_a_dry_run_is_never_gated(self):
+        """Nothing is written, so there is nothing for git to undo. Refusing the
+        read-only path is the check firing outside its own justification -- the
+        same mistake SYN-097 removed from rotate's mount probe."""
+        root = self._repo()
+        self._dirty(root)
+        code, out = run(root)
+        self.assertEqual(code, 0, out[:200])
+        self.assertIn("DRY RUN", out)
+
+    def test_a_directory_git_cannot_answer_for_is_refused(self):
+        """Not a repo at all. rotate words its refusal "(or not a git repo)" for
+        this case and means it: with no history there is no undo, which is a
+        stronger reason to refuse here than there."""
+        root = make(self.tmp)
+        code, out = run(root, "--apply")
+        self.assertNotEqual(code, 0)
+        self.assertIn("git", out.lower())
+
+    def test_the_refusal_names_the_escape(self):
+        """A refusal an adopter cannot act on is a wall. rotate's names the flag;
+        so must this one, because this is the script they cannot simply re-run."""
+        root = make(self.tmp)
+        code, out = run(root, "--apply")
+        self.assertNotEqual(code, 0)
+        self.assertIn("--allow-dirty", out)
 
 
 class TestDryRun(TempRoot):
@@ -236,7 +345,7 @@ class TestApply(TempRoot):
     def setUp(self):
         super().setUp()
         self.root = make(self.tmp)
-        self.code, self.out = run(self.root, "--apply")
+        self.code, self.out = run(self.root, "--apply", "--allow-dirty")
         self.live = os.path.join(self.root, "tasks", "MP-002.md")
         self.closed = os.path.join(self.root, "tasks", "closed", "MP-001.md")
         self.new = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
@@ -284,7 +393,7 @@ class TestEmptiedHeading(TempRoot):
     def setUp(self):
         super().setUp()
         self.root = make(self.tmp, ledger=EMPTIED)
-        self.code, self.out = run(self.root, "--apply")
+        self.code, self.out = run(self.root, "--apply", "--allow-dirty")
         self.new = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
 
     def test_heading_removed_once_emptied(self):
@@ -324,7 +433,7 @@ class TestDeclaredNames(TempRoot):
 
     def test_it_migrates_the_ledger_the_manifest_declares(self):
         root = self._root("TASKS.md", "close:", "  ledger_sync:", "    file: TASKS.md")
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertEqual(code, 0, out[:300])
         self.assertIn("TASKS.md", out)
         self.assertTrue(os.path.exists(os.path.join(root, "tasks", "MP-002.md")))
@@ -332,7 +441,7 @@ class TestDeclaredNames(TempRoot):
     def test_a_prefixed_instance_writes_prefixed_documents(self):
         root = self._root("MERGE_PLAN.md", "instance:", "  name: 4SYNC", "close:",
                           "  tasks:", "    prefix: derived")
-        code, out = run(root, "--apply")
+        code, out = run(root, "--apply", "--allow-dirty")
         self.assertEqual(code, 0, out[:300])
         self.assertTrue(os.path.exists(os.path.join(root, "tasks", "SYN-002.md")))
         self.assertTrue(os.path.exists(
@@ -343,13 +452,13 @@ class TestDeclaredNames(TempRoot):
         the filename exactly, and the header is the first place anyone reads it."""
         root = self._root("MERGE_PLAN.md", "instance:", "  name: 4SYNC", "close:",
                           "  tasks:", "    prefix: derived")
-        run(root, "--apply")
+        run(root, "--apply", "--allow-dirty")
         head = S.read(os.path.join(root, "tasks", "SYN-002.md")).splitlines()[0]
         self.assertTrue(head.startswith("# SYN-002"), head)
 
     def test_the_shipped_default_is_untouched_by_all_of_this(self):
         root = self._root("MERGE_PLAN.md", "close:", "  tasks:", "    dir: tasks")
-        code, _ = run(root, "--apply")
+        code, _ = run(root, "--apply", "--allow-dirty")
         self.assertEqual(code, 0)
         self.assertTrue(os.path.exists(os.path.join(root, "tasks", "MP-002.md")))
 

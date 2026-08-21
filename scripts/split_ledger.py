@@ -45,8 +45,20 @@ same kind of problem:
 A bijection in BOTH directions is the intuitive rule and it is wrong — it would
 refuse forever on exactly the ledgers this exists to migrate.
 
+IT ALSO REFUSES A DIRTY TREE, and that gate arrived late (SYN-100). rotate.py has
+refused one since it was written, on the principle that GIT IS THE UNDO — and
+rotate only moves blocks between files that both survive. This script rewrites the
+ledger and distributes its contents into new documents, once, with no second run.
+The protection was on the recoverable operation and missing from the unrecoverable
+one. `--allow-dirty` overrides, exactly as in rotate.
+
+A directory git cannot answer for — including one that is not a repo at all — counts
+as dirty. That is not pedantry: nothing in the adoption path runs `git init`
+(SYN-086), so "no repo" is a real state an adopter arrives in, and it is the state
+with the least to fall back on.
+
 Usage:
-  python scripts/split_ledger.py --dir /path/to/instance [--apply]
+  python scripts/split_ledger.py --dir /path/to/instance [--apply] [--allow-dirty]
 """
 
 import argparse
@@ -196,6 +208,8 @@ def main():
     ap.add_argument("--apply", action="store_true", help="write (default: dry-run)")
     ap.add_argument("--allow-no-final-newline", action="store_true",
                     help="proceed even if the ledger does not end in a newline")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="migrate even though the targets have uncommitted changes")
     args = ap.parse_args()
 
     root = os.path.abspath(args.dir)
@@ -222,6 +236,39 @@ def main():
         sys.exit(f"FATAL: {ledger_name} does not end in a newline — it may be "
                  "TRUNCATED. Check the tail against git history and repair it "
                  "before migrating. (--allow-no-final-newline overrides.)")
+
+    # ORDER IS DELIBERATE: this runs AFTER the truncation check, and putting it
+    # first was a real mistake caught by that check's own test. A ledger missing
+    # its tail in a dirty tree would have been told "commit first" -- advice that
+    # ENSHRINES the damage in history instead of repairing it. Damage to the
+    # source is diagnosed before undo-ability of the operation.
+    # GIT IS THE UNDO, and this is the script that most needs one. rotate.py has
+    # refused a dirty tree since it was written — and rotate only MOVES blocks
+    # between files that both survive. This performs a one-time, irreversible,
+    # whole-file restructure: it rewrites the ledger and distributes its contents
+    # across new documents, with no second run and nothing downstream that
+    # announces a bad outcome. The protection was on the recoverable operation and
+    # missing from the unrecoverable one, which is exactly backwards.
+    #
+    # GATED ON --apply ONLY: a dry run writes nothing, so there is nothing to undo
+    # and refusing it would be the check firing outside its own justification.
+    #
+    # "CANNOT VERIFY" COUNTS AS DIRTY — including "not a git repo at all," which is
+    # a REAL adopter state, not a corner case: nothing in the adoption path runs
+    # `git init` (SYN-086). That refusal is deliberate. An instance with no history
+    # has no undo whatsoever, so it is the case with the most to lose, and the
+    # message names the override rather than leaving them stuck.
+    if args.apply and not args.allow_dirty:
+        targets = [p for p in (ledger_p, archive_p) if os.path.exists(p)]
+        tasks_dir = os.path.join(root, TASKS_DIRNAME)
+        if os.path.isdir(tasks_dir):
+            targets.append(tasks_dir)
+        if rotate.git_dirty(root, targets):
+            sys.exit(
+                "FATAL: the migration targets have uncommitted changes (or this is "
+                "not a git repo). This rewrite is ONE-TIME and IRREVERSIBLE — commit "
+                "first, because git is the only undo there is. (--allow-dirty "
+                "overrides.)")
 
     status = parse_table(ledger)
     if status is None:

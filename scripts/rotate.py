@@ -197,6 +197,138 @@ def git_dirty(repo_dir, paths):
         return True  # can't verify => treat as dirty (refuse)
 
 
+# ── mount probe ──────────────────────────────────────────────────────────────
+#
+# THE HAZARD, stated so the check can be judged against it: this script rewrites
+# ledgers in place and RENAMES task documents, and the KERNEL's standing rule is
+# that a host<->guest passthrough layer may serve stale, clipped or NUL-padded
+# views — so a rewrite there can land on top of a read that was never true. That
+# is the thing worth refusing.
+#
+# WHAT THIS REPLACED, and why the replacement is not a like-for-like. The old
+# check asked whether the platform was Linux and a /sessions directory existed:
+# a fingerprint of one vendor's container layout, carried in from the pre-genesis
+# import with no recorded rationale and never tested. It answered the wrong question in three
+# directions at once — it fired on any machine that merely HAS a /sessions
+# directory, it missed Docker, CI and WSL entirely, and it ran before the --apply
+# gate so it blocked even the read-only dry run. It also broke the product's own
+# front door: `llms.txt` markets "clone it and run both suites", and the
+# end-to-end test subprocesses `rotate.py --apply` without the override this
+# code's own error message prescribes, so the marketed path returned
+# FAILED (failures=1) to the reader most likely to run it (SYN-097).
+#
+# A check that alarms on the wrong axis is the exact shape the KERNEL invariant
+# about adopter-satisfiable checks exists to catch: an adopter cannot satisfy
+# "do not have a /sessions directory", and a false alarm is one they learn to
+# scroll past — which costs more than the check was worth.
+
+# Filesystems whose reads and renames cannot be trusted: the host<->guest
+# passthrough layers and the network filesystems.
+#
+# OVERLAY IS DELIBERATELY ABSENT, and the report that prompted this row named it.
+# overlayfs is a LOCAL kernel union filesystem with coherent semantics — it is
+# also the root filesystem of every Docker container, so listing it would refuse
+# inside all of containerised CI and every containerised adopter. That is a check
+# nobody can satisfy, which is the failure this rewrite exists to remove, not
+# repeat. The hazard is host<->guest divergence, and overlay is not that. Local
+# disk filesystems (ext*, xfs, btrfs, zfs, tmpfs, apfs, ntfs) are absent for the
+# same reason: they are safe, and this set is a denylist of the unsafe.
+UNSAFE_FSTYPES = frozenset((
+    "9p", "virtiofs", "drvfs", "cifs", "smb3", "smbfs", "nfs", "nfs4",
+    "afs", "vboxsf", "vmhgfs", "prl_fs", "lustre", "glusterfs", "ceph",
+))
+
+
+def _unescape_mountinfo(field):
+    """mountinfo octal-escapes space, tab, newline and backslash in path fields.
+
+    `\\134` is undone LAST on purpose: a literal backslash in a path arrives as
+    `\\134`, and undoing it first would leave the digits that follow looking like
+    an escape sequence that was never in the original."""
+    out = field.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n")
+    return out.replace("\\134", "\\")
+
+
+def _is_under(path, mountpoint):
+    """Containment by PATH COMPONENT, never by string prefix — `/mnt/data` must
+    not claim `/mnt/dataset`."""
+    if mountpoint == "/":
+        return True
+    mp = mountpoint.rstrip("/")
+    return path == mp or path.startswith(mp + "/")
+
+
+def probe_mount(path, mountinfo=None):
+    """Return ('unsafe'|'safe'|'unknown', detail) for the filesystem holding `path`.
+
+    `mountinfo` is the seam the tests use: pass the text and this is a pure
+    function, so every branch is exercised on every OS in the matrix rather than
+    only on the one platform that has /proc.
+
+    DEGRADES HONESTLY. Windows and macOS have no /proc/self/mountinfo, so the
+    answer there is 'unknown' — reported as not determined, never as verified
+    safe. The verdict is printed on every run for the same reason the manifest
+    and name resolutions are: a check that silently falls back is a check nobody
+    can debug."""
+    if mountinfo is None:
+        try:
+            with open("/proc/self/mountinfo", encoding="utf-8") as fh:
+                mountinfo = fh.read()
+        except OSError:
+            return "unknown", "no /proc/self/mountinfo on %s" % sys.platform
+        path = os.path.realpath(path)
+
+    best = None
+    best_len = -1
+    for line in mountinfo.splitlines():
+        left, sep, right = line.partition(" - ")
+        if not sep:
+            continue
+        lf = left.split()
+        rf = right.split()
+        if len(lf) < 5 or not rf:
+            continue
+        mp = _unescape_mountinfo(lf[4])
+        # LONGEST mount point wins, and ties go to the LAST line: mountinfo is in
+        # mount order, so a path re-mounted over itself is described by the entry
+        # further down. Taking the first would report the filesystem that got
+        # covered up.
+        if _is_under(path, mp) and len(mp) >= best_len:
+            best_len = len(mp)
+            best = (_unescape_mountinfo(rf[0]), mp)
+
+    if best is None:
+        return "unknown", "no mount point covers %s" % path
+    fstype, mp = best
+    t = fstype.lower()
+    if t in UNSAFE_FSTYPES or t == "fuse" or t.startswith("fuse."):
+        return "unsafe", "%s at %s" % (fstype, mp)
+    return "safe", "%s at %s" % (fstype, mp)
+
+
+def mount_gate(verdict, detail, apply_mode, override):
+    """Return (line, refuse) — the decision, kept pure and separate from the probe.
+
+    Split out so all six combinations are testable without a Linux mount to stand
+    on. Only --apply can be refused: a dry run has no rename to protect, and
+    refusing it was the old check firing outside its own justification."""
+    if verdict == "unknown":
+        return "filesystem: not determined — %s (proceeding unchecked)" % detail, False
+    if verdict == "safe":
+        return "filesystem: %s — local, rename is trustworthy" % detail, False
+    if override:
+        return ("filesystem: %s — UNSAFE, overridden by ARCH_ROTATE_SANDBOX_OK=1"
+                % detail), False
+    if not apply_mode:
+        return ("filesystem: %s — UNSAFE for rename; this dry run is fine, "
+                "--apply will refuse" % detail), False
+    return ("REFUSING: %s — a passthrough or network mount can serve stale, clipped "
+            "or NUL-padded views, so a rewrite here can land on a read that was "
+            "never true. Run rotate.py host-side (native git) instead. "
+            "(ARCH_ROTATE_SANDBOX_OK=1 overrides — for tests on non-mounted paths "
+            "like /tmp only, never on the real ledgers.)" % detail), True
+
+
 # ── journal rotation ─────────────────────────────────────────────────────────
 
 def split_journal(ledger_text):
@@ -2811,12 +2943,15 @@ def main():
     abba = os.path.join(d, bulletin_name)
     archive = os.path.join(d, archive_name(bulletin_name))
 
-    if (sys.platform.startswith("linux") and os.path.isdir("/sessions")
-            and os.environ.get("ARCH_ROTATE_SANDBOX_OK") != "1"):
-        print("REFUSING: this looks like a sandbox mount environment. Run rotate.py "
-              "host-side (native git) only. (ARCH_ROTATE_SANDBOX_OK=1 overrides — for "
-              "tests on NON-mounted paths like /tmp only, never on the real ledgers.)",
-              file=sys.stderr)
+    # Probed against the TARGET path, not against the machine: the question is
+    # whether THIS ledger's filesystem can be rewritten safely. Reported on every
+    # run, refused only on --apply. See the mount-probe block above for what
+    # replaced the /sessions fingerprint and why.
+    verdict, detail = probe_mount(d)
+    line, refuse = mount_gate(verdict, detail, args.apply,
+                              os.environ.get("ARCH_ROTATE_SANDBOX_OK") == "1")
+    print(line, file=sys.stderr if refuse else sys.stdout)
+    if refuse:
         sys.exit(1)
 
     targets = [p for p in (ledger, history, abba, archive) if os.path.exists(p)]

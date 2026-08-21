@@ -70,6 +70,51 @@ build that matches no release, which nobody — including support — can then r
 
 ---
 
+## Unreleased
+
+*Not cut. This section accumulates until someone decides a batch is a release — whether it is one
+is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
+cut time.*
+
+**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite. **The inventory
+is unchanged at 24 files**, so this does not invalidate previously published build ids for
+inventory reasons — your id changes because the code changed, which is the ordinary case.
+
+- **The published "clone it and run both suites" path returned a failure.** Reported by an outside
+  evaluation running in a desktop VM: `test_end_to_end_rotation_lands_in_the_declared_file`
+  subprocesses `rotate.py --apply`, `rotate.py` refused, and the suite came back
+  `FAILED (failures=1)` — on the one surface a session is most likely to run before deciding
+  whether to recommend the product. The test now sets the override `rotate.py`'s own error message
+  prescribes. **If you run the suites in a container or VM, they were red for this reason and are
+  now green**; nothing about your instance was ever at risk, the fixture was.
+
+- **The sandbox check fingerprinted one vendor instead of testing the hazard.** It refused when the
+  platform was Linux and a `/sessions` directory existed. That fired on any machine that merely has
+  such a directory, missed Docker, CI and WSL entirely, and ran before the `--apply` gate, so it
+  also blocked the read-only dry run. It now probes the **filesystem type of the path you passed to
+  `--dir`**, via `/proc/self/mountinfo`, and refuses only the host↔guest passthrough and network
+  filesystems — `9p`, `virtiofs`, `drvfs`, `fuse*`, `cifs`, `nfs` and their kin — where a rewrite
+  can land on a read that was stale, clipped or NUL-padded. **`overlay` is deliberately treated as
+  safe**: it is a local union filesystem and the root of every Docker container, so refusing it
+  would refuse inside all of containerised CI.
+
+- **The dry run is no longer refused.** A read-only report has no rename to protect. Where `--apply`
+  correctly refuses, `--dry-run` now completes and gives you the full report — including the line
+  telling you `--apply` will refuse and why.
+
+- **Every run now prints one `filesystem:` line** saying what was probed and what was concluded —
+  including *"not determined"* on Windows and macOS, which have no `/proc/self/mountinfo`. An
+  undetermined probe proceeds and says so; it is never reported as verified safe.
+
+**Manifest:** nothing required. This adds no keys and changes no declared shapes.
+
+**By hand:** nothing required, with one thing worth knowing. `ARCH_ROTATE_SANDBOX_OK=1` still
+overrides, unchanged. If you had set it permanently to work around the old check firing on a
+machine that merely had a `/sessions` directory, **unset it and see** — the check no longer asks
+that question, and leaving the override on now suppresses a real answer about a real mount.
+
+---
+
 ## v1.1.4
 
 *The reviewed release. A multi-agent audit of nine releases' worth of change returned two nits;

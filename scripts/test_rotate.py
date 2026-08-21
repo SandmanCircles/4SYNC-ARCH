@@ -480,9 +480,16 @@ class TestJournalOverflowTarget(ManifestEnvCase):
         with open(declared, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("# History\n")
 
+        # The override this code's own error message prescribes. self.root is a
+        # mkdtemp path — exactly the "NON-mounted paths like /tmp only" case it
+        # names — but the mount probe runs against `--dir`, and a test that
+        # ignores its own tool's documented escape hatch is a fixture problem.
+        # Without it this test was RED in a Cowork desktop VM: the one path
+        # llms.txt markets to a reader deciding whether to trust the product.
+        env = dict(os.environ, ARCH_ROTATE_SANDBOX_OK="1")
         subprocess.run([sys.executable, os.path.abspath(rotate.__file__),
                         "--dir", self.root, "--keep", "5", "--apply", "--allow-dirty"],
-                       capture_output=True, text=True, check=False)
+                       capture_output=True, text=True, check=False, env=env)
 
         with open(declared, encoding="utf-8") as fh:
             self.assertIn("2026-07-15", fh.read())          # the oldest block, rotated out
@@ -3008,6 +3015,152 @@ class ThirdPartyNamesCase(unittest.TestCase):
     def test_an_unreadable_path_is_skipped_not_fatal(self):
         found, _ = self._run(os.path.join(self.root, "does-not-exist.md"))
         self.assertEqual(found, [])
+
+
+MOUNTINFO = """\
+21 30 0:20 / /proc rw,relatime shared:5 - proc proc rw
+24 30 0:22 / /sys rw,relatime shared:7 - sysfs sysfs rw
+30 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+41 30 0:36 / /tmp rw,relatime shared:9 - tmpfs tmpfs rw
+55 30 0:44 / /sessions rw,relatime shared:11 - ext4 /dev/sda1 rw
+61 30 0:50 / /mnt/data rw,relatime shared:13 - ext4 /dev/sdb1 rw
+62 30 0:51 / /mnt/dataset rw,relatime shared:15 - 9p host rw
+63 30 0:52 / /repo rw,relatime shared:17 - virtiofs host rw
+64 30 0:53 / /my\\040share rw,relatime shared:19 - cifs //srv/x rw
+"""
+
+
+class MountProbeParsingCase(unittest.TestCase):
+    """SYN-097. The probe answers 'is THIS path on a filesystem where a rewrite
+    can land on a stale read', which is a question about a mount table — so the
+    table parsing is where it can quietly be wrong."""
+
+    def test_the_longest_matching_mount_point_wins(self):
+        """/ matches everything; the specific mount is the answer."""
+        self.assertEqual(rotate.probe_mount("/repo/scripts", MOUNTINFO),
+                         ("unsafe", "virtiofs at /repo"))
+
+    def test_containment_is_by_component_not_by_string_prefix(self):
+        """/mnt/data must not claim /mnt/dataset — a plain startswith says it
+        does, and the two rows here are deliberately different filesystems so
+        the mistake cannot pass by coincidence."""
+        self.assertEqual(rotate.probe_mount("/mnt/data/x", MOUNTINFO),
+                         ("safe", "ext4 at /mnt/data"))
+        self.assertEqual(rotate.probe_mount("/mnt/dataset/x", MOUNTINFO),
+                         ("unsafe", "9p at /mnt/dataset"))
+
+    def test_the_mount_point_itself_is_covered(self):
+        self.assertEqual(rotate.probe_mount("/repo", MOUNTINFO)[0], "unsafe")
+
+    def test_octal_escapes_in_the_mount_point_are_undone(self):
+        """mountinfo escapes space as \\040; matching the raw field misses it."""
+        self.assertEqual(rotate.probe_mount("/my share/led", MOUNTINFO),
+                         ("unsafe", "cifs at /my share"))
+
+    def test_a_literal_backslash_survives_unescaping(self):
+        """\\134 is undone LAST, so the digits after it are not re-read as an
+        escape that was never in the path."""
+        self.assertEqual(rotate._unescape_mountinfo("/a\\134040b"), "/a\\040b")
+
+    def test_a_later_entry_wins_a_tie(self):
+        """mountinfo is in mount order, so a path re-mounted over itself is
+        described by the row further down; taking the first reports the
+        filesystem that got covered up."""
+        text = MOUNTINFO + "70 30 0:60 / /repo rw - ext4 /dev/sdc1 rw\n"
+        self.assertEqual(rotate.probe_mount("/repo/x", text), ("safe", "ext4 at /repo"))
+
+    def test_malformed_lines_are_skipped_not_fatal(self):
+        text = "garbage\n29 1 8:1 / / rw - \n" + MOUNTINFO
+        self.assertEqual(rotate.probe_mount("/repo", text)[0], "unsafe")
+
+    def test_no_covering_mount_is_unknown_never_safe(self):
+        """Nothing determined must never be reported as verified safe."""
+        verdict, detail = rotate.probe_mount("/repo", "30 1 8:1 / /srv rw - ext4 d rw\n")
+        self.assertEqual(verdict, "unknown")
+        self.assertIn("no mount point covers", detail)
+
+    def test_a_box_with_no_proc_reports_unknown(self):
+        """Windows and macOS are two of the three legs of the CI matrix and
+        neither has /proc/self/mountinfo. The honest answer is 'not determined'."""
+        with mock.patch("rotate.open", side_effect=OSError, create=True):
+            self.assertEqual(rotate.probe_mount("/repo")[0], "unknown")
+
+
+class MountProbePolicyCase(unittest.TestCase):
+    """Which filesystem types are the hazard — the axis the old check got wrong."""
+
+    def _verdict(self, fstype):
+        text = "30 1 8:1 / /repo rw - %s src rw\n" % fstype
+        return rotate.probe_mount("/repo/led.md", text)[0]
+
+    def test_passthrough_and_network_filesystems_are_unsafe(self):
+        for t in ("9p", "virtiofs", "drvfs", "cifs", "nfs4", "vboxsf",
+                  "fuse", "fuse.grpcfuse", "fuse.sshfs", "FUSE.GCSFUSE"):
+            self.assertEqual(self._verdict(t), "unsafe", t)
+
+    def test_local_filesystems_are_safe(self):
+        for t in ("ext4", "xfs", "btrfs", "zfs", "tmpfs", "f2fs", "apfs"):
+            self.assertEqual(self._verdict(t), "safe", t)
+
+    def test_overlay_is_safe_and_that_is_the_whole_point(self):
+        """overlayfs is a LOCAL union filesystem AND the root of every Docker
+        container. Calling it unsafe would refuse inside all of containerised CI
+        and every containerised adopter — a check nobody can satisfy, which is
+        the failure this rewrite removes rather than repeats."""
+        self.assertEqual(self._verdict("overlay"), "safe")
+
+
+class VendorTripwireCase(unittest.TestCase):
+    """The old check fingerprinted one vendor's container layout. It fired on any
+    machine that merely HAD a /sessions directory, missed Docker, CI and WSL, and
+    ran before the --apply gate so it blocked even the read-only dry run."""
+
+    def test_a_sessions_directory_alone_no_longer_condemns_the_run(self):
+        """/sessions is mounted in the fixture and the ledger is on ext4. The old
+        check refused this; the question it asked had nothing to do with the
+        filesystem under the file being rewritten."""
+        self.assertEqual(rotate.probe_mount("/srv/inst/MERGE_PLAN.md", MOUNTINFO),
+                         ("safe", "ext4 at /"))
+
+    def test_the_fingerprint_is_gone_from_the_source(self):
+        """Red against the old implementation by construction: the literal is
+        what the finding was about."""
+        with open(rotate.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn('isdir("/sessions")', src)
+
+
+class MountGateCase(unittest.TestCase):
+    """The decision, kept pure so all six combinations run on every OS in the
+    matrix rather than only on the one platform that has /proc."""
+
+    def test_apply_on_an_unsafe_mount_refuses(self):
+        line, refuse = rotate.mount_gate("unsafe", "9p at /repo", True, False)
+        self.assertTrue(refuse)
+        self.assertTrue(line.startswith("REFUSING:"))
+        self.assertIn("ARCH_ROTATE_SANDBOX_OK=1", line)
+
+    def test_the_dry_run_is_let_through(self):
+        """A read-only report has no rename to protect. Refusing it was the old
+        check firing outside its own justification."""
+        line, refuse = rotate.mount_gate("unsafe", "9p at /repo", False, False)
+        self.assertFalse(refuse)
+        self.assertIn("--apply will refuse", line)
+
+    def test_the_override_is_honoured_and_says_so(self):
+        line, refuse = rotate.mount_gate("unsafe", "9p at /repo", True, True)
+        self.assertFalse(refuse)
+        self.assertIn("overridden", line)
+
+    def test_a_safe_mount_never_refuses(self):
+        self.assertEqual(rotate.mount_gate("safe", "ext4 at /", True, False)[1], False)
+
+    def test_undetermined_proceeds_but_does_not_claim_a_check_it_did_not_run(self):
+        line, refuse = rotate.mount_gate("unknown", "no /proc/self/mountinfo on win32",
+                                         True, False)
+        self.assertFalse(refuse)
+        self.assertIn("not determined", line)
+        self.assertIn("proceeding unchecked", line)
 
 
 if __name__ == "__main__":

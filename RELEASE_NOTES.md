@@ -76,7 +76,7 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
-**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite. **The inventory
+**Changed machinery** (replace wholesale, as always): `scripts/rotate.py` + suite, `scripts/mail.py` + suite. **The inventory
 is unchanged at 24 files**, so this does not invalidate previously published build ids for
 inventory reasons — your id changes because the code changed, which is the ordinary case.
 
@@ -87,6 +87,23 @@ inventory reasons — your id changes because the code changed, which is the ord
   whether to recommend the product. The test now sets the override `rotate.py`'s own error message
   prescribes. **If you run the suites in a container or VM, they were red for this reason and are
   now green**; nothing about your instance was ever at risk, the fixture was.
+
+- **Cross-project mail was silently off on the modal install, and the manifest we ship was the
+  reason.** Without PyYAML, `mail.py` falls back to a regex parser — and that fallback anchored the
+  `mail:` key as `^mail:\s*$`, which cannot match a line with anything after the colon. **The
+  template ships that key with an inline comment**, so the block was invisible to our own parser.
+  `mail_config()` then returned "undeclared," which every caller reads as *this instance never
+  opted in*: no error, no warning, mail that simply never moves. PyYAML is absent from every fresh
+  Python, so **the broken path was the default one**, and it broke BOTH ends — a peer's manifest
+  carries the same commented key, so peer-name resolution failed too.
+  **If you filled in `mail.name` and `peers` and mail never moved, this was why.** Nothing was lost;
+  sends stayed in your outbox. No action needed beyond replacing the file — your manifest is fine
+  as written, comment and all.
+  **We did not fix this by deleting the comment.** That would have made the reproduction disappear
+  while leaving the defect in place for anyone who types a comment of their own. The anchor now
+  accepts a trailing comment and trailing whitespace, matching what `session_start.py` already did
+  for `boot:` — the fix existed in this codebase and this file had not been given it.
+  **Manifest:** nothing to change. **By hand:** nothing.
 
 - **The sandbox check fingerprinted one vendor instead of testing the hazard.** It refused when the
   platform was Linux and a `/sessions` directory existed. That fired on any machine that merely has

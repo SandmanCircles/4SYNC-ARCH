@@ -179,7 +179,20 @@ def mail_config(root, manifest_name=None):
     # Regex fallback: PyYAML-absent is the modal adopter install (MP#73), and
     # this must not silently return "undeclared" on those boxes.
     name, peers = None, []
-    m = re.search(r"(?ms)^mail:\s*$(.*?)(?=^\S|\Z)", text)
+    # THE KEY LINE MAY CARRY A COMMENT, AND OURS DOES. `^mail:\s*$` cannot match
+    # a line with anything after the colon, so the manifest this project ships —
+    # `mail:  # MP#84: cross-project mail…` — was invisible to its own fallback
+    # parser. mail_config then returned (None, []), which every caller reads as
+    # "never opted in": no error, no warning, mail that simply never moves. And
+    # PyYAML-absent is the MODAL adopter install, so the broken path was the
+    # default one. Fixing the template instead would only hide it — the defect
+    # belongs to any adopter who types a comment, not to the line we shipped.
+    #
+    # `[ \t]` rather than `\s`: `\s` matches newlines, so the old pattern could
+    # also skip past blank lines and start the body at the wrong place. Same
+    # anchor session_start.py already used for `boot:` — the fix existed in this
+    # tree and this file did not get it. (SYN-099)
+    m = re.search(r"(?ms)^mail:[ \t]*(?:#[^\n]*)?$(.*?)(?=^\S|\Z)", text)
     if m:
         body = m.group(1)
         n = re.search(r"^\s+name:\s*[\"']?([^\"'\s#]+)", body, re.M)

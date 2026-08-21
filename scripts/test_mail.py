@@ -7,16 +7,38 @@ writes inside the instance it was pointed at, and it only deletes on confirmed
 arrival — because AN EMPTY OUTBOX IS THE DELIVERY RECEIPT, and a sweep that
 deleted on anything weaker would make an empty outbox mean nothing.
 """
+import builtins
+import contextlib
+import io
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mail  # noqa: E402
 
+
+@contextlib.contextmanager
+def no_pyyaml():
+    """Force the regex fallback -- the path the MODAL adopter install executes.
+
+    Lifted from test_rotate.py, same mechanism and same reason: PyYAML is absent
+    from every fresh Python, CI runs that leg as the primary matrix job, and a
+    parser only this configuration reaches is a parser only this configuration
+    can protect."""
+    real_import = builtins.__import__
+
+    def _no_yaml(name, *a, **k):
+        if name == "yaml":
+            raise ImportError("PyYAML not installed")
+        return real_import(name, *a, **k)
+
+    with mock.patch.object(builtins, "__import__", _no_yaml):
+        yield
 
 class MailCase(unittest.TestCase):
     """Two instances on one disk, each with its own manifest, inbox and outbox."""
@@ -303,6 +325,112 @@ class TestTheShippedPlaceholderIsNotAName(MailCase):
         if not os.path.exists(os.path.join(product, "4SYNC.yaml")):
             self.skipTest("shipped manifest not present")
         self.assertIsNone(mail.mail_config(product)[0])
+
+
+class TestTheShippedTemplateIsTheFailingFixture(MailCase):
+    r"""SYN-099. The manifest we SHIP could not be read by the parser we ship.
+
+    `mail:` carries an inline comment in the shipped template. The fallback
+    anchored `^mail:\s*$`, which cannot match a line with anything after the
+    colon -- so on the modal install `mail_config` returned `(None, [])` and every
+    caller read that as "this instance never opted in." No error, no warning: an
+    adopter who filled in `name` and `peers` correctly got mail that never moved.
+
+    The fixtures below use the SHIPPED BYTES, not a paraphrase, so they fail again
+    if the template drifts. That pairing is this project's own published rule --
+    "guard and format must share a fixture" -- applied to the very file the rule
+    was written about.
+
+    The fix already existed in the tree: `session_start.py` anchors
+    `^boot:[ \t]*(?:#[^\n]*)?$` for exactly this reason. mail.py did not get it."""
+
+    # The real line from 4SYNC.yaml, comment included. Do not tidy it.
+    SHIPPED = ("mail:                      # MP#84: cross-project mail. "
+               "Nothing shared is created.")
+
+    def _write(self, mail_line, peers="['../peer']", eol=chr(10)):
+        d = os.path.join(self.root, "inst")
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        text = eol.join(["instance:", "  name: X", mail_line,
+                         '  name: "ALPHA"', "  peers: " + peers, ""])
+        with io.open(os.path.join(d, "4SYNC.yaml"), "w",
+                     encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        return d
+
+    def test_the_shipped_mail_line_parses_without_pyyaml(self):
+        """The whole row in one assertion."""
+        d = self._write(self.SHIPPED)
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), ("ALPHA", ["../peer"]))
+
+    def test_both_parsers_agree_on_the_shipped_line(self):
+        """Two parsers reading one file must not disagree about whether it opted in.
+
+        This is the property that actually broke: PyYAML-present said ALPHA,
+        PyYAML-absent said undeclared, and only the second ships by default."""
+        d = self._write(self.SHIPPED)
+        with_yaml = mail.mail_config(d)
+        with no_pyyaml():
+            without_yaml = mail.mail_config(d)
+        self.assertEqual(with_yaml, without_yaml)
+
+    def test_a_bare_mail_line_still_parses(self):
+        """The fix must not cost the case that already worked."""
+        d = self._write("mail:")
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), ("ALPHA", ["../peer"]))
+
+    def test_trailing_whitespace_after_the_key_still_parses(self):
+        d = self._write("mail:   ")
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), ("ALPHA", ["../peer"]))
+
+    def test_an_adopters_own_comment_parses_too(self):
+        """Why deleting OUR comment is not the fix: the defect belongs to anyone
+        who types one, not to the line we happened to ship."""
+        d = self._write("mail:  # notes to self")
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), ("ALPHA", ["../peer"]))
+
+    def test_a_crlf_manifest_parses(self):
+        """CRLF is not hypothetical here -- this repo carries both line endings in
+        one tree. Text-mode reads normalise it; this asserts that rather than
+        trusting it, because the anchor is the exact construct that would notice."""
+        d = self._write(self.SHIPPED, eol=chr(13) + chr(10))
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), ("ALPHA", ["../peer"]))
+
+    def test_a_different_key_that_merely_starts_with_mail_is_not_matched(self):
+        """The anchor must stay a KEY match. `mailbox:` is a different key, and
+        matching it by accident is the obvious way to loosen this regex too far."""
+        d = self._write("mailbox:  # not the mail block")
+        with no_pyyaml():
+            self.assertEqual(mail.mail_config(d), (None, []))
+
+    def test_the_fixture_matches_the_bytes_we_actually_ship(self):
+        """The drift guard, and the reason this class uses a constant.
+
+        Every test above is worthless if SHIPPED stops being what the template
+        says. This pins the fixture to the real file, so editing the manifest
+        without editing the suite fails here rather than silently retiring the
+        coverage.
+
+        It replaced a weaker test that read the shipped manifest through
+        `mail_config` and asserted `(None, [])`. That assertion passes whether the
+        block is parsed or invisible -- the template names no instance either way
+        -- so it could not tell the fixed parser from the broken one. A test that
+        cannot fail for the reason it was written is not coverage."""
+        product = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        manifest = os.path.join(product, "4SYNC.yaml")
+        if not os.path.exists(manifest):
+            self.skipTest("shipped manifest not present")
+        with io.open(manifest, encoding="utf-8") as fh:
+            lines = [ln.rstrip(chr(10)).rstrip(chr(13)) for ln in fh]
+        self.assertIn(self.SHIPPED, lines,
+                      "the shipped `mail:` line changed -- update SHIPPED above, "
+                      "and check the fallback anchor still matches it")
 
 
 class TestANameIsNotAReceipt(MailCase):

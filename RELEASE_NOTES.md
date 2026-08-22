@@ -76,7 +76,27 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
-*(nothing yet)*
+**⚠ TWO BEHAVIOUR CHANGES. Your default posture changes on update — read before applying.**
+
+- **`ARCH_HOOKS_MODE` now defaults to `enforce`.** It was `warn`. After updating, a guard
+  finding **blocks** (exit 2) or **asks**, where it previously logged and let the call
+  through. If you want the old posture, set `ARCH_HOOKS_MODE=warn` explicitly — in
+  `.claude/settings.local.json` for one instance, or `~/.claude/settings.json` for the
+  machine.
+- **Warn mode no longer returns a permission decision.** It emits its finding as a
+  `systemMessage` and decides nothing, so the call proceeds through your normal permission
+  flow.
+
+**Why both, and why they had to move together.** Warn used to emit
+`"permissionDecision": "allow"`, and Claude Code documents `allow` as *skipping the
+permission prompt*. So a write to a protected file — the thing the guards exist to notice —
+was waved through **because a guard noticed it**. The shipped default was weaker than
+installing no hook at all. Fixing warn alone would have left the rollout default merely
+harmless; changing the default alone would have left `warn` interfering. (SYN-098)
+
+**Nobody's protection gets quieter.** Some of it gets louder, which is the point. The
+in-code argument for the old behaviour reasoned only about harnesses that *ignore* the
+field, never the one that honors it — that reasoning is corrected where it stood.
 
 ---
 

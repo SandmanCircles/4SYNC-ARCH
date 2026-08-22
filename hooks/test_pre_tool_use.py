@@ -1287,21 +1287,35 @@ class TestDispatcherEndToEnd(GuardCase):
         self.assertIn("clipped", r.stderr)
         self.assertEqual("", r.stdout.strip(), "a block must not also emit ask JSON")
 
-    def test_warn_never_asks_even_for_an_askable_guard(self):
-        """MP#44 gave `enforce` a third verdict; `warn` deliberately has none.
+    def test_warn_returns_no_permission_decision_at_all(self):
+        """SYN-098. Warn decides NOTHING — it does not gate, and it does not approve.
 
-        An ask is a GATE, and a gated call in warn mode would be a refusal
-        wearing a prompt's clothes. SYN-090 changed warn from silent to spoken,
-        NOT from allowing to gating — the decision stays `allow` and the text is
-        the entire intervention. (This test previously asserted warn emitted
-        nothing on stdout; that was the MP#44 byte-identical rule, superseded
-        here on purpose, and the invariant worth keeping is this one.)"""
+        This assertion has now been inverted twice and the history is the point.
+        MP#44: warn emits nothing on stdout. SYN-090: warn emits `allow` plus text,
+        because silence was the defect. SYN-098: warn emits text and NO decision,
+        because `allow` is not neutral — Claude Code documents it as SKIPPING the
+        permission prompt, so warn was suppressing the very prompt a protected-file
+        write should have raised. The mode that ships by default was weaker than
+        shipping no hook.
+
+        The invariant that survived all three revisions: **warn must not change what
+        would have happened.** Only this version actually delivers it."""
         kernel = os.path.join(self.root, "config", "KERNEL.yaml")
         self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
         r = self._run(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"), "warn")
         self.assertEqual(0, r.returncode)
-        decision = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
-        self.assertEqual("allow", decision, "warn must never gate a call")
+        out = json.loads(r.stdout)
+        self.assertNotIn("hookSpecificOutput", out,
+                         "warn must return no permission decision — `allow` skips the "
+                         "prompt, which is interference, not observation")
+
+    def test_warn_still_speaks_while_deciding_nothing(self):
+        """Deciding nothing must not mean saying nothing — that was SYN-090's defect
+        and this is the test that keeps the fix from being undone by this row."""
+        kernel = os.path.join(self.root, "config", "KERNEL.yaml")
+        self._put(kernel, "meta:\n  status: AUTHORITATIVE\n")
+        r = self._run(edit_payload(kernel, "AUTHORITATIVE", "TEMPLATE"), "warn")
+        self.assertIn("systemMessage", json.loads(r.stdout))
 
     def test_warn_mode_tells_the_session_what_it_found(self):
         """THE v1.1.2 FAILURE (SYN-090): a guard caught a bad STATUS write, logged
@@ -1320,11 +1334,13 @@ class TestDispatcherEndToEnd(GuardCase):
         r = self._run(edit_payload(self.status, tail, 'focus: "clipped"\n'), "warn")
         self.assertEqual(0, r.returncode, "warn must not block")
         out = json.loads(r.stdout)
-        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertEqual("allow", out["hookSpecificOutput"]["permissionDecision"])
-        self.assertIn("clipped", reason)
-        self.assertIn("g4_status_write_guard", out["systemMessage"])
-        self.assertIn("enforce", reason,
+        msg = out["systemMessage"]
+        self.assertNotIn("hookSpecificOutput", out)
+        # Everything the old permissionDecisionReason carried now rides here — the
+        # field that carried it is gone, the information is not (SYN-098).
+        self.assertIn("clipped", msg)
+        self.assertIn("g4_status_write_guard", msg)
+        self.assertIn("enforce", msg,
                       "the session should learn this would block under enforce")
 
     @unittest.skipUnless(HAS_YAML, "the YAML parse branch requires PyYAML")
@@ -1342,8 +1358,34 @@ class TestDispatcherEndToEnd(GuardCase):
                                    'active_focus: "v1.1.3 in flight"'), "warn")
         self.assertEqual(0, r.returncode, "warn must not block")
         out = json.loads(r.stdout)
-        self.assertIn("does not parse as YAML",
-                      out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertNotIn("hookSpecificOutput", out)
+        self.assertIn("does not parse as YAML", out["systemMessage"])
+
+    def test_the_shipped_default_is_enforce(self):
+        """SYN-098, Michael 2026-08-21. With ARCH_HOOKS_MODE UNSET, a guard bites.
+
+        The default was `warn` on rollout reasoning — watch for false positives
+        before letting guards block. Sound reasoning, wrong default, because warn
+        also emitted an explicit allow and the primary harness honors that by
+        skipping the permission prompt. A fresh install was therefore weaker than
+        no install. Both halves moved together: warn stopped interfering, and the
+        mode that ships started protecting.
+
+        Asserted by UNSETTING the variable rather than passing "enforce" — the
+        default is the whole claim, and a test that names the value cannot see it."""
+        clipped = "meta:\n  status: X\n"          # no EOF sentinel
+        env = dict(os.environ, ARCH_MANIFEST="4SYNC.yaml", ARCH_DEBT="0",
+                   ARCH_HOOKS_LOG=os.path.join(self.root, "hooks.log"))
+        env.pop("ARCH_HOOKS_MODE", None)
+        import subprocess
+        hook = os.path.join(os.path.dirname(os.path.abspath(hooks.__file__)),
+                            "pre_tool_use.py")
+        payload = dict(write_payload(self.status, clipped), cwd=self.root)
+        r = subprocess.run([sys.executable, hook], input=json.dumps(payload),
+                           stdin=None, capture_output=True, text=True, env=env)
+        self.assertEqual(2, r.returncode,
+                         "with no mode set, a guard finding must BLOCK")
+        self.assertIn("clipped", r.stderr)
 
     def test_warn_says_nothing_when_no_guard_fires(self):
         """A mode that speaks on every call is a mode nobody reads."""

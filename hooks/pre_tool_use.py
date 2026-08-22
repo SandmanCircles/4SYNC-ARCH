@@ -55,9 +55,11 @@ Protocol (Claude Code PreToolUse):
          : put the call to the human as a permission prompt
 
 Modes (env ARCH_HOOKS_MODE):
-  "warn"    (DEFAULT) : violations are logged, action is ALLOWED. Rollout mode —
-                        observe automated runs for false positives before enforcing.
-  "enforce"           : violations BLOCK with exit 2, or ASK for guards that
+  "warn"              : violations are logged and the finding is put in front of
+                        the session; the hook returns NO permission decision, so the
+                        call proceeds through your normal permission flow untouched.
+                        Rollout mode — observe automated runs for false positives.
+  "enforce" (DEFAULT) : violations BLOCK with exit 2, or ASK for guards that
                         classify their finding as a decision rather than a defect.
   "off"               : dispatcher exits 0 immediately.
 
@@ -76,7 +78,7 @@ WHAT THESE GUARDS ARE, AND ARE NOT (read before relying on them):
   worth having and neither is a lock. Say so in your own docs too.
 
 Configuration (env):
-  ARCH_HOOKS_MODE  : warn | enforce | off        (default: warn)
+  ARCH_HOOKS_MODE  : warn | enforce | off        (default: enforce)
   ARCH_HOOKS_LOG   : path to the warn-mode log    (default: ~/.arch_hooks_warn.log)
   ARCH_CONFIG_DIR  : name of your loader-stack config dir, matched as a path
                     segment (default: "config"). This is what makes g1/g4
@@ -875,28 +877,37 @@ def _warn_visibly(guard_name, kind, reason):
     `yaml_parse` verify caught it instead — the last line of defence holding where
     the second should have. The guard was never the defect; its silence was.
 
-    EXIT STAYS 0 AND THE CHANNEL IS JSON, deliberately, and this is the whole
-    safety argument. The other way to put text in front of a user is a non-zero
-    exit, which risks the one thing warn must never do — refuse a call. If a
-    harness ignores these fields the outcome is today's silence, i.e. exactly the
-    current behaviour, so this can only improve the result and cannot break the
-    mode. That asymmetry is why it is worth shipping without certainty about how
-    any given harness renders it.
+    NO `permissionDecision` AT ALL — changed 2026-08-21 under SYN-098, and the
+    previous version of this docstring argued the opposite. It said: the only other
+    way to put text in front of a user is a non-zero exit, which risks the one thing
+    warn must never do; and if a harness ignores these fields the outcome is today's
+    silence, so emitting them can only improve matters. **Both halves were wrong.**
 
-    NEVER "ask", whatever the guard returned. MP#44 gave enforce a third verdict;
-    warn deliberately does not have one, because an ask is a gate and a gated call
-    in warn mode would be a refusal wearing a prompt's clothes. The decision here
-    is always `allow` — the text is the entire intervention."""
+    It reasoned about harnesses that IGNORE the field and never about the primary
+    harness, which HONORS it. Claude Code documents `"allow"` as skipping the
+    permission prompt. So a protected-file write that would ordinarily stop and ask
+    the human was instead waved through BECAUSE A GUARD NOTICED IT — warn mode was
+    measurably weaker than no hook at all, in the mode that ships by default.
+
+    And the choice was never binary. `systemMessage` is a UNIVERSAL top-level field,
+    independent of any decision, and exit 0 with no decision means the call proceeds
+    through the normal permission flow. So warn can speak and decline to decide. That
+    is what this now does, and it costs nothing: SYN-090's fix was that the session
+    HEARS the finding, not that the hook returns a verdict.
+
+    NEVER "ask" either, and that part stands. MP#44 gave enforce a third verdict;
+    warn deliberately has none, because an ask is a gate and a gated call in warn
+    mode would be a refusal wearing a prompt's clothes. Warn decides nothing at all —
+    the text is the entire intervention.
+
+    THE REASON TEXT MOVED INTO `systemMessage` rather than being dropped with the
+    field that carried it: it names the guard and says the call would block under
+    enforce, which is the whole value of running warn during a rollout."""
     label = "ask" if kind == "ask" else "block"
     json.dump({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason":
-                f"ARCH {guard_name} — warn mode, ALLOWED (this would {label} under "
-                f"ARCH_HOOKS_MODE=enforce): {reason}",
-        },
-        "systemMessage": f"ARCH [warn] {guard_name}: {reason}",
+        "systemMessage":
+            f"ARCH [warn] {guard_name} — NOT BLOCKED (this would {label} under "
+            f"ARCH_HOOKS_MODE=enforce): {reason}",
     }, sys.stdout)
     sys.stdout.write("\n")
 
@@ -1147,7 +1158,15 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    mode = os.environ.get("ARCH_HOOKS_MODE", "warn").lower()
+    # DEFAULT IS `enforce` (SYN-098, Michael 2026-08-21). It was `warn` — the
+    # rollout posture — on the reasoning that an adopter should watch for false
+    # positives before letting guards bite. That reasoning was sound and the
+    # default was still wrong, because warn ALSO emitted an explicit allow, which
+    # the primary harness honors by skipping the permission prompt. The shipped
+    # default was therefore weaker than shipping no hook at all. Warn is now
+    # genuinely observe-only, so both halves of the fix land together: the mode
+    # that ships protects, and the mode you opt into no longer interferes.
+    mode = os.environ.get("ARCH_HOOKS_MODE", "enforce").lower()
     if mode == "off":
         sys.exit(0)
 

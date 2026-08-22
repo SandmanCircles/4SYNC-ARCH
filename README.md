@@ -458,9 +458,18 @@ Prefer to do it by hand? Copy `hooks/claude-settings.example.json` →
 `.claude/settings.local.json` and fix the two paths. Forward slashes work on Windows;
 use the *full* Python path if bare `python` is shadowed by the Store stub.
 
-Env knobs: `ARCH_HOOKS_MODE` = `warn` | `enforce` | `off` (start in `warn` — logs,
-never blocks; flip to `enforce` after a clean stretch, and read *What the first
-adoption found* below before you trust a warn log) · `ARCH_DEBT=0` disables the
+Env knobs: `ARCH_HOOKS_MODE` = `warn` | `enforce` | `off`. **`enforce` is the
+default as of v1.1.6** — a guard finding blocks, or asks. Set `warn` explicitly for a
+rollout: it logs the finding and puts it in front of the session, and it returns **no
+permission decision at all**, so your normal permission flow is untouched. Read *What
+the first adoption found* below before you trust a warn log as evidence.
+
+*This default changed.* Through v1.1.5 it was `warn`, which logged **and returned an
+explicit `allow`** — and Claude Code honors that by skipping the permission prompt. So
+the shipped default was suppressing the very prompt a protected-file write should have
+raised: weaker than installing no hook at all. Both halves moved together (SYN-098). If
+you were relying on the old behaviour, `ARCH_HOOKS_MODE=warn` still gives you
+observe-only — genuinely, now. · `ARCH_DEBT=0` disables the
 session-debt recorder · `ARCH_MANIFEST` sets the manifest filename — honored by both
 the boring-guard and `scripts/meter.py`, so a renamed manifest is one variable,
 not two (default `4SYNC.yaml`). Add `.claude/settings.local.json` and the warn-mode
@@ -610,7 +619,8 @@ guard or manifest key you add:
 > **Warn mode hides the class of defect where the guard itself is wrong.**
 >
 > Two of those defects had been latent since the day they shipped. The hook ran
-> with no `ARCH_HOOKS_MODE` set, so it defaulted to `warn`: it logged the false
+> with no `ARCH_HOOKS_MODE` set, so it defaulted to `warn` — **it no longer does;
+> this account is what led to the default becoming `enforce` in v1.1.6**: it logged the false
 > positive, **allowed the action, and the log line read exactly like a real
 > catch.** It was recorded as one. The first instance to run at `enforce` hit
 > both within the hour.

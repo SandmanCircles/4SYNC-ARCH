@@ -224,7 +224,26 @@ def merge(existing, exe, hook_path, root, mode, manifest=None):
     out["hooks"] = hooks
 
     env = dict(out.get("env") or {})
-    env.setdefault("ARCH_HOOKS_MODE", mode)
+    # `mode is None` MEANS "DO NOT PIN", and it is the default (SYN-101 item 8).
+    #
+    # This line used to be `env.setdefault("ARCH_HOOKS_MODE", mode)` with the CLI
+    # defaulting to "warn". Two failures came out of that, in opposite directions:
+    #
+    #   * PINNING BY DEFAULT. Every adopter wired by this script got the then-current
+    #     default written into their own settings, where it OVERRIDES whatever the
+    #     installed hook ships with. When SYN-098 changed the shipped default, it
+    #     reached none of them: their settings still said `warn`, silently, forever.
+    #     A default nobody can update is not a default.
+    #   * `--mode enforce` WAS A NO-OP ON REWIRE. setdefault keeps the existing value,
+    #     so an adopter deliberately moving to enforce was told nothing and stayed
+    #     where they were.
+    #
+    # The good property setdefault was protecting is real and is kept: a rewire must
+    # never silently DOWNGRADE someone who already chose enforce. That is now handled
+    # by not passing a mode at all unless the caller asked for one — so "no flag"
+    # leaves the file alone, and an explicit flag wins and is reported.
+    if mode is not None:
+        env["ARCH_HOOKS_MODE"] = mode
     env.setdefault("ARCH_HOOKS_LOG", (root + "/" + LOG_REL).replace("\\", "/"))
     if manifest and manifest.lower() != DEFAULT_MANIFEST:
         env.setdefault("ARCH_MANIFEST", manifest)
@@ -386,6 +405,7 @@ def status(root, user_settings=None, check_interpreter=True):
     wired = []        # (label, command)
     receipt_at = []
     unreadable = []
+    pinned = []       # (label, mode) — settings that override the shipped default
 
     for label, path in sources:
         blob = _load_settings(path)
@@ -405,11 +425,32 @@ def status(root, user_settings=None, check_interpreter=True):
             mode = (blob.get("env") or {}).get("ARCH_HOOKS_MODE")
             print("%-14s: guards wired in %s%s"
                   % (label, path, ("  (ARCH_HOOKS_MODE=%s)" % mode) if mode else ""))
+            if mode:
+                pinned.append((label, mode))
         else:
             print("%-14s: %s — %s"
                   % (label, path, "no guard entry" if blob is not None else "absent"))
         if _hook_command(blob, "SessionStart", boot_base):
             receipt_at.append(label)
+
+    if pinned:
+        # SYN-101 item 8. THE ONLY CHANNEL THAT REACHES AN ALREADY-WIRED ADOPTER.
+        # A mode in settings overrides whatever the installed hook defaults to, so
+        # an adopter pinned by an older `--write` keeps that mode through every
+        # future update and is never told. This script cannot edit their settings
+        # for them — it can say so.
+        #
+        # DELIBERATELY DOES NOT NAME THE SHIPPED DEFAULT. Transcribing that value
+        # here would be a second copy of a constant that lives in the hook, and this
+        # project has been bitten by exactly that more than once. The actionable
+        # fact is that a pin exists and what it costs, not what it differs from.
+        for label, mode in pinned:
+            print("mode          : PINNED to %r in %s settings" % (mode, label))
+        print("                A pinned mode OVERRIDES the installed hook's own")
+        print("                default, including after an update — so this machine")
+        print("                keeps this mode until you change it by hand. Remove")
+        print("                the ARCH_HOOKS_MODE line to follow the shipped default,")
+        print("                or re-run with an explicit --mode to change the pin.")
 
     if receipt_at:
         print("receipt       : wired at %s level" % " + ".join(receipt_at))
@@ -508,8 +549,11 @@ def main():
                     help="write the merged settings (default: dry run, print only)")
     ap.add_argument("--python", dest="python", default=None,
                     help="interpreter to wire (default: the one running this script)")
-    ap.add_argument("--mode", default="warn", choices=["warn", "enforce", "off"],
-                    help="initial ARCH_HOOKS_MODE (default: warn — logs, never blocks)")
+    ap.add_argument("--mode", default=None, choices=["warn", "enforce", "off"],
+                    help="pin ARCH_HOOKS_MODE in your settings. OMIT IT (the default) "
+                         "and no mode is written, so the installed hook's own default "
+                         "governs — including after an update. Pass it only when you "
+                         "want this machine pinned regardless of what ships.")
     ap.add_argument("--status", action="store_true",
                     help="report whether THIS machine is wired for THIS instance "
                          "(exit 0 wired, 1 unwired or unverifiable wiring, 2 cannot "

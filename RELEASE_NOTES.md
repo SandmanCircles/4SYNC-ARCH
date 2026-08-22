@@ -78,11 +78,24 @@ cut time.*
 
 **⚠ TWO BEHAVIOUR CHANGES. Your default posture changes on update — read before applying.**
 
-- **`ARCH_HOOKS_MODE` now defaults to `enforce`.** It was `warn`. After updating, a guard
-  finding **blocks** (exit 2) or **asks**, where it previously logged and let the call
-  through. If you want the old posture, set `ARCH_HOOKS_MODE=warn` explicitly — in
-  `.claude/settings.local.json` for one instance, or `~/.claude/settings.json` for the
-  machine.
+- **`ARCH_HOOKS_MODE` now defaults to `enforce`.** It was `warn`. Where no mode is set, a
+  guard finding now **blocks** (exit 2) or **asks**, where it previously logged and let the
+  call through.
+
+  **⚠ IF YOU WIRED WITH `wire_hooks.py` BEFORE v1.1.6, THIS CHANGE PROBABLY DOES NOT REACH
+  YOU.** That script wrote `ARCH_HOOKS_MODE` into your own settings, and a mode in settings
+  overrides the shipped default *permanently* — through this update and every future one. So
+  most existing installs stay on `warn` and are told nothing. Run **`python
+  scripts/wire_hooks.py --status`**: it now reports a pinned mode and says that it overrides.
+  Remove the `ARCH_HOOKS_MODE` line from your settings to follow the shipped default, or pass
+  an explicit `--mode` to change the pin.
+- **`wire_hooks.py` no longer pins a mode by default, and `--mode` is no longer a no-op on
+  rewire.** It used to write the then-current default into your settings — which is what
+  created the trap above — and to keep any existing value via `setdefault`, so `--mode
+  enforce` against an already-wired file silently did nothing. Omitting `--mode` now writes
+  no mode at all; passing it wins. A rewire still never silently *downgrades* a mode you
+  chose: that was the one good property of the old behaviour and it is kept.
+  `hooks/claude-settings.example.json` no longer pins `warn` either. (SYN-101 item 8)
 - **Warn mode no longer returns a permission decision.** It emits its finding as a
   `systemMessage` and decides nothing, so the call proceeds through your normal permission
   flow.

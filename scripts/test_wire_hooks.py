@@ -70,9 +70,34 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(out["model"], "opus")
         self.assertEqual(out["permissions"], {"allow": ["Bash"]})
 
-    def test_an_env_value_the_user_already_set_is_not_overwritten(self):
-        out = wh.merge({"env": {"ARCH_HOOKS_MODE": "enforce"}}, EXE, HOOK, ROOT, "warn")
+    def test_no_mode_flag_writes_no_mode_at_all(self):
+        """SYN-101 item 8. NOT pinning is the default, and it is the whole fix.
+
+        This script used to write the then-current default into every adopter's own
+        settings, where it OVERRIDES whatever the installed hook ships with. When
+        SYN-098 changed the shipped default, it reached none of them: their settings
+        still said `warn`, silently, forever. A default nobody can update is not a
+        default."""
+        out = wh.merge({}, EXE, HOOK, ROOT, None)
+        self.assertNotIn("ARCH_HOOKS_MODE", out.get("env", {}))
+
+    def test_no_mode_flag_leaves_an_existing_pin_alone(self):
+        """The good property the old `setdefault` was protecting, kept intact: a
+        rewire must never silently DOWNGRADE someone who already chose enforce."""
+        out = wh.merge({"env": {"ARCH_HOOKS_MODE": "enforce"}}, EXE, HOOK, ROOT, None)
         self.assertEqual(out["env"]["ARCH_HOOKS_MODE"], "enforce")
+
+    def test_an_explicit_mode_overwrites_an_existing_pin(self):
+        """The other half of item 8: `--mode enforce` against an already-wired file
+        was a NO-OP under setdefault, and said nothing. An adopter deliberately
+        moving to enforce stayed where they were and was never told."""
+        out = wh.merge({"env": {"ARCH_HOOKS_MODE": "warn"}}, EXE, HOOK, ROOT, "enforce")
+        self.assertEqual(out["env"]["ARCH_HOOKS_MODE"], "enforce")
+
+    def test_other_env_values_are_still_never_overwritten(self):
+        """The pin rule is about ARCH_HOOKS_MODE only — nothing else changed."""
+        out = wh.merge({"env": {"ARCH_MANIFEST": "MINE.yaml"}}, EXE, HOOK, ROOT, None)
+        self.assertEqual(out["env"]["ARCH_MANIFEST"], "MINE.yaml")
 
     def test_a_foreign_sessionstart_block_is_left_alone(self):
         """This script does not write SessionStart — it must not disturb one either."""
@@ -397,6 +422,39 @@ class StatusCase(unittest.TestCase):
         with open(os.path.join(sdir, "settings.local.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(blob, fh)
+
+    def _wire_project_unpinned(self):
+        sdir = os.path.join(self.root, ".claude")
+        os.makedirs(sdir, exist_ok=True)
+        blob = {"hooks": {"PreToolUse": [{"matcher": "Write|Edit", "hooks": [
+                    {"type": "command",
+                     "command": '"%s" "%s"' % (sys.executable,
+                                               os.path.join(self.root, "hooks",
+                                                            "pre_tool_use.py"))}]}]}}
+        with open(os.path.join(sdir, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(blob, fh)
+
+    def test_a_pinned_mode_is_reported_as_overriding(self):
+        """SYN-101 item 8 — THE ONLY CHANNEL THAT REACHES AN ALREADY-WIRED ADOPTER.
+
+        A mode in settings overrides whatever the installed hook defaults to, and it
+        keeps overriding through every future update. Adopters wired before v1.1.6
+        were pinned to `warn` by this very script and never told, so SYN-098's change
+        of the shipped default could not reach them. This script cannot edit their
+        settings — it can say so, and now does."""
+        self._wire_project()          # writes ARCH_HOOKS_MODE=warn
+        code, out = self._run()
+        self.assertIn("PINNED", out)
+        self.assertIn("OVERRIDES", out)
+        self.assertIn("warn", out)
+
+    def test_an_unpinned_wire_says_nothing_about_modes(self):
+        """A report that speaks on every run is one nobody reads. No pin, no noise."""
+        self._wire_project_unpinned()
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertNotIn("PINNED", out)
 
     def test_unwired_machine_reports_unwired_and_exits_1(self):
         code, out = self._run()

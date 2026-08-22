@@ -76,7 +76,28 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
+*(nothing yet)*
+
+---
+
+## v1.1.6
+
+*The posture release. The guards' default mode changes, warn stops interfering, and the setting
+that would have kept either change from reaching you is fixed in the same batch. **Read the two
+bullets below before updating — your default posture changes, and one of them tells you why it
+might not.***
+
 **⚠ TWO BEHAVIOUR CHANGES. Your default posture changes on update — read before applying.**
+
+**Manifest:** nothing to change.
+
+**By hand:** nothing is *required*, and one thing very likely is. If you wired this machine
+with `wire_hooks.py` before v1.1.6, your settings carry an `ARCH_HOOKS_MODE` line that
+overrides the new default **permanently** — so the headline change of this release does not
+reach you, silently. `arch_update.py` copies machinery; it cannot edit your settings and
+would be wrong to. Run `python scripts/wire_hooks.py --status`, and if it prints
+`mode: PINNED`, decide on purpose: delete that line to follow the shipped default, or keep it
+and know you are pinned. Either is fine; not knowing is not.
 
 - **`ARCH_HOOKS_MODE` now defaults to `enforce`.** It was `warn`. Where no mode is set, a
   guard finding now **blocks** (exit 2) or **asks**, where it previously logged and let the

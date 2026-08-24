@@ -76,7 +76,90 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
-*(nothing yet)*
+*The sweep release. Twenty-seven defects, and the common shape is the reason they lasted: **every
+one of them failed silently.** The suites were green through all of them, because none was
+reachable by the fixtures that existed. **Read the four bullets under BEHAVIOUR CHANGES before
+updating — the guards now see commands they used to miss, which means calls that have been
+passing quietly may start to block.***
+
+**⚠ FOUR BEHAVIOUR CHANGES.** Three make a guard fire where it did not; one makes a guard stop
+firing where it should never have. All four affect calls you are already making.
+
+**Manifest:** nothing to change.
+
+**By hand:** one check, and it is thirty seconds. `g4` now requires the CANONICAL end-of-file
+sentinel on a STATUS write — a line beginning `# ═══ EOF` — where it previously accepted any last
+line merely *containing* the letters "EOF". If your STATUS file ends the way it shipped, you are
+fine and need do nothing. If you have hand-edited its last line, a write to STATUS will now be
+refused as clipped. Check with `tail -1` on your STATUS file before you update, not after.
+
+Nothing else here needs a hand step. In particular the session-debt file needs **no migration**:
+its timestamps gain a UTC offset, and existing rows without one keep parsing and keep meaning
+exactly what they meant.
+
+### BEHAVIOUR CHANGES
+
+- **A heredoc no longer hides the rest of your command.** `_strip_heredoc_body` truncated the
+  command at the end of the first heredoc's OPENING line, so the terminator and **every
+  subsequent command in the compound** were discarded before any guard saw them. One heredoc
+  disarmed all six path-based guards at once, silently. If you write through heredocs — and this
+  protocol encourages you to — commands that have been passing unexamined are now examined.
+  Two more of the same class went with it: a backslash line continuation captured the backslash
+  as the redirect target, and `>|` (the noclobber override, the form that writes even where the
+  shell is set to refuse) was invisible.
+- **`g3` now sees `git -C` and `git -c`.** The pattern required the verb immediately after `git`,
+  so every global-option form walked past. It also stopped firing inside quoted strings, where
+  `echo 'git commit' >> notes.md` was being refused.
+- **`g4` requires the canonical EOF sentinel.** See **By hand:** above — this is the one with a
+  check.
+- **`g6` no longer treats a bare `config/` directory as an ARCH instance.** Laravel, Symfony and
+  Drupal all ship `config/` at the project root, so under a machine-wide wire, ordinary work in a
+  *neighbouring* project was refused as a cross-instance write — a log file in `storage/`, nowhere
+  near a config dir, blocked because the project root two levels up had one. The fence now asks
+  the two sides different questions: PRECISE about the target (it must carry a loader-stack file),
+  LIBERAL about the session. Both sides still err toward refusing, and a genuine cross-instance
+  write still blocks.
+
+### Also fixed
+
+- **`rotate.py` could dismember a journal entry and certify it.** A column-0 date inside a **code
+  fence** opened a spurious block, so an entry quoting timestamped tool output was cut in half
+  across the ledger and the history file — leaving an unclosed fence, which renders everything
+  below it as code. `verify_moves` printed a green tick over it, because it checks that blocks
+  MOVED, not that an entry SURVIVED. If your journal quotes tool output, this has been happening.
+- **A failed `verify_moves` no longer leaves the file it created.** The restore skipped a
+  destination that did not exist before, so the moved content stayed in BOTH files under the words
+  "originals restored. Nothing was rotated."
+- **New history and bulletin-archive files inherit your line endings.** Content moved *verbatim*
+  out of a CRLF file was arriving LF.
+- **`arch_update.py` is two-phase.** A failure part-way through a copy — a locked file, routine on
+  Windows — left a MIXED machinery set and a traceback. Files now stage beside their targets and
+  only move into place once all have landed, so a failed update leaves your build id unmoved.
+- **The session-debt recorder sees shell writes.** It gated on the tool NAME, so a session working
+  through heredocs and redirects produced no rows at all — and its close reported "no own row"
+  while the next boot reported no undeposited state.
+- **Debt timestamps carry a UTC offset.** Naive local time is self-consistent on one machine and
+  wrong across two: the `live_within` window subtracted a stamp written in one zone from a clock
+  read in another, so a genuinely LIVE session could read as stale. No migration needed.
+- **The `Owner` cross-check is scoped to hook-capable surfaces.** A surface that runs no hooks
+  cannot produce a debt row — so its absence was never evidence of absence, and the column was
+  advertising a takeover instead of preventing one. A hookless seat now claims positively:
+  `<Seat>·<sid>·<MM-DD>`. *(Both this and the item above were reported by an adopter building a
+  role-partitioned layer on ARCH. Thank you.)*
+- **`actuals.py` appends instead of rewriting**, which is what its docstring always claimed, and
+  `--log` no longer crashes a close when the series file cannot be written.
+- **`g5`'s date check asks rather than refuses**, and only on real calendar dates — the old
+  pattern accepted month 00-19 and day 00-39, so `2026-19-39` write-locked a manifest.
+- **The shipped ledger template no longer trips the product's own legacy-journal warning** — twice
+  per run, on your first `rotate.py`.
+- **`ARCH_CONFIG_DIR` is honoured by both hooks.** A renamed config dir got guards and a
+  permanently silent boot receipt, indistinguishable from a hook that was never wired.
+- Two `^bootstrap:` parsers now tolerate a trailing comment; `meter.py` reports an unreadable
+  bulletin at its real size rather than zero; `arch_update.py`'s exit-code contract is stated
+  correctly for dry runs.
+
+*Suites 814 → 876. The MACHINERY inventory is unchanged at 24 files, so **build ids published
+before this release still recompute to the same values** — there is no back-catalogue effect.*
 
 ---
 

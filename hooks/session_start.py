@@ -48,7 +48,14 @@ import re
 import sys
 import time
 
-CONFIG_DIR = "config"
+# Read from the environment, exactly as pre_tool_use.py does (SYN-108 item 2).
+# This was hardcoded, so `ARCH_CONFIG_DIR` was honoured by ONE of the two hooks: an
+# instance with a renamed config dir got guards, and a boot receipt that resolved no
+# instance and therefore printed NOTHING — indistinguishable from a hook that was
+# never wired. A silent skip, in the file whose entire job is announcing that the
+# machinery is alive. Same normalisation as the guard so the two agree on the answer,
+# not merely on the source.
+CONFIG_DIR = os.environ.get("ARCH_CONFIG_DIR", "config").strip("/").lower()
 DEBT_FILENAME = ".session_debt.tsv"
 MANIFEST_DEFAULT = "4SYNC.yaml"
 BYTES_PER_TOKEN = 4

@@ -391,6 +391,50 @@ def mount_gate(verdict, detail, apply_mode, override):
 JOURNAL_BLOCK_HEAD = re.compile(
     r"(?m)^(?=(?:[A-Z][A-Za-z0-9]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
 
+# A fenced-code-block delimiter: up to three spaces of indent, then three or more
+# backticks or tildes. Group 2 is the info string (or, on a closing line, the
+# trailing junk that disqualifies it from closing).
+_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _fenced_spans(text):
+    """Character ranges of CLOSED fenced code blocks.
+
+    THE INFORMATION A LINE PATTERN CANNOT CARRY (SYN-107 item 1). `JOURNAL_BLOCK_HEAD`
+    decides on one line at a time, so a column-0 `YYYY-MM-DD` inside a fence opened a
+    spurious entry — and an ARCH journal quotes tool output constantly, so a fenced
+    log with timestamps in it is the MODAL entry rather than an edge case. One entry
+    quoting two timestamped lines parsed as four blocks; rotating it left the ledger
+    holding an unclosed fence, with the entry's tail in history and `verify_moves`
+    printing ✓ over both. This is the state SYN-100 believed it had fixed.
+
+    Do not answer this by tightening the date pattern — the header shape is right, and
+    the looser rule was tried and rejected (see the comment above JOURNAL_BLOCK_HEAD).
+    The missing input is fence STATE.
+
+    AN UNCLOSED FENCE CONTRIBUTES NOTHING, deliberately, and this is where the rule
+    departs from CommonMark — which would run it to the end of the document. Doing
+    that here would make every entry below a stray opener invisible to rotation AND to
+    the byte cap, which is SYN-100 defect 2 arriving through a different character. A
+    parser is free to be strict; a tool that rewrites somebody's ledger is not."""
+    spans, open_at, open_marker, pos = [], None, None, 0
+    for line in text.split("\n"):
+        end = pos + len(line)
+        m = _FENCE_LINE.match(line)
+        if m:
+            marker, rest = m.group(1), m.group(2)
+            if open_at is None:
+                # A backtick fence's info string may not itself contain a backtick,
+                # so ``` foo ` bar ``` is inline code, not an opener.
+                if not (marker[0] == "`" and "`" in rest):
+                    open_at, open_marker = pos, marker
+            elif (marker[0] == open_marker[0]
+                  and len(marker) >= len(open_marker) and not rest.strip()):
+                spans.append((open_at, end))
+                open_at = open_marker = None
+        pos = end + 1
+    return spans
+
 
 def _end_of_section(text, body_start):
     """End offset of a section that runs to the next `## ` heading.
@@ -408,6 +452,9 @@ def _end_of_section(text, body_start):
     end = body_start + (m.start() if m else len(text) - body_start)
     rule = re.search(r"\n---[ \t]*\n\s*$", text[body_start:end])
     return body_start + rule.start() + 1 if rule else end
+
+
+_LEGACY_JOURNAL_WARNED = False
 
 
 def split_journal(ledger_text):
@@ -440,6 +487,15 @@ def split_journal(ledger_text):
     rules INSIDE an entry — which is the whole point, because those are things
     people type, not adversarial input.
 
+    CODE FENCES ARE HONOURED BY `_fenced_spans`, NOT BY THIS PATTERN, and the
+    distinction is why that sentence was false for two releases (SYN-107 item 1).
+    It was written as an intention and read afterwards as a description: a column-0
+    `YYYY-MM-DD` inside a fence opened a spurious block, and `rotate_journal` then
+    cut the entry in half across two files while `verify_moves` printed ✓ — it
+    checks that blocks MOVED, not that an entry SURVIVED. A date header inside a
+    closed fence is now discarded before any block boundary is drawn. An UNCLOSED
+    fence is not treated as a fence at all; `_fenced_spans` explains why.
+
     FALLBACK, and it is loud. A section with no date headers at all is parsed the
     old way and SAYS SO. An adopter whose journal predates this convention keeps
     working; they are told once, rather than having their journal silently
@@ -465,7 +521,10 @@ def split_journal(ledger_text):
     body_end = _end_of_section(ledger_text, body_start)
     body = ledger_text[body_start:body_end]
 
-    heads = list(JOURNAL_BLOCK_HEAD.finditer(body))
+    # A date header inside a fenced block is quoted output, not a new entry.
+    spans = _fenced_spans(body)
+    heads = [m for m in JOURNAL_BLOCK_HEAD.finditer(body)
+             if not any(a <= m.start() < b for a, b in spans)]
     if heads:
         before = ledger_text[:body_start] + body[:heads[0].start()]
         blocks = [body[a.start():(heads[i + 1].start() if i + 1 < len(heads) else len(body))]
@@ -474,9 +533,18 @@ def split_journal(ledger_text):
         return before, blocks, ledger_text[body_end:]
 
     # No date header anywhere — legacy shape. Old behaviour, announced.
-    print("journal: no dated block headers found — falling back to blank-line "
-          "splitting. Start each entry with a YYYY-MM-DD header so a "
-          "multi-paragraph entry is never split across the keep boundary.")
+    # SAID ONCE PER RUN, not once per call (SYN-108 item 6). `split_journal` has two
+    # callers, so a legacy ledger was scolded TWICE for one condition — and a warning
+    # that repeats itself is one a reader learns to scroll past, which is the whole
+    # cry-wolf failure MP#88 opened. The module-level flag is deliberate and safe:
+    # this script is a one-shot process, so "per run" and "per import" are the same
+    # thing, and a test that needs it again resets it.
+    global _LEGACY_JOURNAL_WARNED
+    if not _LEGACY_JOURNAL_WARNED:
+        _LEGACY_JOURNAL_WARNED = True
+        print("journal: no dated block headers found — falling back to blank-line "
+              "splitting. Start each entry with a YYYY-MM-DD header so a "
+              "multi-paragraph entry is never split across the keep boundary.")
     blocks = [b for b in re.split(r"\n\s*\n", body) if b.strip()]
     before = ledger_text[:body_start]
     lead = []
@@ -554,15 +622,23 @@ def rotate_journal(ledger_path, history_path, keep, apply_, journal_max=None):
                  " — STILL OVER: the newest block alone exceeds the cap and is never moved"))
     if not apply_:
         return moved
-    hist = read(history_path) if os.path.exists(history_path) else (
+    # `orig_hist is None` means the file does not exist yet — kept DISTINCT from a
+    # file that exists and is empty, because verify_moves restores those differently
+    # (SYN-107 item 2) and this call site is the one that laundered the distinction.
+    orig_hist = read(history_path) if os.path.exists(history_path) else None
+    hist = orig_hist if orig_hist is not None else (
         "# Session journal — history (newest-first)\n\n" + HIST_SECTION + "\n")
     new_hist = _insert_under_section(hist, HIST_SECTION,
                                      "\n\n".join(b.strip() for b in moved))
     new_ledger = before + "\n\n".join(b.strip() for b in kept) + "\n\n" + after.lstrip("\n")
-    atomic_write(history_path, new_hist)
+    # like=ledger_path: a FIRST rotate creates the history file, so there is nothing
+    # at `history_path` to copy endings from and the preservation branch never fires
+    # — content moved verbatim out of a CRLF ledger was born LF (SYN-107 item 3).
+    # Same situation the task-document move already fixed; two of three sites missed.
+    atomic_write(history_path, new_hist, like=ledger_path)
     atomic_write(ledger_path, new_ledger)
     verify_moves(moved, src=read(ledger_path), dst=read(history_path),
-                 restore=[(ledger_path, text), (history_path, hist)])
+                 restore=[(ledger_path, text), (history_path, orig_hist)])
     return moved
 
 
@@ -640,10 +716,15 @@ def rotate_abba(abba_path, archive_path, age_days, apply_):
     new_text = text
     for s, e, _ in sorted(to_move, key=lambda t: -t[0]):  # delete bottom-up
         new_text = _splice_out(new_text, s, e)
-    atomic_write(archive_path, arch)
+    # like=abba_path — see the same call in rotate_journal (SYN-107 item 3).
+    atomic_write(archive_path, arch, like=abba_path)
     atomic_write(abba_path, new_text)
+    # `orig_archive` unchanged, NOT `or ""` — None means "this run created it, so
+    # putting it back means removing it". The `or ""` was falsy, so the restore
+    # skipped the file entirely and left the moved messages in BOTH files while
+    # printing "Nothing was rotated" (SYN-107 item 2).
     verify_moves(blocks, src=read(abba_path), dst=read(archive_path),
-                 restore=[(abba_path, text), (archive_path, orig_archive or "")])
+                 restore=[(abba_path, text), (archive_path, orig_archive)])
     return to_move
 
 
@@ -2166,7 +2247,14 @@ def manifest_max_bytes(path):
     return int(mb.group(1)) if mb else None
 
 
-BOOTSTRAP_BLOCK_RE = re.compile(rb"(?ms)^bootstrap:[^\S\n]*\r?$.*?(?=^\S|\Z)")
+# THE SAME BUG CAUGHT HALFWAY (SYN-108 item 5). `[^\S\n]` is "whitespace but not
+# newline", which is right and is more than the guard had — and it still failed on a
+# trailing comment, because whoever wrote it was thinking about CRLF and not about
+# YAML. The guard and this checker exist to police ONE number, so they have to read
+# the file the same way; `session_start.py:97` has had the right pattern all along,
+# which makes this a propagation failure rather than a design problem.
+BOOTSTRAP_BLOCK_RE = re.compile(
+    rb"(?ms)^bootstrap:[ \t]*(?:#[^\r\n]*)?\r?$.*?(?=^\S|\Z)")
 
 
 def manifest_persistent_bytes(path):
@@ -2932,13 +3020,34 @@ def report_findings(root, findings_name=FINDINGS_FILENAME):
 # ── verify ───────────────────────────────────────────────────────────────────
 
 def verify_moves(moved_blocks, src, dst, restore):
+    """Confirm every moved block landed, and put everything back if one did not.
+
+    `restore` is [(path, original)], where `original` is the file's content BEFORE
+    this run, or **None when the file did not exist**.
+
+    NONE AND "" ARE DIFFERENT ANSWERS (SYN-107 item 2). This used to be
+    `if original: atomic_write(...)`, and `rotate_abba` passed `orig or ""` for an
+    archive it had just created — which is falsy, so the restore SKIPPED it. The
+    source was put back holding the messages, the destination was left holding them
+    too, and the operator was told "originals restored. Nothing was rotated." Two
+    copies and a clean bill of health.
+
+    It matters more here than anywhere else in this file because this IS the safety
+    net: it runs only once something has already gone wrong, so its own defect is
+    reached at exactly the moment nothing else is left to catch it."""
     for b in moved_blocks:
         key = b.strip() if isinstance(b, str) else None
         if key is None:
             continue
         if key not in dst or key in src:
             for path, original in restore:
-                if original:
+                if original is None:
+                    # This run created it. Putting it "back" means removing it.
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                else:
                     atomic_write(path, original)
             print("VERIFY FAILED — originals restored. Nothing was rotated.", file=sys.stderr)
             sys.exit(1)

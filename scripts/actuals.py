@@ -339,14 +339,24 @@ def append_series(root, rows):
                     seen.add(_series_key(rec))
     new = [r for r in rows if _series_key(r) not in seen]
     if new:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            if os.path.isfile(path):
-                with open(path, encoding="utf-8") as old:
-                    fh.write(old.read())
+        # A REAL APPEND (SYN-109 item 1). This read the whole file, wrote it plus the
+        # new rows to a tmp, and os.replace'd — a whole-file rewrite under a
+        # docstring that says "Append-only", which is the same drift between a claim
+        # and its code that this sweep kept finding elsewhere.
+        #
+        # AND IT IS THE CONCURRENCY HAZARD THE DOCSTRING PROMISES IT IS NOT: two
+        # sessions closing in the same second each read N rows and write N+1, and the
+        # loser's row is gone with nothing to announce it. Two live ARCH instances on
+        # one machine, both calling `actuals --log` at every close, is the ordinary
+        # setup here rather than a contrived one.
+        #
+        # Appending is also strictly safer than the tmp+replace it replaces: short
+        # O_APPEND writes do not interleave, whereas a rewrite has a window between
+        # its last read and its commit in which any other writer's row is lost. The
+        # dedupe above already assumed append semantics; only the write did not.
+        with open(path, "a", encoding="utf-8") as fh:
             for r in new:
                 fh.write(json.dumps(r, sort_keys=True) + "\n")
-        os.replace(tmp, path)
     return len(new), path
 
 

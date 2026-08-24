@@ -267,6 +267,74 @@ class TestStatusGuard(GuardCase):
         self.assertIsNotNone(reason)
         self.assertIn("clipped", reason)
 
+    # ── SYN-108 item 3: the two sentinel checks disagreed ───────────────────
+    def test_a_last_line_merely_containing_EOF_is_not_a_sentinel(self):
+        """This guard accepted any last line CONTAINING the substring "EOF";
+        `session_start.check_sentinel` requires it to START with `# ═══ EOF`.
+        SYN-101 item 5 said one of them is wrong — **the loose one is**, and the
+        direction of the disagreement is what settles it.
+
+        The manifest DECLARES the canonical form:
+        `integrity.eof_sentinel: "# ═══ EOF <filename> ═══"`. So the strict test is
+        the one reading the contract, and the loose one fails toward SILENCE: a
+        genuinely clipped file whose tail happens to carry those three letters
+        passed a check whose entire job is catching clipped writes. In a file this
+        project truncates by accident often enough to have written a guard for it,
+        "EOF" is not a rare substring — `# ═══ EOF` is."""
+        # Every tail here is VALID YAML on purpose. A bare `EOF` line is not, so
+        # g4's parse check (a) fires first and the file is rejected for the wrong
+        # reason — which would make this test pass while proving nothing about the
+        # sentinel check (b) it is aimed at.
+        for tail in ("last_touched: see EOF notes below",
+                     "# TODO before EOF: trim this",
+                     "sentinel_note: EOF marker was removed",
+                     "some_key: EOF"):
+            with self.subTest(tail=tail):
+                body = STATUS_YAML[:STATUS_YAML.rindex("# ═══ EOF")] + tail + "\n"
+                reason = self.run_guards(write_payload(self.status, body))
+                self.assertIsNotNone(reason, tail)
+                self.assertIn("clipped", reason)
+
+    def _g4(self, body):
+        """g4 alone, not the dispatcher.
+
+        The accept-side cases below all REPLACE the sentinel line, which makes them
+        whole-file writes that drop a line — so g7 fires first and the assertion
+        would be about the stale-write guard rather than the sentinel test. The
+        reject cases above deliberately go through the full dispatcher instead,
+        because a silent PASS is the bug and it has to be shown not to survive
+        anywhere in the chain."""
+        return hooks.g4_status_write_guard(
+            "Write", self.status.replace(os.sep, "/").lower(), body, "", full=body)
+
+    def test_the_canonical_sentinel_is_accepted(self):
+        """The control. Tightening a check is the direction that breaks working
+        installs, so the shipped shape — and its indented and annotated variants,
+        both of which appear in this project's own files — must still pass."""
+        base = STATUS_YAML[:STATUS_YAML.rindex("# ═══ EOF")]
+        for tail in ("# ═══ EOF STATUS.yaml ═══",
+                     "# ═══ EOF STATUS.yaml — do not remove ═══",
+                     "  # ═══ EOF STATUS.yaml ═══"):
+            with self.subTest(tail=tail):
+                self.assertIsNone(self._g4(base + tail + "\n"), tail)
+
+    def test_both_hooks_apply_the_same_sentinel_test(self):
+        """The item is the DISAGREEMENT, not either check on its own. Duplicated
+        deliberately rather than shared — machinery modules never import one
+        another (see `_declares_manifest`) — so the pinning has to be a test."""
+        import session_start as ss
+        base = STATUS_YAML[:STATUS_YAML.rindex("# ═══ EOF")]
+        for tail, want_ok in (("# ═══ EOF STATUS.yaml ═══", True),
+                              ("  # ═══ EOF STATUS.yaml ═══", True),
+                              ("last_touched: see EOF notes", False),
+                              ("some_key: EOF", False)):
+            with self.subTest(tail=tail):
+                p = os.path.join(self.root, "probe.yaml")
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(base + tail + "\n")
+                self.assertEqual(ss.check_sentinel(p), want_ok, tail)
+                self.assertEqual(self._g4(base + tail + "\n") is None, want_ok, tail)
+
     @unittest.skipUnless(HAS_YAML, "YAML parse validation requires PyYAML")
     def test_edit_that_breaks_yaml_blocks(self):
         """Check (a) — the PARSE check, and the only one that needs PyYAML.
@@ -422,6 +490,49 @@ class TestBoringGuardDateAttribution(GuardCase):
     A refusal that says only "this write contains a date" reads as "the guard is
     broken" to someone whose edit was three lines away — which is how the original
     write-lock episode was misdiagnosed (MP#54)."""
+
+    # ── SYN-106 item 4 ──────────────────────────────────────────────────────
+    def test_the_date_branch_asks_rather_than_refuses(self):
+        """SYN-044's ruling, applied where it had not reached. A date in a manifest
+        is a JUDGEMENT — narrative creep or a legitimate reference — and a human is
+        the only thing that can tell them apart. g5's other branch (over max_bytes)
+        stays a block because it is a mechanical fact, not a judgement.
+
+        Not the same question as g6, which blocks deliberately: the fence is
+        permanent doctrine and asking would train the reflex to approve. This one
+        was never doctrine — it was a heuristic given a wall to stand behind."""
+        kind, reason = self.run_verdict(
+            edit_payload(self.manifest, 'name: "Test Instance"',
+                         'name: "Test Instance"  # 2026-08-09'))
+        self.assertEqual("ask", kind)
+        self.assertIn("2026-08-09", reason)
+
+    def test_over_max_bytes_still_blocks(self):
+        """The control for the change above — only the date branch softened."""
+        big = MANIFEST_YAML + "\n# " + ("x" * 20000)
+        kind, _ = self.run_verdict(write_payload(self.manifest, big))
+        self.assertEqual("block", kind)
+
+    def test_an_impossible_date_is_not_a_date(self):
+        """`20\\d\\d-[01]\\d-[0-3]\\d` accepted month 00-19 and day 00-39, so
+        `2026-19-39` write-locked a manifest as a 'calendar date'. Version strings,
+        ids and ranges land in that shape; calendar dates do not."""
+        for token in ("2026-19-39", "2026-00-15", "2026-08-00", "2026-13-01",
+                      "2026-08-32"):
+            with self.subTest(token=token):
+                self.assertIsNone(
+                    self.run_guards(edit_payload(
+                        self.manifest, 'name: "Test Instance"',
+                        f'name: "Test Instance"  # ref {token}')), token)
+
+    def test_a_real_date_is_still_caught(self):
+        """The control that bounds the tightening — a narrowing fails quiet."""
+        for token in ("2026-01-01", "2026-12-31", "2026-02-29"):
+            with self.subTest(token=token):
+                self.assertIsNotNone(
+                    self.run_guards(edit_payload(
+                        self.manifest, 'name: "Test Instance"',
+                        f'name: "Test Instance"  # {token}')), token)
 
     def test_a_date_this_write_introduces_is_attributed_to_it(self):
         reason = self.run_guards(edit_payload(self.manifest, 'name: "Test Instance"',
@@ -750,10 +861,75 @@ class TestDebtRecorderScope(unittest.TestCase):
             fh.write("meta:\n  role: identity-kernel\n")
         return path
 
+    def _bash_payload(self, cwd, cmd):
+        return {"tool_name": "Bash", "session_id": "s-test", "cwd": cwd,
+                "tool_input": {"command": cmd}}
+
     def test_records_inside_an_instance(self):
         inst = self._instance(os.path.join(self.root, "myproject"))
         hooks._record_debt(self._write_payload(inst))
         self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+
+    # ── SYN-108 item 1: the recorder could not see a shell write ────────────
+    #
+    # The gate was `tool_name not in WRITE_TOOLS`, so a session writing through
+    # heredocs and redirects never got a row. NAMED AT FOUR CONSECUTIVE CLOSES:
+    # three reported "no own row" at debt-clear and read it as the default, and the
+    # fourth confirmed the mechanism by writing one file with a file tool and
+    # getting a row. A tracker that records nothing is worse than no tracker,
+    # because the boot receipt then asserts the all-clear.
+    #
+    # The blast radius is the reason this is not just a widened gate: the recorder
+    # CREATES a file in whatever directory it resolves, so MP#63's constraint is the
+    # acceptance criterion. Write intent is judged by `_bash_write_paths`, the same
+    # machinery the path guards use.
+
+    def test_a_shell_heredoc_write_records(self):
+        inst = self._instance(os.path.join(self.root, "myproject"))
+        cmd = "cat <<%s > notes.md\nsome content\nEOF" % "'EOF'"
+        hooks._record_debt(self._bash_payload(inst, cmd))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)),
+                        "a heredoc write left no row — the tracker is off for any "
+                        "session that favours shell tools")
+
+    def test_a_shell_redirect_write_records(self):
+        inst = self._instance(os.path.join(self.root, "myproject"))
+        hooks._record_debt(self._bash_payload(inst, "echo x >> MERGE_PLAN.md"))
+        self.assertTrue(os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)))
+
+    def test_a_shell_read_records_nothing(self):
+        """Liveness is about WRITES. A tracker that moves on every `ls` says only
+        that a session exists, which the row's own presence already said."""
+        inst = self._instance(os.path.join(self.root, "myproject"))
+        for cmd in ("ls -la", "cat MERGE_PLAN.md", "git status",
+                    "grep -rn foo tasks/"):
+            with self.subTest(cmd=cmd):
+                hooks._record_debt(self._bash_payload(inst, cmd))
+                self.assertFalse(
+                    os.path.exists(os.path.join(inst, hooks.DEBT_FILENAME)), cmd)
+
+    def test_a_shell_write_outside_any_instance_records_nothing(self):
+        """MP#63 holds for the Bash path too, and this is the assertion that keeps
+        it holding. Widening the gate widened what can create a file in a stranger's
+        repository; the loader-stack requirement is what stops it."""
+        laravel = os.path.join(self.root, "laravel-app")
+        os.makedirs(os.path.join(laravel, hooks.CONFIG_DIR))
+        hooks._record_debt(self._bash_payload(laravel, "echo x > config/app.php"))
+        self.assertFalse(os.path.exists(os.path.join(laravel, hooks.DEBT_FILENAME)))
+
+    def test_a_shell_write_to_the_debt_file_itself_does_not_re_upsert(self):
+        """SYN-087's exemption, which the Bash path must inherit rather than
+        re-open: a close clears the row with a shell command, and if that write
+        recorded, the close would report cleared and the next boot would report
+        phantom debt."""
+        inst = self._instance(os.path.join(self.root, "myproject"))
+        debtfile = os.path.join(inst, hooks.DEBT_FILENAME)
+        hooks._record_debt(self._write_payload(inst))          # create a row
+        self.assertTrue(os.path.exists(debtfile))
+        os.remove(debtfile)
+        hooks._record_debt(self._bash_payload(inst, "rm %s" % hooks.DEBT_FILENAME))
+        self.assertFalse(os.path.exists(debtfile),
+                         "clearing the debt file through a shell re-created it")
 
     def test_records_from_a_subfolder_at_the_instance_root(self):
         inst = self._instance(os.path.join(self.root, "myproject"))
@@ -924,13 +1100,25 @@ class TestG6RootFence(unittest.TestCase):
         self.inst_a = os.path.join(self.root, "InstanceA")
         self.inst_b = os.path.join(self.root, "InstanceB")
         self.plain = os.path.join(self.root, "just-a-repo")
+        # SYN-106 item 5: these fixtures used to be BARE config/ dirs, which is no
+        # longer what an instance looks like to g6's target side. They carry a
+        # KERNEL now because they are standing in for real instances — the thing
+        # they were always meant to model.
         for d in (self.inst_a, self.inst_b):
             os.makedirs(os.path.join(d, hooks.CONFIG_DIR))
+            self._kernel(d)
         os.makedirs(self.plain)
         # a nested repo INSIDE instance A that ships its own config/ — this is
         # not hypothetical: the product repo ships the loader stack, so it has one
         self.nested = os.path.join(self.inst_a, "PRODUCT-REPO")
         os.makedirs(os.path.join(self.nested, hooks.CONFIG_DIR))
+        self._kernel(self.nested)
+        # a NEIGHBOURING ordinary project that merely ships config/ — Laravel,
+        # Symfony and Drupal all do. Sibling to the instances, not nested, which
+        # is the topology the old suite never built.
+        self.neighbour = os.path.join(self.root, "laravel-neighbour")
+        os.makedirs(os.path.join(self.neighbour, hooks.CONFIG_DIR))
+        os.makedirs(os.path.join(self.neighbour, "storage"))
         self.logfile = os.path.join(self.root, "warn.log")
         self._old_log = os.environ.get("ARCH_HOOKS_LOG")
         os.environ["ARCH_HOOKS_LOG"] = self.logfile
@@ -941,6 +1129,11 @@ class TestG6RootFence(unittest.TestCase):
         else:
             os.environ["ARCH_HOOKS_LOG"] = self._old_log
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def _kernel(self, root, name="KERNEL.yaml"):
+        with open(os.path.join(root, hooks.CONFIG_DIR, name), "w",
+                  encoding="utf-8") as fh:
+            fh.write("meta:\n  role: identity-kernel\n")
 
     def _fence(self, cwd, target):
         return hooks.g6_root_fence("Write", target.lower(), "x", "",
@@ -971,20 +1164,84 @@ class TestG6RootFence(unittest.TestCase):
         self.assertIn("CROSS-INSTANCE", reason)
         self.assertIn("InstanceB", reason)
 
-    def test_g6_still_resolves_a_bare_config_dir_as_an_instance(self):
-        """DELIBERATE NON-CHANGE, named so it cannot be 'tidied up' later (MP#63).
-        The debt recorder now demands a KERNEL; g6 does not, and must not. For
-        FENCING, over-identifying is conservative — the cost of a false positive is
-        one declined write the human can approve. For RECORDING it is not
-        conservative at all, because the cost lands as a file in somebody else's
-        repository. Same heuristic, opposite risk profiles.
+    def test_g6_asks_the_two_sides_of_the_fence_different_questions(self):
+        """THE ASYMMETRY, named so it cannot be 'tidied up' in either direction.
 
-        Every instance in this class is a bare config/ dir with no KERNEL, so if
-        require_kernel ever leaks into g6 this whole class goes silent at once."""
-        self.assertFalse(hooks._has_kernel(self.inst_a),
-                         "fixture guard: these instances carry no KERNEL")
-        reason = self._fence(self.inst_a, os.path.join(self.inst_b, "MERGE_PLAN.md"))
-        self.assertIsNotNone(reason, "g6 keeps the bare config/ reading on purpose")
+        THIS TEST REPLACES `test_g6_still_resolves_a_bare_config_dir_as_an_instance`
+        (MP#63), which locked the bare-config reading in on BOTH sides as a
+        "DELIBERATE NON-CHANGE". ITS PREMISE EXPIRED. The stated justification was:
+        "the cost of a false positive is one declined write the human can approve."
+        g6 does not ask — it BLOCKS, and its own docstring says so, resolving MP#44
+        toward block precisely so the fence cannot be clicked away. MP#63 priced a
+        false positive at one clearable prompt; MP#44 had already made it a wall.
+        Two rulings, made independently, never reconciled — and the later one voids
+        the earlier one's cost model. Measured cost of the non-change: writing a log
+        file into a neighbouring Laravel project's `storage/` was refused.
+
+        THE FIX IS NOT "require a KERNEL", it is "require one on the TARGET side".
+        Both sides must err toward REFUSING, and they need opposite tests to do it:
+
+          target side  — over-identifying costs a blocked legitimate write, so be
+                         PRECISE: demand the loader stack.
+          session side — under-identifying costs the whole fence, because a session
+                         that resolves to no instance falls into the QUIET lobby
+                         branch and is ALLOWED. So be LIBERAL: a bare config/ is
+                         enough to make a session answerable to the fence.
+
+        Making it symmetric was tried and measured: it lets a session booted in any
+        non-ARCH project write into a real instance's ledger — the 2026-07-28
+        incident through a side door. The second assertion below is that case, and
+        it is the one that fails if someone 'simplifies' this later."""
+        # target side: PRECISE. A neighbour that merely ships config/ is not an
+        # instance, and writing into it is none of the fence's business.
+        self.assertIsNone(
+            self._fence(self.inst_a, os.path.join(self.neighbour, "storage", "log.txt")),
+            "a bare config/ neighbour must not be read as an instance")
+        # session side: LIBERAL. Booted in that same neighbour, a write INTO a real
+        # instance is still fenced. This is what symmetry would break.
+        reason = self._fence(self.neighbour, os.path.join(self.inst_b, "MERGE_PLAN.md"))
+        self.assertIsNotNone(
+            reason, "a session outside ARCH must still be fenced OUT of an instance")
+        self.assertIn("CROSS-INSTANCE", reason)
+
+    def test_a_sibling_project_shipping_config_is_not_fenced(self):
+        """THE TOPOLOGY THE OLD SUITE NEVER BUILT, and the reason item 5 survived
+        five releases. `test_intra_project_write_under_a_nested_instance_...` below
+        builds ARCH NESTED at `ops/` under the framework root, where containment
+        makes every intra-project write one tree — and concluded the predicted
+        friction was rare. True for that layout. In the SIBLING layout, which is
+        what an ordinary machine looks like, containment does not apply and every
+        write into the neighbour was refused."""
+        for rel in ("storage/log.txt", "config/app.php", "app/Models/User.php"):
+            with self.subTest(rel=rel):
+                target = os.path.join(self.neighbour, *rel.split("/"))
+                self.assertIsNone(self._fence(self.inst_a, target), rel)
+
+    def test_the_stack_marker_survives_a_genesis_prefix(self):
+        """Genesis PREFIXES the stack and keeps the stem, so the marker is matched
+        as a case-insensitive SUFFIX: `4SHIELD_KERNEL.yaml` is a KERNEL. Verified
+        against both live instances on the authoring machine before this landed.
+
+        `canon_index.yaml` is the second accepted stem so an instance survives a
+        rename of either file. `status.yaml` was CONSIDERED AND REJECTED: this test
+        is shared with the debt recorder, whose false positive is a
+        .session_debt.tsv written into a stranger's repository (the MP#63 bug), and
+        a bare `*status.yaml` is an ordinary filename in CI and monitoring repos."""
+        prefixed = os.path.join(self.root, "PrefixedInstance")
+        os.makedirs(os.path.join(prefixed, hooks.CONFIG_DIR))
+        self._kernel(prefixed, "4SHIELD_KERNEL.yaml")
+        self.assertTrue(hooks._has_stack(prefixed))
+
+        canon = os.path.join(self.root, "CanonOnly")
+        os.makedirs(os.path.join(canon, hooks.CONFIG_DIR))
+        self._kernel(canon, "4CITE_CANON_INDEX.yaml")
+        self.assertTrue(hooks._has_stack(canon), "canon_index alone is enough")
+
+        statusy = os.path.join(self.root, "MonitoringRepo")
+        os.makedirs(os.path.join(statusy, hooks.CONFIG_DIR))
+        self._kernel(statusy, "status.yaml")
+        self.assertFalse(hooks._has_stack(statusy),
+                         "a bare status.yaml must NOT make an ordinary repo an instance")
 
     def test_intra_project_write_under_a_nested_instance_is_never_refused(self):
         """MP#63 severity refinement, verified rather than assumed. With ARCH nested
@@ -1123,6 +1380,106 @@ class TestBashRouting(GuardCase):
         paths = hooks._bash_write_paths("cat > config/KERNEL.yaml <<'EOF'\nx\nEOF")
         self.assertTrue(any("kernel.yaml" in p.lower() for p in paths))
 
+    # ── SYN-106 item 1: a heredoc used to hide every command after it ───────
+    #
+    # `_strip_heredoc_body` returned `cmd[:nl]` — the command truncated at the end
+    # of the FIRST heredoc's opening line. The terminator and every subsequent
+    # command in the compound were discarded before any guard saw them, so one
+    # heredoc disarmed all six path guards at once, silently. Reproduced end to
+    # end at exit-code level (2 bare, 0 with a heredoc in front) before the fix.
+    #
+    # THE FIX MUST NOT UNDO MP#50. The body still has to be dropped — a path
+    # MENTIONED in a commit message is not a path WRITTEN — so these tests come in
+    # pairs: the body stays invisible, everything around it becomes visible again.
+
+    def test_a_write_after_a_heredoc_is_not_invisible(self):
+        """THE BYPASS. Same trailing redirect, with and without a heredoc ahead of
+        it: both must block. Asserted at the verdict, not at the helper, because
+        the helper being right is not the claim — the guard firing is."""
+        other = self._other_instance()
+        write = f"echo pwned > {other}/config/OTHER_STATUS.yaml"
+        bare = self.run_verdict(bash_payload(write), cwd=self.root)
+        hidden = self.run_verdict(
+            bash_payload("cat <<%s > notes.txt\nharmless\nEOF\n%s" % ("'EOF'", write)),
+            cwd=self.root)
+        self.assertEqual("block", bare[0], "control: the bare write must block")
+        self.assertEqual("block", hidden[0],
+                         "a heredoc ahead of the write must not hide it")
+        self.assertIn("CROSS-INSTANCE", hidden[1] or "")
+
+    def test_two_heredocs_then_a_write_is_not_invisible(self):
+        """One heredoc was enough to hide the rest; two must not resynchronise the
+        scanner onto a body and lose the tail a different way."""
+        other = self._other_instance()
+        cmd = ("cat <<%s > a.txt\nfirst\nEOF\n"
+               "cat <<%s > b.txt\nsecond\nEOF\n"
+               "echo pwned > %s/config/OTHER_STATUS.yaml"
+               % ("'EOF'", "'EOF'", other))
+        kind, reason = self.run_verdict(bash_payload(cmd), cwd=self.root)
+        self.assertEqual("block", kind)
+        self.assertIn("CROSS-INSTANCE", reason or "")
+
+    def test_heredoc_bodies_are_still_not_targets(self):
+        """The MP#50 half, restated for the multi-heredoc case. Both bodies name a
+        guarded path; neither is a write."""
+        cmd = ("cat <<%s > a.txt\n../Other/config/KERNEL.yaml\nEOF\n"
+               "cat <<%s > b.txt\nconfig/STATUS.yaml\nEOF" % ("'EOF'", "'EOF'"))
+        paths = hooks._bash_write_paths(cmd)
+        self.assertEqual(["a.txt", "b.txt"], paths)
+
+    def test_dash_heredoc_with_an_indented_terminator_is_consumed(self):
+        """`<<-` strips leading tabs, so its terminator is legally indented. Miss
+        that and the scanner runs to EOF looking for a terminator it already
+        passed — the original bug, arriving through the tab."""
+        cmd = ("cat <<-%s > a.txt\n\tbody\n\tEOF\n"
+               "echo x > config/KERNEL.yaml" % "'EOF'")
+        self.assertIn("config/KERNEL.yaml", hooks._bash_write_paths(cmd))
+
+    def test_an_unterminated_heredoc_still_truncates(self):
+        """The conservative fallback, kept deliberately. With no terminator every
+        remaining line IS body — bash would not run it — so dropping the tail is
+        correct, and it is the one case where the old behaviour was right."""
+        cmd = "cat <<%s > a.txt\nnever closed\necho x > config/KERNEL.yaml" % "'EOF'"
+        self.assertEqual(["a.txt"], hooks._bash_write_paths(cmd))
+
+    def test_herestring_is_not_a_heredoc(self):
+        """`<<<` is a here-STRING: no body, no terminator. Treating it as a heredoc
+        would swallow the rest of the command — the same bypass by another door."""
+        self.assertIn("config/KERNEL.yaml",
+                      hooks._bash_write_paths("cat <<<hi > config/KERNEL.yaml"))
+
+    # ── SYN-106 item 2: g3 only knew `git <verb>` ───────────────────────────
+    def test_g3_catches_git_with_global_options(self):
+        """`git -C dir commit` and `git -c k=v commit` slipped straight past — the
+        pattern demanded the verb immediately after `git`.
+
+        RECORDED BECAUSE IT IS NOT A COINCIDENCE: after the 2026-08-20 incident,
+        where a `cd` that did not take effect sent `git reset --hard` into the wrong
+        repo, the durable remediation adopted was "every git command uses explicit
+        `-C` instead of `cd`". The habit taken up after the worst incident in the
+        log is precisely the form this guard could not see."""
+        os.environ["ARCH_SANDBOX"] = "1"
+        self.addCleanup(os.environ.pop, "ARCH_SANDBOX", None)
+        for cmd in ("git commit -m x",
+                    "git -C . commit -m x",
+                    "git -C /some/path add -A",
+                    "git -c user.name=x commit -m x",
+                    "git --no-pager -C . stash",
+                    "git -C . -c core.hooksPath=/dev/null commit -m x"):
+            with self.subTest(cmd=cmd):
+                kind, reason = self.run_verdict(bash_payload(cmd), cwd=self.root)
+                self.assertEqual("block", kind, cmd)
+                self.assertIn("Sandbox git guard", reason or "")
+
+    def test_g3_does_not_fire_on_reads_or_on_the_word_git(self):
+        """The control. Narrowing is not the risk here — widening is."""
+        os.environ["ARCH_SANDBOX"] = "1"
+        self.addCleanup(os.environ.pop, "ARCH_SANDBOX", None)
+        for cmd in ("git status", "git -C . log --oneline", "git diff",
+                    "echo 'git commit' >> notes.txt", "legit commit -m x"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root), cmd)
+
     def test_unguarded_bash_is_silent(self):
         for cmd in ("echo hello > notes.txt", "ls -la", "py -m pytest"):
             with self.subTest(cmd=cmd):
@@ -1157,9 +1514,7 @@ class TestBashRouting(GuardCase):
         *STATUS.yaml, so g4 also matches it. g4 can only `ask` (it cannot see
         what a shell command produces) while g6 blocks on doctrine — so if a
         content guard is ever ordered ahead of the fence, this fails."""
-        other = tempfile.mkdtemp(prefix="sync-hooks-other-")
-        self.addCleanup(shutil.rmtree, other, True)
-        os.makedirs(os.path.join(other, "config"))
+        other = self._other_instance()   # a REAL instance — see the helper (SYN-106)
         target = os.path.join(other, "config", "OTHER_STATUS.yaml")
         kind, reason = self.run_verdict(
             bash_payload(f"Set-Content {target} 'x'"), cwd=self.root)
@@ -1175,9 +1530,19 @@ class TestBashRouting(GuardCase):
     # ── MP#50: a redirect names its own target; a verb does not ──────────────
 
     def _other_instance(self):
+        """A REAL instance: config/ plus a loader-stack file.
+
+        The KERNEL is not decoration (SYN-106 item 5). g6's target side now demands
+        the stack, so a bare config/ dir here would stop being an instance and every
+        cross-instance assertion in this class would go quietly green against a
+        guard that never fired — the fixture asserting the absence of the thing it
+        was built to prove."""
         other = tempfile.mkdtemp(prefix="sync-hooks-other-")
         self.addCleanup(shutil.rmtree, other, True)
         os.makedirs(os.path.join(other, "config"))
+        with open(os.path.join(other, "config", "KERNEL.yaml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("meta:\n  role: identity-kernel\n")
         return other
 
     def test_reading_another_instance_with_a_null_redirect_is_silent(self):
@@ -1208,6 +1573,49 @@ class TestBashRouting(GuardCase):
             bash_payload(f"cp notes.md {other}/config/OTHER_STATUS.yaml"), cwd=self.root)
         self.assertIn("CROSS-INSTANCE", reason or "")
         self.assertEqual("block", kind)
+
+    # ── SYN-106 item 3: a copy's SOURCE is a read, not a write ──────────────
+    def test_copying_out_of_another_instance_is_a_read(self):
+        """`cp ../Other/config/x .` reads that instance and writes to THIS one.
+        Reads across the fence are explicitly allowed — the courier pattern is
+        built on them — but the broad write-verb harvest claimed every path token
+        in the command, so the SOURCE was reported as the cross-instance target."""
+        other = self._other_instance()
+        for cmd in (f"cp {other}/config/OTHER_STATUS.yaml .",
+                    f"cp -r {other}/tasks ./tasks-copy",
+                    f"mv {other}/notes.md ./notes.md"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root), cmd)
+
+    def test_copying_INTO_another_instance_still_blocks(self):
+        """The control, and the direction that matters. Narrowing must not lose the
+        catch — a false negative here fails quiet, which is worse than the false
+        positive being removed."""
+        other = self._other_instance()
+        for cmd in (f"cp notes.md {other}/config/OTHER_STATUS.yaml",
+                    f"mv notes.md {other}/MERGE_PLAN.md"):
+            with self.subTest(cmd=cmd):
+                kind, reason = self.run_verdict(bash_payload(cmd), cwd=self.root)
+                self.assertEqual("block", kind, cmd)
+                self.assertIn("CROSS-INSTANCE", reason or "")
+
+    def test_the_narrowing_bails_out_where_it_cannot_be_sure(self):
+        """Three shapes where 'the last operand is the destination' is not true, or
+        not the whole story. Each keeps the BROAD harvest on purpose — bailing to
+        over-identification is the conservative direction for a fence.
+
+          -t DEST src   inverts the operand order outright
+          a compound    has more than one command's operands in the token list
+          a redirect    names its own target, which is not the last operand
+        """
+        other = self._other_instance()
+        tgt = f"{other}/config/OTHER_STATUS.yaml"
+        for cmd in (f"cp -t {other}/config notes.md",
+                    f"cp a.md b.md && cp notes.md {tgt}",
+                    f"cp notes.md copy.md > {tgt}"):
+            with self.subTest(cmd=cmd):
+                kind, _ = self.run_verdict(bash_payload(cmd), cwd=self.root)
+                self.assertEqual("block", kind, cmd)
 
     def test_a_null_redirect_beside_a_real_one_still_blocks(self):
         """/dev/null is dropped as a target, not as evidence — a real redirect
@@ -1352,7 +1760,7 @@ class TestDispatcherEndToEnd(GuardCase):
         self._put(self.status,
                   'meta:\n  file: STATUS.yaml\n\n'
                   'active_focus: "v1.1.2 published and verified\n'
-                  '  and the slot is held."\n\n# EOF STATUS.yaml\n')
+                  '  and the slot is held."\n\n# \u2550\u2550\u2550 EOF STATUS.yaml \u2550\u2550\u2550\n')
         r = self._run(edit_payload(self.status,
                                    'active_focus: "v1.1.2 published and verified',
                                    'active_focus: "v1.1.3 in flight"'), "warn")
@@ -1389,7 +1797,7 @@ class TestDispatcherEndToEnd(GuardCase):
 
     def test_warn_says_nothing_when_no_guard_fires(self):
         """A mode that speaks on every call is a mode nobody reads."""
-        self._put(self.status, 'meta:\n  file: STATUS.yaml\n# EOF STATUS.yaml\n')
+        self._put(self.status, 'meta:\n  file: STATUS.yaml\n# \u2550\u2550\u2550 EOF STATUS.yaml \u2550\u2550\u2550\n')
         r = self._run(edit_payload(self.status, "meta:", "meta:"), "warn")
         self.assertEqual(0, r.returncode)
         self.assertEqual("", r.stdout.strip())
@@ -1617,6 +2025,37 @@ class TestManifestSizesExcludeBootstrap(unittest.TestCase):
         self.assertGreater(boot, 0)
         self.assertEqual(persistent, total - boot)
         self.assertNotIn("steps", "")  # sanity: the block really was present
+
+    # ── SYN-108 item 4 ──────────────────────────────────────────────────────
+    def test_a_commented_bootstrap_key_is_still_found(self):
+        """`^bootstrap:\\s*$` requires the line to END at the key. A trailing comment
+        — which YAML allows anywhere and this project writes constantly — made the
+        block invisible, so its bytes counted toward the cap it is exempt from and
+        the manifest was refused for a reason that was not true.
+
+        THE SAME DEFECT SYN-099 FIXED IN mail.py, at the third of four sites. The
+        precedent for getting it right is older than the bug:
+        `session_start.py:97` anchors `^boot:[ \\t]*(?:#[^\\n]*)?$`."""
+        for line in ("bootstrap:  # genesis only; deleted at close",
+                     "bootstrap:\t# tab then comment",
+                     "bootstrap:   "):
+            with self.subTest(line=line):
+                text = ("boot:" + chr(10) + "  - a.yaml" + chr(10)
+                        + line + chr(10) + "  steps: [one, two]" + chr(10)
+                        + "close:" + chr(10) + "  journal: x" + chr(10))
+                total, persistent, boot = self._sizes(text)
+                self.assertGreater(boot, 0, line)
+                self.assertEqual(persistent, total - boot, line)
+
+    def test_the_bootstrap_body_does_not_start_past_a_blank_line(self):
+        """`\\s` spans newlines, so `^bootstrap:\\s*$` could match the key AND the
+        blank line under it, starting the block one line late and leaving that
+        line counted as persistent. `[ \\t]*` cannot do that."""
+        text = ("bootstrap:" + chr(10) + chr(10) + "  a: 1" + chr(10)
+                + "close:" + chr(10) + "  b: 2" + chr(10))
+        total, persistent, boot = self._sizes(text)
+        self.assertNotIn("a: 1", text[:len(text) - boot],
+                         "the bootstrap body leaked into the persistent span")
 
     def test_a_following_top_level_key_is_not_swallowed(self):
         """The block ends at the next top-level key, not at end of file. Swallowing

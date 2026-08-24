@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Import meter.py from the same directory as this test, regardless of cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -259,6 +260,59 @@ class TestBuildReport(ManifestEnvCase):
         row = next(r for r in data["boot"] if r["path"] == renamed)
         self.assertEqual(row["bytes"], self.sizes["4SYNC.yaml"])
         self.assertFalse(row["missing"])
+
+
+class TestUnreadableBulletinFallsBackToItsSize(unittest.TestCase):
+    """SYN-109 item 5 — the docstring promised a fallback the code did not take.
+
+    `bulletin_bytes` says it "Falls back to the full size when the file cannot be
+    read or carries no parseable headers". The no-headers branch does exactly that.
+    The `except OSError` branch returned **0**.
+
+    So an unreadable bulletin was metered as ZERO boot cost — an under-report, in
+    the one tool whose job is telling you what boot costs, in the direction that
+    makes the number look good. `os.path.getsize` needs no read permission on the
+    file itself, so the promised fallback was always available."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_an_unreadable_bulletin_meters_as_its_size(self):
+        """A REAL FILE whose open() fails — the only fixture that tests the branch.
+
+        Two others were tried and both prove nothing on this platform. `chmod` is a
+        no-op for an administrator on Windows, so the file stays readable and the
+        test passes vacuously. A DIRECTORY makes open() raise, but `getsize` on a
+        directory returns 0 there too — so the fallback and the bug produce the same
+        answer and the test fails against the FIXED code. Recorded because the
+        second one looked right and cost a red run to disprove."""
+        p = os.path.join(self.dir, "ABBA.md")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("### [1] To: X | Status: OPEN\n" + "x" * 500 + "\n")
+        size = os.path.getsize(p)
+        real_open = open
+
+        def deny(*a, **kw):
+            if a and str(a[0]) == p:
+                raise PermissionError("simulated: file is locked")
+            return real_open(*a, **kw)
+
+        with mock.patch("builtins.open", deny):
+            got = meter.measure_bulletin_scan(self.dir, "ABBA.md", 1081)
+        self.assertEqual(size, got,
+                         "an unreadable bulletin metered as 0 — boot cost "
+                         "under-reported, in the direction that flatters it")
+
+    def test_a_readable_bulletin_is_unaffected(self):
+        with open(os.path.join(self.dir, "ABBA.md"), "w", encoding="utf-8") as fh:
+            fh.write("### [1] To: X | Status: OPEN\nbody\n")
+        self.assertGreater(meter.measure_bulletin_scan(self.dir, "ABBA.md", 1081), 0)
+
+    def test_a_truly_absent_bulletin_is_still_zero(self):
+        """The control. Absent is a real zero — nothing to read is not the same as
+        something unreadable, and conflating them is what produced the item."""
+        self.assertEqual(0, meter.measure_bulletin_scan(self.dir, "NOPE.md", 1081))
 
 
 class TestBulletinBootFile(unittest.TestCase):

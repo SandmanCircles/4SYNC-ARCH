@@ -44,8 +44,26 @@ Usage:
     python scripts/arch_update.py --from ../4SYNC-ARCH-clone
     python scripts/arch_update.py --from ../clone --expect cc7f95b66647 --apply
 
-Exit status is 0 when the instance ends up matching the source, 1 otherwise — so it
-can gate a script. Nothing here makes a network call.
+EXIT STATUS, precisely (SYN-109 item 3 — this sentence used to be false):
+
+  --apply     0 when the instance ends up matching the source, 1 when it does not.
+  dry run     0 whenever the comparison RAN, even if the instance is out of date.
+  refusal     1 (incomplete source, --expect mismatch, source == dest).
+
+So a dry run answers "did this tool work?", NOT "am I current?" — read the printed
+build ids, or `--expect` the id you require, which refuses BEFORE writing anything.
+The sentence here previously said the exit code tracked whether the instance matched
+the source, full stop; a currency gate written from it passed for every adopter who
+was behind. Failure reported as success, in the tool whose whole job is answering
+"am I current?".
+
+The EXIT CODE WAS NOT CHANGED to match the old sentence, deliberately. A dry run that
+ran successfully exiting 0 is defensible, adopters may already gate on it, and
+silently flipping a published exit code is a worse change than a wrong sentence.
+Making dry-run mismatch exit non-zero would be a nicer tool and a breaking change;
+that is a release decision, not a bug fix.
+
+Nothing here makes a network call.
 """
 import argparse
 import os
@@ -300,12 +318,42 @@ def update(source, dest, apply=False, expect=None):
             report.unchanged.append(rel)
 
     if apply:
-        for rel, _kind in report.changed:
-            path = _target(dest, rel)          # containment check, every file
-            parent = os.path.dirname(path)
-            if parent and not os.path.isdir(parent):
-                os.makedirs(parent)
-            shutil.copyfile(os.path.join(source, rel.replace("/", os.sep)), path)
+        # TWO PHASE, AND THE ORDER IS THE POINT (SYN-109 item 4). This was a bare
+        # loop of `shutil.copyfile`, so a failure part-way — a locked file, routine
+        # on Windows; a full disk — left the instance with a MIXED machinery set and
+        # let the exception escape main() as a traceback. Half of an update is worse
+        # than none of it: the build id moves to a value that matches no release, so
+        # the one question `arch_build.py` exists to answer stops having an answer.
+        #
+        # The module docstring's safety claim is that this CANNOT WRITE OUTSIDE the
+        # inventory. True, and orthogonal — it says nothing about finishing what it
+        # starts inside it. This is the other half.
+        #
+        # Phase 1 writes siblings, so a failure leaves only removable debris and the
+        # instance untouched. Phase 2 is same-directory `os.replace`, which is atomic
+        # per file and the narrowest window available without a journal.
+        staged = []
+        try:
+            for rel, _kind in report.changed:
+                path = _target(dest, rel)      # containment check, every file
+                parent = os.path.dirname(path)
+                if parent and not os.path.isdir(parent):
+                    os.makedirs(parent)
+                tmp = "%s.arch-new.%d" % (path, os.getpid())
+                shutil.copyfile(os.path.join(source, rel.replace("/", os.sep)), tmp)
+                staged.append((tmp, path))
+            for tmp, path in staged:
+                os.replace(tmp, path)
+            staged = []
+        finally:
+            # Whatever is still staged did not land. Remove it rather than leave a
+            # tree littered with siblings `arch_build` does not hash and therefore
+            # cannot report — invisible debris beside a check that says "sound".
+            for tmp, _path in staged:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         report.applied = True
 
     # STEP 4 — recompute rather than assume. Copying without verifying is the

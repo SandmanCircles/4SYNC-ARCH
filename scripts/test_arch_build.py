@@ -348,6 +348,22 @@ class TestMachineryInventoryIsComplete(unittest.TestCase):
 
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    # SYN-109 item 2 — NO NEW TEST HERE, and that is the finding rather than a gap.
+    #
+    # A comment-scanning lint was written, and it worked: it caught a SECOND stale
+    # count nobody had reported ("INVENTORY 20 -> 22" against a list of 24, beside
+    # the "18 -> 20" the row named). Then it flagged four more lines that are
+    # correct — the `:60` note QUOTING the historical wrong text, "added at v1.0.8",
+    # and two release-anchored transition records — and separating a stale CLAIM
+    # from an accurate HISTORY needs a judgement no regex over prose can make.
+    #
+    # It was deleted rather than tuned. `test_the_inventory_is_pinned` below already
+    # makes the one number a deliberate act to change, which is exactly what the
+    # `:60` note says the guard is; a fuzzy second checker for the same class is the
+    # duplicate-that-drifts this file has been bitten by twice, and the KERNEL's own
+    # rule is that a check people learn to ignore costs more than it is worth.
+    # Both stale counts are removed at source.
+
     def test_machinery_lists_every_paired_suite(self):
         missing = []
         for rel in arch_build.MACHINERY:

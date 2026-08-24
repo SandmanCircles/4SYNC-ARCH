@@ -44,9 +44,9 @@ same rule names.
      oldest (bottom) block verbatim to the top of JOURNAL_HISTORY.md. Keep the journal
      here as blocks — never re-chain it onto the one-line `**Last updated:**` pointer. -->
 
-PRIOR — YYYY-MM-DD [session label] — [what shipped / changed / was decided / was learned].
+2026-01-02 [session label] — [what shipped / changed / was decided / was learned].
 
-PRIOR — YYYY-MM-DD [earlier session] — [...].
+2026-01-01 [earlier session] — [...].
 
 ---
 

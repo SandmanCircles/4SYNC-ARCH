@@ -159,9 +159,14 @@ MACHINERY = [
     # by test_arch_update.py before either line existed here, so the omission failed
     # a test rather than shipping.
     #
-    # THIS MOVES THE INVENTORY 18 -> 20 AND RECOMPUTES EVERY PUBLISHED ID, for the
+    # THIS GREW THE INVENTORY AND RECOMPUTED EVERY PUBLISHED ID, for the
     # FOURTH time (arch/VERSION at v1.0.5, arch_build.py at v1.0.8, test_wire_hooks
-    # at v1.0.9). That is now unambiguously a property of the design and not an
+    # at v1.0.9). NO COUNTS IN THAT SENTENCE, for the reason given at the head of
+    # this list: it read "18 -> 20" against a list of 24 (SYN-109 item 2), which is
+    # the same defect as the "All 15 shipped machinery files" it already records —
+    # third occurrence, same file. The number is computed and printed by the tool;
+    # a second copy in prose is only ever a copy that can drift.
+    # That is now unambiguously a property of the design and not an
     # incident: a build id is anchored to a tag for file CONTENT but to the running
     # code for the INVENTORY, so ids are only ever comparable within a generation.
     # It must be stated in the release note BEFORE the cut. Adopters are unaffected —
@@ -170,8 +175,9 @@ MACHINERY = [
     "scripts/test_arch_update.py",
     # ADDED under MP#84 with its suite, same commit, same reason as the pair
     # above: MP#69 and MP#77 were both a script listed without one.
-    # INVENTORY 20 -> 22, the FIFTH recompute of every published id. State it in
-    # the release note BEFORE the cut, as v1.1.0 did.
+    # ANOTHER INVENTORY GROWTH, the FIFTH recompute of every published id. State
+    # it in the release note BEFORE the cut, as v1.1.0 did. No count here either
+    # (SYN-109 item 2) — it read "20 -> 22" against a list of 24.
     "scripts/mail.py",
     "scripts/test_mail.py",
 ]

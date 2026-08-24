@@ -329,7 +329,16 @@ def measure_bulletin_scan(root, relpath, allowance=BULLETIN_BODY_ALLOWANCE):
         with open(p, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
-        return 0
+        # THE FALLBACK THE DOCSTRING ALREADY PROMISES (SYN-109 item 5). This
+        # returned 0, so an unreadable bulletin metered as ZERO boot cost — an
+        # under-report, in the tool whose only job is saying what boot costs, in the
+        # direction that makes the number look good. `getsize` needs no read
+        # permission on the file, so the promised fallback was always available.
+        # 0 only if even that fails, which is genuinely "there is nothing here".
+        try:
+            return os.path.getsize(p)
+        except OSError:
+            return 0
     heads = re.findall(r"(?m)^### \[\d+\][^\n]*$", text)
     if not heads:
         return len(text.encode("utf-8"))

@@ -23,6 +23,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import actuals  # noqa: E402
@@ -350,6 +351,54 @@ class TestAppendSeries(unittest.TestCase):
         path = os.path.join(self.dir, actuals.SERIES_REL)
         first = json.loads(open(path, encoding="utf-8").read().splitlines()[0])
         self.assertEqual(first["keep"], 42)
+
+    # ── SYN-109 item 1: "append-only" that rewrote the whole file ───────────
+    def test_the_series_file_is_only_ever_appended_to(self):
+        """AN IMPLEMENTATION ASSERTION, DELIBERATELY, because the item IS the
+        implementation: the docstring says "Append-only" and the body read the whole
+        file, wrote it plus the new rows to a tmp, and os.replace'd.
+
+        A behavioural test was tried first and is the wrong tool here. The lost-row
+        window is between the function's LAST read and its commit, and both a
+        pre-read and a mid-read injection get copied forward — so a race simulation
+        goes green against the bug unless it is timed to one specific line, which
+        makes it a test of that line rather than of the property. Two versions of it
+        passed against the unfixed code before this was written; recording that so
+        nobody re-derives it.
+
+        What actually matters is checkable directly: this function must never open
+        the series file in a mode that discards what is already there, and must not
+        stage a whole-file copy beside it. Concurrent O_APPEND writes of short lines
+        do not interleave; concurrent whole-file rewrites lose rows silently, and
+        this machine runs two live instances calling `actuals --log` at every close."""
+        path = os.path.join(self.dir, actuals.SERIES_REL)
+        actuals.append_series(self.dir, self.rows("first"))
+        real_open, opens = open, []
+
+        def recording_open(*a, **kw):
+            target = a[0] if a else kw.get("file")
+            mode = str(a[1]) if len(a) > 1 else str(kw.get("mode", "r"))
+            opens.append((str(target), mode))
+            return real_open(*a, **kw)
+
+        with mock.patch("builtins.open", recording_open):
+            actuals.append_series(self.dir, self.rows("second"))
+
+        truncating = [(t, m) for t, m in opens
+                      if os.path.abspath(t) == os.path.abspath(path)
+                      and ("w" in m or "x" in m)]
+        self.assertEqual([], truncating,
+                         "the series file was opened in a truncating mode — that is "
+                         "a whole-file rewrite, not an append")
+        staged = [(t, m) for t, m in opens
+                  if t.startswith(path) and t != path and ("w" in m or "a" in m)]
+        self.assertEqual([], staged,
+                         "a sibling temp file was written beside the series — the "
+                         "whole-file rewrite by another name")
+        # and the behaviour the mechanism exists to serve, still true
+        text = open(path, encoding="utf-8").read()
+        self.assertIn('"first"', text)
+        self.assertIn('"second"', text)
 
     def test_no_tmp_file_left_behind(self):
         actuals.append_series(self.dir, self.rows("a"))

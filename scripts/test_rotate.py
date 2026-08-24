@@ -561,6 +561,79 @@ class TestWhatDelimitsAJournalBlock(unittest.TestCase):
         self.assertTrue(after.lstrip(N).startswith("---"))
         self.assertNotIn("---", blocks[-1])
 
+    # ── SYN-107 item 1: SYN-100's fix, on the shape ARCH writes most ────────
+    #
+    # The date header IS the right delimiter and the looser rule was correctly
+    # rejected (see the comment above JOURNAL_BLOCK_HEAD). What the pattern cannot
+    # carry is FENCE STATE, and an ARCH journal quotes tool output constantly, so a
+    # column-0 timestamp inside a fenced block is the modal entry, not an edge case.
+    # The fixtures SYN-100 shipped cover multi-paragraph entries, rules and bullet
+    # lists; a fence with timestamps in it is the one shape it never tried.
+
+    FENCED = (
+        "# L" + N + N + "## Session journal (recent)" + N + N
+        + "2026-08-23 [agent] - one entry that quotes a log." + N + N
+        + "```" + N
+        + "2026-08-22T10:00:00 started" + N
+        + "2026-08-21T09:00:00 finished" + N
+        + "```" + N + N
+        + "Tail of the SAME entry, below the fence." + N + N
+        + "2026-08-19 [agent] - an older entry." + N + N
+        + "---" + N + N + "## Summary table" + N + N + "| ID | Status |" + N)
+
+    def test_dates_inside_a_code_fence_do_not_open_a_block(self):
+        before, blocks, after = rotate.split_journal(self.FENCED)
+        self.assertEqual(len(blocks), 2,
+                         "a fenced log quoting two dates parsed as 4 entries")
+        self.assertIn("Tail of the SAME entry", blocks[0])
+        self.assertTrue(blocks[1].startswith("2026-08-19"))
+
+    def test_rotating_a_fenced_entry_leaves_the_ledger_intact(self):
+        """ASSERTED ON THE RESULTING FILES, not on the block count, and that is the
+        point of this test rather than a preference. Counting blocks is what
+        `verify_moves` already does, and it printed `✓` over the wreckage: the
+        ledger was left holding an UNCLOSED FENCE — so everything below it, summary
+        table included, renders as code — while the closing fence and the entry's
+        tail landed in history. A checker that counts what moved cannot see an
+        entry that was cut in half."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        led = os.path.join(d, "MERGE_PLAN.md")
+        hist = os.path.join(d, "JOURNAL_HISTORY.md")
+        with open(led, "w", encoding="utf-8") as fh:
+            fh.write(self.FENCED)
+        rotate.rotate_journal(led, hist, keep=1, apply_=True)
+        with open(led, encoding="utf-8") as fh:
+            out = fh.read()
+        self.assertEqual(out.count("```") % 2, 0,
+                         "the ledger was left with an unclosed code fence")
+        self.assertIn("Tail of the SAME entry", out,
+                      "the entry's tail was sheared off into history")
+        self.assertIn("| ID | Status |", out)
+        self.assertNotIn("2026-08-19", out, "the older entry should have moved")
+
+    def test_a_tilde_fence_counts_too(self):
+        """CommonMark allows `~~~`, and a fence may be indented up to three spaces
+        and closed by a LONGER run than opened it. All three are ordinary markdown."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-23 [agent] - entry." + N + N
+                + "  ~~~" + N + "2026-08-22 not a header" + N + "  ~~~~" + N + N
+                + "2026-08-19 [agent] - older." + N + N + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("not a header", blocks[0])
+
+    def test_an_unclosed_fence_does_not_swallow_the_rest_of_the_journal(self):
+        """The conservative direction. A journal with a stray opener must not make
+        every later entry invisible to rotation AND to the byte cap — that is
+        defect 2 of SYN-100 arriving through a different character."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-23 [agent] - entry with a stray opener." + N + N
+                + "```" + N + N
+                + "2026-08-19 [agent] - older." + N + N + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2, "an unclosed fence hid the older entry")
+
     def test_the_split_is_lossless(self):
         """rotate_journal rebuilds the file as before + blocks + after. If that
         does not reconstruct the input, a rotate DELETES whatever fell out.
@@ -2700,6 +2773,116 @@ class TestLineEndingsSurviveAWrite(unittest.TestCase):
         with open(p, "rb") as fh:
             self.assertNotIn(b"\r\r\n", fh.read())
 
+    # ── SYN-107 item 3: `like=` landed at one of three sites ────────────────
+    #
+    # v1.1.6 added `like=src` at the task-document move, because a MOVE writes a
+    # file that does not exist yet, so the ending-preservation branch never fires
+    # and the destination is born LF. The same situation at the two other places
+    # this script creates a file — a new JOURNAL_HISTORY.md and a new bulletin
+    # archive — did not get it. Content moved *verbatim* out of a CRLF file arrived
+    # LF, in a file whose own header promises verbatim moves.
+
+    def _crlf_ledger(self):
+        led = os.path.join(self.root, "MERGE_PLAN.md")
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-23 [a] - newest." + N + N
+                + "2026-08-20 [a] - older." + N + N + "## Summary table" + N)
+        with open(led, "wb") as fh:
+            fh.write(text.replace(N, "\r\n").encode("utf-8"))
+        return led
+
+    def test_a_new_history_file_inherits_the_ledgers_endings(self):
+        led = self._crlf_ledger()
+        hist = os.path.join(self.root, "JOURNAL_HISTORY.md")   # does not exist
+        rotate.rotate_journal(led, hist, keep=1, apply_=True)
+        with open(hist, "rb") as fh:
+            data = fh.read()
+        self.assertIn(b"\r\n", data,
+                      "content moved out of a CRLF ledger arrived LF in a new file")
+        self.assertNotIn(b"\r\r\n", data)
+
+    def test_a_new_bulletin_archive_inherits_the_boards_endings(self):
+        board = os.path.join(self.root, "ABBA.md")
+        arch = os.path.join(self.root, "ABBA_ARCHIVE.md")      # does not exist
+        text = ("# Board" + N + N
+                + "### [1] To: X | 2020-01-01 | Status: DONE" + N + "body" + N + N
+                + "## Roster" + N)
+        with open(board, "wb") as fh:
+            fh.write(text.replace(N, "\r\n").encode("utf-8"))
+        rotate.rotate_abba(board, arch, age_days=1, apply_=True)
+        with open(arch, "rb") as fh:
+            data = fh.read()
+        self.assertIn(b"\r\n", data)
+        self.assertNotIn(b"\r\r\n", data)
+
+
+class TestVerifyMovesRestore(unittest.TestCase):
+    """SYN-107 item 2 — the restore path lies about what it restored.
+
+    `for path, original in restore: if original: atomic_write(path, original)`. A
+    destination that did not exist before is passed as `orig or ""`, which is FALSY,
+    so the restore SKIPS it — and the file this run created is left on disk holding
+    the moved content while the source is put back holding it too. The operator is
+    told "originals restored. Nothing was rotated."
+
+    Same family as item 1 and as everything else this sweep found: the failure path
+    reporting a clean state it did not reach. It matters more here than most,
+    because this IS the safety net — it runs only when something has already gone
+    wrong, so its own bug is reached exactly when nothing else is left to catch it."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="rot-vfy-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_destination_created_by_this_run_is_removed_on_failure(self):
+        src = os.path.join(self.root, "src.md")
+        dst = os.path.join(self.root, "dst.md")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("original source\n")
+        with open(dst, "w", encoding="utf-8") as fh:
+            fh.write("MOVED CONTENT\n")
+        with self.assertRaises(SystemExit):
+            rotate.verify_moves(["a block that is in neither file"],
+                                src="original source\n", dst="MOVED CONTENT\n",
+                                restore=[(src, "original source\n"), (dst, None)])
+        self.assertFalse(os.path.exists(dst),
+                         "the file this run created was left behind after "
+                         "'Nothing was rotated'")
+        with open(src, encoding="utf-8") as fh:
+            self.assertEqual("original source\n", fh.read())
+
+    def test_a_destination_that_existed_is_restored_not_removed(self):
+        """The control. `None` means 'did not exist'; an empty string means
+        'existed and was empty', and conflating them is what caused the bug."""
+        dst = os.path.join(self.root, "dst.md")
+        with open(dst, "w", encoding="utf-8") as fh:
+            fh.write("clobbered\n")
+        with self.assertRaises(SystemExit):
+            rotate.verify_moves(["missing"], src="", dst="clobbered\n",
+                                restore=[(dst, "")])
+        self.assertTrue(os.path.exists(dst))
+        with open(dst, encoding="utf-8") as fh:
+            self.assertEqual("", fh.read())
+
+    def test_rotate_abba_leaves_no_archive_behind_when_verify_fails(self):
+        """End to end through the caller that actually passes the falsy value."""
+        board = os.path.join(self.root, "ABBA.md")
+        arch = os.path.join(self.root, "ABBA_ARCHIVE.md")
+        with open(board, "w", encoding="utf-8") as fh:
+            fh.write("# Board\n\n### [1] To: X | 2020-01-01 | Status: DONE\nbody\n\n"
+                     "## Roster\n")
+        real = rotate.atomic_write
+
+        def sabotage(p, s, like=None):      # make the archive land wrong
+            real(p, "corrupted\n" if p == arch else s, like=like)
+
+        with mock.patch.object(rotate, "atomic_write", sabotage):
+            with self.assertRaises(SystemExit):
+                rotate.rotate_abba(board, arch, age_days=1, apply_=True)
+        self.assertFalse(os.path.exists(arch))
+        with open(board, encoding="utf-8") as fh:
+            self.assertIn("Status: DONE", fh.read())
+
     def test_a_journal_rotation_on_a_crlf_ledger_leaves_it_crlf(self):
         """End to end, not just the primitive: the operation that surfaced it."""
         led = os.path.join(self.root, "MERGE_PLAN.md")
@@ -3440,6 +3623,157 @@ class MountGateCase(unittest.TestCase):
         self.assertFalse(refuse)
         self.assertIn("not determined", line)
         self.assertIn("proceeding unchecked", line)
+
+
+class TestLegacyJournalWarning(unittest.TestCase):
+    """SYN-108 item 6 — the shipped template tripped its own warning, twice.
+
+    The template's example entries read `PRIOR — YYYY-MM-DD [session label] — ...`,
+    and `YYYY-MM-DD` is not digits, so `split_journal` found no dated headers, fell
+    back to blank-line splitting, and SCOLDED the reader about a file the product
+    had just written for them. Twice, because `split_journal` has two callers.
+
+    This is MP#88's first-rotate cry-wolf, still live at v1.1.6. A warning nobody
+    can act on is one they learn to scroll past, and the next one that matters gets
+    the same treatment — so the cost is not the noise, it is the next real warning."""
+
+    def setUp(self):
+        rotate._LEGACY_JOURNAL_WARNED = False
+        self.addCleanup(setattr, rotate, "_LEGACY_JOURNAL_WARNED", False)
+
+    LEGACY = ("# L" + N + N + "## Session journal (recent)" + N + N
+              + "an undated entry" + N + N + "another one" + N + N
+              + "## Summary table" + N)
+
+    def _warnings(self, text, times=1):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            for _ in range(times):
+                rotate.split_journal(text)
+        return buf.getvalue().count("no dated block headers found")
+
+    def test_a_legacy_journal_is_warned_about_exactly_once_per_run(self):
+        self.assertEqual(self._warnings(self.LEGACY, times=3), 1)
+
+    def test_the_shipped_template_does_not_trip_it_at_all(self):
+        """The template must model the convention it teaches. Read from the file
+        this repo actually ships, not a paraphrase — the point is the SHIPPED bytes."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        template = os.path.join(here, "MERGE_PLAN.md")
+        if not os.path.exists(template):
+            self.skipTest("no shipped ledger template beside this test")
+        with open(template, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertEqual(self._warnings(text), 0,
+                         "the shipped template trips the product's own "
+                         "legacy-journal warning")
+        _, blocks, _ = rotate.split_journal(text)
+        self.assertGreaterEqual(len(blocks), 2,
+                                "the template's example entries must parse as "
+                                "dated blocks — that is what makes them examples")
+
+
+class TestBootstrapAnchorTolerance(unittest.TestCase):
+    """SYN-108 item 5 — `BOOTSTRAP_BLOCK_RE` and the guard must agree, including
+    about comments.
+
+    THE SAME BUG CAUGHT HALFWAY. `^bootstrap:[^\\S\\n]*\\r?$` is correct about line
+    endings — `[^\\S\\n]` is 'whitespace but not newline', which is more than
+    `pre_tool_use.py` had — and still fails on a trailing comment. Whoever wrote it
+    was thinking about CRLF and not about YAML. It is the fourth site in the family
+    SYN-099 opened, and `session_start.py:97` has had the right pattern all along.
+
+    LATENT, not live: the shipped `bootstrap:` line carries no comment today. That
+    is a property of one template, not a guarantee — and the failure is silent, so
+    the day it stops being true nothing announces it. The cost is that genesis
+    instructions start counting toward a cap they are exempt from, and the manifest
+    gets refused for a reason that is not true.
+
+    Fixtures use the SHIPPED bytes where possible, per the SYN-099 precedent: a
+    paraphrase passes while the real template drifts."""
+
+    def _persistent(self, text):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "M.yaml")
+        with open(p, "wb") as fh:
+            fh.write(text.encode("utf-8"))
+        return p, rotate.manifest_persistent_bytes(p), os.path.getsize(p)
+
+    def test_a_commented_bootstrap_key_is_still_excluded(self):
+        for line in ("bootstrap:  # genesis only; deleted at close",
+                     "bootstrap:\t# tab then comment"):
+            with self.subTest(line=line):
+                text = ("boot:" + N + "  - a.yaml" + N
+                        + line + N + "  steps: [one, two]" + N
+                        + "close:" + N + "  journal: x" + N)
+                _, persistent, total = self._persistent(text)
+                self.assertLess(persistent, total,
+                                "a commented bootstrap: counted toward the cap")
+
+    def test_the_uncommented_form_still_works(self):
+        """The control — the tolerance must not cost the case that already worked."""
+        text = ("boot:" + N + "  - a.yaml" + N
+                + "bootstrap:" + N + "  steps: [one, two]" + N
+                + "close:" + N + "  journal: x" + N)
+        _, persistent, total = self._persistent(text)
+        self.assertLess(persistent, total)
+
+    def test_crlf_still_works(self):
+        """`\\r?$` was the half this pattern already had right. Keep it."""
+        text = ("boot:" + N + "bootstrap:  # note" + N + "  a: 1" + N
+                + "close:" + N + "  b: 2" + N).replace(N, "\r\n")
+        _, persistent, total = self._persistent(text)
+        self.assertLess(persistent, total)
+
+    def test_the_shipped_manifest_agrees_with_the_guard(self):
+        """Both parsers, the bytes this repo actually ships, same answer — measured
+        on an LF copy so the comparison is about PARSING and nothing else.
+
+        WHY LF AND NOT THE FILE AS CHECKED OUT. The two functions deliberately
+        measure different things: `manifest_persistent_bytes` reads RAW BYTES (its
+        docstring says why — a text-mode read collapses CRLF and lands under the
+        real file size), while the guard is handed already-decoded text by the
+        harness. On the CRLF checkout this was written on they differ by exactly the
+        line count: 13,172 against 12,982, 190 CRLF pairs inside the persistent
+        span. Both are internally correct and neither is wrong here.
+
+        THAT DIVERGENCE IS A SEPARATE, UNFIXED FINDING, recorded here because this
+        is where it is visible: on a CRLF working tree `rotate.py` REPORTS a manifest
+        size that g5 is not the one ENFORCING, and near the cap they would give an
+        adopter contradictory answers. Latent today — the shipped manifest has ~3.2 KB
+        of headroom — and deciding which basis is canonical is a judgement call, not
+        a fix to make in passing. Do not "resolve" it by loosening this test."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        manifest = os.path.join(here, "4SYNC.yaml")
+        if not os.path.exists(manifest):
+            self.skipTest("no shipped manifest beside this test")
+        with open(manifest, encoding="utf-8") as fh:
+            text = fh.read()
+        sys.path.insert(0, os.path.join(here, "hooks"))
+        try:
+            import pre_tool_use as guard
+        except ImportError:                       # pragma: no cover
+            self.skipTest("guard module not importable from here")
+        lf_copy = os.path.join(tempfile.mkdtemp(), "4SYNC.yaml")
+        self.addCleanup(shutil.rmtree, os.path.dirname(lf_copy), True)
+        with open(lf_copy, "wb") as fh:
+            fh.write(text.encode("utf-8"))        # text-mode read already gave LF
+        _, guard_persistent, guard_boot = guard._manifest_sizes(text)
+        if guard_boot == 0:
+            # A POST-GENESIS instance has no `bootstrap:` block — genesis deletes it
+            # at close, exactly as the manifest declares. So this comparison is
+            # meaningful in the PRODUCT tree (which ships the block for adopters to
+            # run genesis against) and vacuous in any live instance, including the
+            # silo this is developed in. Skipping is the honest answer; asserting
+            # here would fail a correct instance for having done the right thing.
+            #
+            # Same shape as the KERNEL's rule about shipped machinery: ask whether
+            # the thing being inspected exists before making its absence a failure.
+            self.skipTest("no bootstrap: block — a post-genesis instance, not a defect")
+        self.assertEqual(rotate.manifest_persistent_bytes(lf_copy), guard_persistent,
+                         "the checker and the guard parse the bootstrap block "
+                         "differently")
 
 
 if __name__ == "__main__":

@@ -219,20 +219,71 @@ _BASH_REDIRECT_TARGET = re.compile(r"(?<![-=<>|])>>?\s*(['\"][^'\"]+['\"]|\S+)")
 # common redirect in a command that is otherwise purely reading.
 _NULL_SINKS = {"/dev/null", "nul", "nul:", "$null", "/dev/stdout", "/dev/stderr"}
 
-_HEREDOC_START = re.compile(r"""<<-?\s*['"]?\w+['"]?""")
+# One heredoc redirection: `<<EOF`, `<< EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`.
+# Groups: 1 = the `-` (tab-stripped form), 2/3/4 = the delimiter word.
+#
+# THE LOOKAROUND IS LOAD-BEARING, not tidiness. `<<<` is a here-STRING — no body,
+# no terminator — and the old pattern matched it at the SECOND `<`, read `hi` in
+# `<<<hi` as a delimiter, and swallowed the rest of the command hunting a
+# terminator that does not exist. `(?<!<)<<(?!<)` is the whole difference.
+_HEREDOC_OPEN = re.compile(
+    r"""(?<!<)<<(-)?[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|([A-Za-z_]\w*))""")
 
 
 def _strip_heredoc_body(cmd):
-    """Keep the command line, drop the heredoc body it feeds.
+    """Drop heredoc BODIES, keep every command line around them.
 
     The body is DATA — a commit message, a file's contents, a SQL script. Paths
     named inside it are being talked about, not written to. The redirection
-    target, if any, is on the command line before the `<<`."""
-    m = _HEREDOC_START.search(cmd)
-    if not m:
+    target, if any, is on the command line before the `<<`.
+
+    THE BYPASS THIS CLOSES (SYN-106 item 1). This used to return `cmd[:nl]` — the
+    command truncated at the end of the FIRST heredoc's opening line. Everything
+    after it went with the body: the terminator, and **every subsequent command in
+    the compound**. So a heredoc anywhere ahead of a write made that write
+    invisible to every path-based guard at once, silently. Reproduced end to end:
+
+        echo pwned > ../Coworker/config/4SHIELD_KERNEL.yaml     -> refused
+        cat <<'X' > n.txt / harmless / X                        (same write below)
+        echo pwned > ../Coworker/config/4SHIELD_KERNEL.yaml     -> allowed, silent
+
+    It was filed as a parsing nit for four months. It is the bash-side fence, and
+    this project writes through heredocs constantly — the exposure was maximal
+    exactly where the guard mattered most.
+
+    So: walk lines, and after a line that OPENS heredocs, consume one body per
+    delimiter it opened (bash reads them in order) up to and including the
+    terminator line. `<<-` legally indents its terminator with tabs, so that form
+    strips them before comparing — miss it and the scan runs past a terminator it
+    already saw, which is the original bug arriving through the tab.
+
+    UNTERMINATED IS THE ONE CASE THE OLD BEHAVIOUR HAD RIGHT, and it is kept: with
+    no terminator every remaining line IS body, bash would not run any of it, so
+    dropping the tail is correct rather than merely conservative.
+
+    KNOWN AND UNCHANGED: a literal `<<` inside a quoted string on a command line
+    (`echo "a << b"`) still reads as an opener. Pre-existing, not a regression —
+    the old pattern had it too and failed harder, truncating immediately instead
+    of scanning for a terminator that never comes. Bash allows `<< EOF` with a
+    space, so the space cannot be used to tell them apart."""
+    if "<<" not in cmd:
         return cmd
-    nl = cmd.find("\n", m.end())
-    return cmd[:nl] if nl != -1 else cmd[:m.end()]
+    lines = cmd.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in _HEREDOC_OPEN.finditer(line):
+            dash = m.group(1) == "-"
+            delim = m.group(2) or m.group(3) or m.group(4)
+            while i < len(lines):
+                probe = lines[i]
+                i += 1
+                if (probe.lstrip("\t") if dash else probe).rstrip("\r \t") == delim:
+                    break
+            # ran off the end: unterminated, and the tail was body. Nothing to add.
+    return "\n".join(out)
 
 
 def _bash_write_paths(cmd):
@@ -273,8 +324,24 @@ def _bash_write_paths(cmd):
     # fails QUIET, which is worse than the loud false positive being removed.
     if _BASH_WRITE_CMD.search(cmd):
         toks = [(q or b) for q, b in _BASH_TOKEN.findall(cmd)]
+        narrow_to_last = _is_simple_source_dest(cmd)
     else:
         toks = _BASH_REDIRECT_TARGET.findall(cmd)
+        narrow_to_last = False
+
+    # `cp SRC DST` writes to DST and READS from SRC (SYN-106 item 3). Reads across
+    # the fence are explicitly allowed — the courier pattern is built on them — but
+    # the broad harvest claimed every operand, so copying a file OUT of another
+    # instance was refused as a write INTO it.
+    #
+    # BEFORE THE FILTER, NOT AFTER, and the difference is a live bug rather than a
+    # style point: `cp other/config/X.yaml .` has `.` as its destination, the filter
+    # below drops `.` for not looking like a path, and a narrowing applied to what
+    # SURVIVES would then pick the SOURCE as the last remaining token — reporting
+    # the exact false positive it was written to remove.
+    if narrow_to_last:
+        operands = [t for t in toks if not t.strip().startswith("-")]
+        toks = operands[-1:] if operands else []
 
     out = []
     for tok in toks:
@@ -287,6 +354,38 @@ def _bash_write_paths(cmd):
         if "/" in tok or re.search(r"\.\w{1,6}$", tok):
             out.append(tok)
     return out
+
+
+# The POSIX copy/move family, where operands are `SRC... DST` and only the last
+# one is written. Deliberately NOT the PowerShell cmdlets: `Copy-Item -Destination
+# b -Path a` puts the destination anywhere it likes, and guessing wrong there
+# drops a real write — the failure that fails quiet.
+_RX_SRC_DEST_CMD = re.compile(r"^\s*(?:cp|mv|rsync|install|ln)\b", re.IGNORECASE)
+# `-t DEST src...` / `--target-directory=DEST` invert the order outright.
+_RX_TARGET_DIR_FLAG = re.compile(r"(?:^|\s)(?:-t\b|--target-directory\b)")
+# Anything that makes "the last operand" not the whole story.
+_RX_CMD_SEPARATOR = re.compile(r"\|\||&&|[;&|\n]")
+
+
+def _is_simple_source_dest(cmd):
+    """True only for a lone `cp/mv/rsync/install/ln SRC... DST` with no surprises.
+
+    THE NARROWING IS THE RISKY DIRECTION and this function is where that risk is
+    contained. MP#50's comment says the broad harvest is kept on purpose because
+    narrowing per-verb is a wide surface whose failure mode is a MISSED write, and
+    a false negative fails quiet. So this bails out — back to the broad harvest,
+    which over-identifies — on every shape where the rule is not plainly true:
+
+      * a compound (`cp a b && cp c d`): the token list holds two commands'
+        operands and the last one is not the only destination
+      * `-t` / `--target-directory`: the destination is not last
+      * a redirect anywhere: it names its own target, which is not an operand
+
+    Over-identifying is the safe error for a fence; under-identifying is not."""
+    return bool(_RX_SRC_DEST_CMD.match(cmd)
+                and not _RX_CMD_SEPARATOR.search(cmd)
+                and not _RX_TARGET_DIR_FLAG.search(cmd)
+                and not _BASH_REDIRECT_TARGET.search(cmd))
 
 
 def _targeted(tool, path, cmd, rx=None, basename=None, rx_bash=None):
@@ -423,13 +522,54 @@ def g2_abba_format_guard(tool, path, text, cmd):
     return None
 
 
+# A mutating git invocation, allowing git's GLOBAL OPTIONS between `git` and the
+# verb: `git -C dir commit`, `git -c k=v commit`, `git --no-pager -C . stash`.
+# Bounded by `[^;&|\n]*` so it cannot reach across a command separator and read
+# `git status; echo commit` as a commit.
+_RX_GIT_MUTATE = re.compile(r"\bgit\b[^;&|\n]*\b(?:add|commit|stash|rm)\b")
+
+# Quoted spans, removed before matching. `echo 'git commit' >> notes.txt` is
+# writing ABOUT a commit, not making one.
+_RX_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+# A calendar date, and ONLY a calendar date (SYN-106 item 4). This was
+# `20\d\d-[01]\d-[0-3]\d`, which accepts month 00-19 and day 00-39 — so
+# `2026-19-39` write-LOCKED a manifest as journal creep. Version strings, record
+# ids and numeric ranges land in that shape constantly; real dates do not. Day 31
+# in a 30-day month still matches, deliberately: rejecting it would need a
+# calendar, and someone writing `2026-06-31` in a manifest is writing a date.
+_RX_CALENDAR_DATE = re.compile(
+    r"\b(20\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))\b")
+
+
 def g3_sandbox_git_guard(tool, path, text, cmd):
     """In a sandboxed/mounted environment the filesystem view can be stale or clipped;
     a git add/commit there can capture a truncated file and look host-verified.
-    Enabled only when ARCH_SANDBOX=1. Commit host-side instead."""
+    Enabled only when ARCH_SANDBOX=1. Commit host-side instead.
+
+    BLIND IN BOTH DIRECTIONS UNTIL SYN-106 item 2, and the pair is the lesson —
+    the same guard, the same cause (reading a command as a flat string), opposite
+    symptoms:
+
+      * MISSED: the pattern was `git\\s+(add|commit|…)`, demanding the verb
+        IMMEDIATELY after `git`, so every global-option form walked through —
+        `git -C dir commit`, `git -c k=v commit`, `git --no-pager -C . stash`.
+        Not an exotic shape: after the 2026-08-20 incident, where a `cd` that did
+        not take effect sent `git reset --hard` into the wrong repository, the
+        durable remediation adopted was "every git command uses explicit `-C`
+        instead of `cd`". The habit taken up after the worst incident in the log
+        is exactly the form this guard could not see.
+      * FIRED ANYWAY: it matched inside quoted strings and heredoc bodies, so
+        `echo 'git commit' >> notes.txt` was refused — and a project that writes
+        journal entries about its own commits does that constantly. Same family as
+        MP#50: a command MENTIONED is not a command RUN.
+
+    So the input is normalised the way the path guards already normalise theirs
+    (bodies dropped, quoted spans blanked) before the pattern is applied."""
     if os.environ.get("ARCH_SANDBOX") != "1":
         return None
-    if tool == "Bash" and re.search(r"\bgit\s+(add|commit|stash|rm)\b", cmd or ""):
+    probe = _RX_QUOTED.sub(" ", _strip_heredoc_body(cmd or ""))
+    if tool == "Bash" and _RX_GIT_MUTATE.search(probe):
         return ("Sandbox git guard: this environment's mounted filesystem may serve "
                 "clipped/stale file views — a commit here can land a truncated file. "
                 "Commit host-side (native git), not through the sandbox.")
@@ -483,8 +623,18 @@ def g4_status_write_guard(tool, path, text, cmd, full=None):
     # (b) EOF sentinel — catches a clipped write. A healthy config file ends with
     #     an "# ═══ EOF ... ═══" line; if the last non-empty line lacks it, the
     #     content was likely truncated.
+    #     THE TEST IS THE CANONICAL PREFIX, not the substring "EOF" (SYN-108 item 3).
+    #     This accepted any last line CONTAINING those three letters, while
+    #     `session_start.check_sentinel` requires `# ═══ EOF`. SYN-101 item 5 said one
+    #     of them is wrong; this one was, and the direction settles it — the manifest
+    #     DECLARES `integrity.eof_sentinel: "# ═══ EOF <filename> ═══"`, so the strict
+    #     form is the contract, and the loose form failed toward SILENCE: a genuinely
+    #     clipped file whose tail happened to carry "EOF" passed a check whose only
+    #     job is catching clipped writes. Kept BYTE-IDENTICAL in spirit to the other
+    #     hook's test and pinned by a test that runs both — machinery modules never
+    #     import one another, so agreement cannot be enforced by sharing the code.
     nonempty = [ln for ln in content.splitlines() if ln.strip()]
-    if not nonempty or "EOF" not in nonempty[-1]:
+    if not nonempty or not nonempty[-1].lstrip().startswith("# ═══ EOF"):
         return ("STATUS write guard: the EOF sentinel is missing from the end of the "
                 "content being written — the write looks clipped. Re-read host-side "
                 "and retry.")
@@ -515,7 +665,13 @@ def _manifest_sizes(content):
     cap mean the thing it was always meant to mean.
     """
     total = len(content.encode("utf-8"))
-    m = re.search(r"(?ms)^bootstrap:\s*$.*?(?=^\S|\Z)", content)
+    # `[ \t]*(?:#[^\n]*)?$` — the precedent at session_start.py:97, and the fourth
+    # site in the family SYN-099 opened. `\s*$` demanded the line END at the key, so
+    # any trailing comment made the block invisible and its bytes counted toward the
+    # cap it is exempt from; `\s` also spans newlines, so it could start the body one
+    # line late. Latent while the shipped line carries no comment — a property of one
+    # template, not a guarantee, and the failure is silent (SYN-108 item 4).
+    m = re.search(r"(?ms)^bootstrap:[ \t]*(?:#[^\n]*)?$.*?(?=^\S|\Z)", content)
     boot = len(m.group(0).encode("utf-8")) if m else 0
     return total, total - boot, boot
 
@@ -633,7 +789,7 @@ def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
                     "deliberately in the same edit.")
 
     if decl_only:
-        m = re.search(r'\b(20\d\d-[01]\d-[0-3]\d)\b', content)
+        m = _RX_CALENDAR_DATE.search(content)
         if m:
             date = m.group(1)
             line = content[:m.start()].count("\n") + 1
@@ -668,10 +824,23 @@ def g5_boring_guard(tool, path, text, cmd, full=None, ctx=None):
             else:
                 origin = (f" It is at line {line} of the resulting file; it may pre-date your "
                           "edit, so check before assuming it is yours.")
-            return (f"boring-guard: the manifest declares declaration_only, but the resulting "
+            # ASKS, where the size branch above blocks (SYN-106 item 4). Whether a
+            # date is narrative creep or a legitimate reference is a JUDGEMENT, and
+            # a human is the only thing that supplies it — SYN-044's ruling, which
+            # had reached g1 and not this branch. Over max_bytes stays a block
+            # because it is a mechanical fact about the file, not a reading of it.
+            #
+            # NOT the g6 question. g6 blocks deliberately because the fence is
+            # permanent doctrine and a prompt would train the reflex to approve.
+            # This was never doctrine — it is a heuristic that had been given a
+            # wall to stand behind, and one dated comment write-LOCKED the manifest
+            # for everyone afterwards with no way through but editing someone
+            # else's line out.
+            return ("ask",
+                    f"boring-guard: the manifest declares declaration_only, but the resulting "
                     f"file contains the calendar date {date} — journal/narrative creep."
                     f"{origin} State belongs in STATUS; history belongs in the task-ledger "
-                    "journal.")
+                    "journal. Approve only if this date is a reference rather than a record.")
     return None
 
 
@@ -746,7 +915,11 @@ def g6_root_fence(tool, path, text, cmd, full=None, ctx=None):
         # Bash is silent" test, which is exactly the false-positive class this
         # guard must not ship.
         target = raw if os.path.isabs(raw) else os.path.join(session_cwd, raw)
-        target_root = _instance_root(os.path.dirname(os.path.abspath(target)), strict=True)
+        # PRECISE on this side — see the asymmetry note in _instance_root. A
+        # neighbouring project that merely ships `config/` is not an instance, and
+        # blocking an ordinary write into it is a wall, not a prompt.
+        target_root = _instance_root(os.path.dirname(os.path.abspath(target)),
+                                     strict=True, require_kernel=True)
         if target_root is None:
             continue                     # not an ARCH instance — silent
         if session_root is None:
@@ -949,13 +1122,25 @@ DEBT_HEADER = ("# 4SYNC session-debt — unwrapped sessions; an explicit close c
 DEBT_MAX_AGE_DAYS = 14
 
 # The marker that separates an ARCH instance from any project that merely ships a
-# `config/` dir. Matched as a case-insensitive SUFFIX so it survives genesis, which
-# prefixes the stack per project (`config/4SHIELD_KERNEL.yaml`).
-KERNEL_SUFFIX = "kernel.yaml"
+# `config/` dir. Matched as case-insensitive SUFFIXES so they survive genesis, which
+# PREFIXES the stack per project and keeps the stem (`config/4SHIELD_KERNEL.yaml`,
+# `config/4CITE_CANON_INDEX.yaml`). Any ONE of them is enough, so an instance
+# survives a rename of either file.
+#
+# `status.yaml` WAS CONSIDERED AND REJECTED as a third stem (2026-08-23). This test
+# is shared with the debt recorder, whose false positive is a `.session_debt.tsv`
+# written into a stranger's repository — the MP#63 bug — and a bare `*status.yaml`
+# is an ordinary filename in CI, monitoring and k8s repos. Both stems kept here are
+# distinctive to ARCH; that is the property being paid for, not the count.
+STACK_SUFFIXES = ("kernel.yaml", "canon_index.yaml")
+
+# Retained: the previous single-stem name, still referenced by adopters' own guard
+# extensions. `_has_stack` is the current spelling.
+KERNEL_SUFFIX = STACK_SUFFIXES[0]
 
 
-def _has_kernel(root):
-    """True when root's config dir holds a loader-stack KERNEL file.
+def _has_stack(root):
+    """True when root's config dir holds a loader-stack file.
 
     WHY THE KERNEL AND NOT THE MANIFEST (MP#63). The obvious marker is the instance
     manifest, but its filename is per-project after genesis and this hook learns it
@@ -968,7 +1153,13 @@ def _has_kernel(root):
         names = os.listdir(os.path.join(root, CONFIG_DIR))
     except OSError:  # unreadable dir — "not an instance", never raise at a caller
         return False
-    return any(n.lower().endswith(KERNEL_SUFFIX) for n in names)
+    return any(n.lower().endswith(s) for n in names for s in STACK_SUFFIXES)
+
+
+# The pre-SYN-106 spelling, kept as an alias: adopters wire their own guards
+# alongside these and the two-hook extension pattern is documented, so the name is
+# reachable from code this repo does not own.
+_has_kernel = _has_stack
 
 
 def _instance_root(cwd, strict=False, require_kernel=False):
@@ -997,11 +1188,31 @@ def _instance_root(cwd, strict=False, require_kernel=False):
     2026-08-10 from an adopter's field report.
 
     RECORDING AND FENCING WANT DIFFERENT ANSWERS TO "is this an instance?", and
-    treating them as one question is what produced the defect. g6 keeps the bare
-    `config/` test deliberately: for FENCING, over-identifying is conservative —
-    it declines a write that might have crossed an instance boundary. For
-    RECORDING it is not conservative at all, because the cost lands as a file in
-    somebody else's repository. So only the recorder passes require_kernel."""
+    treating them as one question is what produced the defect. For RECORDING,
+    over-identifying is not conservative at all, because the cost lands as a file
+    in somebody else's repository.
+
+    AND SO DO THE TWO SIDES OF THE FENCE (SYN-106 item 5). MP#63 read fencing as
+    one question and answered it once, keeping the bare `config/` test for g6 on
+    the grounds that "the cost of a false positive is one declined write the human
+    can approve." g6 does not ask — it BLOCKS, deliberately (MP#44, resolved in
+    g6's own docstring). So the false positive is a wall, not a prompt, and it was
+    measured: writing a log file into a neighbouring Laravel project's `storage/`
+    was refused, because that project root ships a `config/` two levels up.
+
+    The two sides need opposite settings, and each errs toward REFUSING:
+
+      TARGET side  -> require_kernel=True. Over-identifying costs a blocked
+                      legitimate write, so be PRECISE.
+      SESSION side -> bare `config/`. A session that resolves to NO instance falls
+                      into g6's QUIET lobby branch and is allowed, so
+                      under-identifying costs the entire fence. Be LIBERAL.
+
+    Symmetry was tried and measured: with require_kernel on both sides, a session
+    booted in any non-ARCH project can write into a real instance's ledger freely
+    — the 2026-07-28 incident through a side door. Do not "simplify" these two
+    calls into agreement; `test_g6_asks_the_two_sides_of_the_fence_different_questions`
+    is the tripwire, and it carries the whole argument."""
     start = os.path.abspath(cwd or ".")
     cur = start
     while True:
@@ -1037,7 +1248,28 @@ def _record_debt(payload):
     every error — debt bookkeeping must never affect the tool call it rides on."""
     if os.environ.get("ARCH_DEBT", "1") == "0":
         return
-    if payload.get("tool_name", "") not in WRITE_TOOLS:
+    tool = payload.get("tool_name", "")
+    ti = payload.get("tool_input") or {}
+    # BASH COUNTS, and it did not until SYN-108 item 1. The gate was `tool in
+    # WRITE_TOOLS`, which asks about a TOOL — the same mistake MP#43 fixed for the
+    # guards, still standing here. A session writing through heredocs and redirects
+    # therefore never got a row, so its close reported "no own row" and the next
+    # boot reported no undeposited state. Named at FOUR consecutive closes before
+    # anyone opened it, because "nothing to clear" reads like success.
+    #
+    # WRITE INTENT, NOT THE WORD BASH: `_bash_write_paths` is the same judgement the
+    # path guards make, and it returns [] for a read. A tracker that moved on every
+    # `ls` would say only that a session exists, which the row already says.
+    #
+    # The MP#63 fence below is untouched and matters MORE now: this function CREATES
+    # a file, and widening what reaches it widens what can litter a stranger's repo.
+    if tool in WRITE_TOOLS:
+        raw_targets = [ti.get("file_path") or ""]
+    elif tool == BASH_TOOL:
+        raw_targets = _bash_write_paths(ti.get("command") or "")
+        if not raw_targets:
+            return          # a read, or a command with no resolvable write target
+    else:
         return
     sid = (payload.get("session_id")
            or os.environ.get("CLAUDE_CODE_SESSION_ID") or "unknown")
@@ -1060,12 +1292,17 @@ def _record_debt(payload):
     # write, resolved above — never a basename match: a lookalike elsewhere (a
     # fixture, a NESTED instance's debt file being maintained) is real work,
     # and skipping it would silently drop this session's liveness refresh.
-    raw_target = ((payload.get("tool_input") or {}).get("file_path") or "")
-    if raw_target:
+    # EVERY target must be exempt for the call to be exempt. A Bash command can name
+    # several (`cp a b`, two redirects), and one of them being bookkeeping does not
+    # make the others bookkeeping — skipping on the first match would silently drop
+    # a real write's liveness refresh.
+    def _exempt(raw_target):
+        if not raw_target:
+            return False
         target = raw_target if os.path.isabs(raw_target) else os.path.join(cwd, raw_target)
         target = os.path.abspath(target)
         if os.path.normcase(target) == os.path.normcase(os.path.abspath(debtfile)):
-            return
+            return True
         # A NESTED instance's own debt file is bookkeeping too: the manifest's
         # at_close says clear EVERY debt file under the root, so a close that
         # edits <nested-instance-root>/.session_debt.tsv must not have that very
@@ -1078,7 +1315,13 @@ def _record_debt(payload):
             troot = _instance_root(tdir, strict=True, require_kernel=True)
             if troot is not None and os.path.normcase(os.path.abspath(troot)) == \
                     os.path.normcase(tdir):
-                return
+                return True
+        return False
+
+    named = [t for t in raw_targets if t]
+    if named and all(_exempt(t) for t in named):
+        return
+
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     rows = {}

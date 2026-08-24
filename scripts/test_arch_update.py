@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -139,6 +140,89 @@ class TestItVerifiesRatherThanTrusts(UpdateCase):
         os.remove(os.path.join(src, "scripts", "rotate.py"))
         with self.assertRaises(arch_update.IncompleteSource):
             self._run(src, dst, apply=True)
+
+
+class TestACopyFailureLeavesTheInstanceAlone(UpdateCase):
+    """SYN-109 item 4 — the copy loop had no rollback.
+
+    Copies ran in a bare `for` with `shutil.copyfile`. A mid-loop failure — a locked
+    file, routine on Windows; a full disk — left the instance with a MIXED machinery
+    set: some files at the new version, some at the old, `report.applied` never set,
+    and the exception escaping `main`'s `except` (which catches only IncompleteSource,
+    BuildMismatch and RefusedWrite) as a traceback.
+
+    THIS IS THE ONE TOOL AN ADOPTER POINTS AT THEIR OWN TREE, and it had the weakest
+    failure handling of the three writers that ship: `rotate.py` has atomic_write +
+    verify_moves + restore, `split_ledger.py` refuses rather than half-migrate, and
+    this one half-wrote and crashed. The module docstring's claim is that it is safe
+    because it CANNOT WRITE OUTSIDE the inventory — true, and orthogonal to whether it
+    finishes what it starts inside it."""
+
+    def _fail_on(self, target_rel):
+        """Wrap copyfile so it raises when it reaches one specific inventory file."""
+        real = arch_update.shutil.copyfile
+
+        def flaky(src, dst):
+            # SUBSTRING, not endswith: the writer may legitimately copy to a staged
+            # sibling (`…/rotate.py.arch-new.123`) rather than straight to the final
+            # name. A test that pins the destination spelling is testing the
+            # implementation it was written against, and would go quietly green the
+            # moment that changed — which is the failure this whole sweep is about.
+            if target_rel in dst.replace(os.sep, "/"):
+                raise PermissionError("simulated lock on " + target_rel)
+            return real(src, dst)
+
+        return mock.patch.object(arch_update.shutil, "copyfile", flaky)
+
+    def test_a_mid_loop_failure_changes_nothing(self):
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[len(arch_build.MACHINERY) // 2]
+        before = {}
+        for rel in arch_build.MACHINERY:
+            with open(os.path.join(dst, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+                before[rel] = fh.read()
+        with self._fail_on(victim):
+            with self.assertRaises(PermissionError):
+                self._run(src, dst, apply=True)
+        after = {}
+        for rel in arch_build.MACHINERY:
+            with open(os.path.join(dst, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+                after[rel] = fh.read()
+        self.assertEqual(before, after,
+                         "a failed update left the instance with a MIXED machinery set")
+
+    def test_a_failed_update_leaves_no_temp_files(self):
+        """Two-phase copying is only an improvement if phase one cleans up after
+        itself. A tree littered with half-written siblings is a different mess, not
+        a smaller one — and `arch_build` hashes a fixed inventory, so the debris
+        would be invisible to the very check meant to prove the tree is sound."""
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[len(arch_build.MACHINERY) // 2]
+        with self._fail_on(victim):
+            with self.assertRaises(PermissionError):
+                self._run(src, dst, apply=True)
+        leftovers = []
+        for base, _dirs, files in os.walk(dst):
+            leftovers += [os.path.join(base, f) for f in files
+                          if ".arch-new" in f or f.endswith(".tmp")]
+        self.assertEqual([], leftovers)
+
+    def test_the_build_id_is_unchanged_after_a_failed_update(self):
+        """The assertion an adopter can actually make afterwards. 'Nothing changed'
+        is only useful if the tool they were told to trust agrees."""
+        src, dst = self._trees()
+        before = arch_build.build_id(*arch_build.file_digests(dst))
+        with self._fail_on(arch_build.MACHINERY[2]):
+            with self.assertRaises(PermissionError):
+                self._run(src, dst, apply=True)
+        self.assertEqual(before, arch_build.build_id(*arch_build.file_digests(dst)))
+
+    def test_a_clean_apply_still_lands_every_file(self):
+        """The control. Two-phase must not cost the happy path."""
+        src, dst = self._trees()
+        report = self._run(src, dst, apply=True)
+        self.assertTrue(report.applied)
+        self.assertEqual(report.result_build_id, report.source_build_id)
 
 
 class TestSourceAndDestMustDiffer(UpdateCase):

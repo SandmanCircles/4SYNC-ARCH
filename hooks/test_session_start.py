@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from importlib import reload
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -173,6 +174,63 @@ class InstanceCase(EnvCase):
         with open(os.path.join(self.root, "4SYNC.yaml"), encoding="utf-8") as fh:
             text = fh.read()
         return ss.build_receipt(self.root, "4SYNC.yaml", text, mode)[0]
+
+
+class TestCustomConfigDir(EnvCase):
+    """SYN-108 item 2 — `ARCH_CONFIG_DIR` was honoured by one hook and not the other.
+
+    `pre_tool_use.py` reads the env var; this file hardcoded `CONFIG_DIR = "config"`.
+    An instance with a renamed config dir therefore got GUARDS but a permanently
+    silent boot receipt: `_instance_root` walked to the filesystem root, found
+    nothing, and returned None — which this hook renders as no output at all,
+    indistinguishable from a hook that was never wired.
+
+    That is the exact failure this codebase lectures adopters about, in the file
+    whose whole job is to announce that the machinery is alive."""
+
+    def _instance(self, config_dirname):
+        root = tempfile.mkdtemp(prefix="ss_cfg_")
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, config_dirname))
+        for rel, text in (("4SYNC.yaml", MANIFEST),
+                          ("MERGE_PLAN.md", "x" * 800),
+                          (config_dirname + "/KERNEL.yaml",
+                           "meta:\n  file: KERNEL.yaml\n# ═══ EOF KERNEL.yaml ═══\n")):
+            p = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+            with open(p, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        return root
+
+    def test_a_renamed_config_dir_is_still_found(self):
+        os.environ["ARCH_CONFIG_DIR"] = "conf"
+        self.addCleanup(os.environ.pop, "ARCH_CONFIG_DIR", None)
+        reload(ss)
+        root = self._instance("conf")
+        self.assertEqual(os.path.realpath(ss._instance_root(root)),
+                         os.path.realpath(root))
+
+    def test_the_default_is_unchanged_when_the_var_is_absent(self):
+        os.environ.pop("ARCH_CONFIG_DIR", None)
+        reload(ss)
+        root = self._instance("config")
+        self.assertEqual(os.path.realpath(ss._instance_root(root)),
+                         os.path.realpath(root))
+
+    def test_both_hooks_resolve_the_same_root(self):
+        """The point of the item, not just the symptom. Guards and receipt must
+        agree about where the instance is, or one of them is protecting or
+        reporting on a directory the other has never heard of."""
+        os.environ["ARCH_CONFIG_DIR"] = "conf"
+        self.addCleanup(os.environ.pop, "ARCH_CONFIG_DIR", None)
+        reload(ss)
+        here = os.path.dirname(os.path.abspath(ss.__file__))
+        sys.path.insert(0, here)
+        import pre_tool_use as guard
+        reload(guard)
+        root = self._instance("conf")
+        self.assertEqual(os.path.realpath(ss._instance_root(root)),
+                         os.path.realpath(guard._instance_root(root, strict=True)))
 
 
 class TestInstanceResolution(InstanceCase):

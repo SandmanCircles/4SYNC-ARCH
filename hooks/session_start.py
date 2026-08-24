@@ -42,6 +42,7 @@ is not worth failing a session over, and a hook that can break session start is 
 hook that gets uninstalled.
 """
 
+import datetime
 import json
 import os
 import re
@@ -69,6 +70,36 @@ GROWTH_MIN_PCT = 10.0
 GROWTH_MIN_BYTES = 1024
 GROWTH_PCT_ENV = "ARCH_BOOT_GROWTH_PCT"
 GROWTH_NAMED_MAX = 3
+
+
+def _stamp_epoch(text):
+    """Epoch seconds from a session-debt timestamp, tolerating BOTH eras.
+
+    THE DEFECT THIS CLOSES (SYN-110 defect 2, reported by an adopter against
+    v1.1.4). Stamps were written with `time.strftime("%Y-%m-%dT%H:%M:%S")` — naive
+    local time, no offset — and read back with `time.mktime(time.strptime(...))`,
+    i.e. interpreted as local. Self-consistent on ONE machine in ONE zone, which is
+    why it survived normal use.
+
+    It breaks the moment an instance is used from two machines in different zones:
+    `live_within` then subtracts a stamp written in one zone from a clock read in
+    another. Both directions are wrong and one is dangerous — a genuinely LIVE
+    session reading as stale is how two sessions come to edit the same ledger each
+    believing it is alone. Measured before the fix: a row written two minutes
+    earlier at -08:00 was reported as "holding UNDEPOSITED state (never wrapped)".
+    DST adds a second failure, twice a year, where mktime on an ambiguous local
+    time is an hour out or raises.
+
+    MIGRATION IS FREE, and that is why this is one function rather than a pass over
+    everybody's file: `fromisoformat` parses both forms, and a NAIVE value yields a
+    tz-naive datetime whose `.timestamp()` interprets it as local — exactly what the
+    old reader did. Old rows keep meaning what they meant; new rows mean it
+    absolutely. A file mixing the two eras is read row by row and is the ordinary
+    shape during an upgrade.
+
+    DUPLICATED in the sibling hook, deliberately: machinery modules never import one
+    another (see `_declares_manifest` for the same note). Keep the two identical."""
+    return datetime.datetime.fromisoformat(text).timestamp()
 
 
 def _instance_root(cwd):
@@ -205,8 +236,8 @@ def read_debt(root, live_within_min):
             continue
         sid, started, last = parts[0], parts[1], parts[2]
         try:
-            age_min = (now - time.mktime(time.strptime(last, "%Y-%m-%dT%H:%M:%S"))) / 60.0
-        except (ValueError, OverflowError):
+            age_min = (now - _stamp_epoch(last)) / 60.0
+        except (ValueError, OverflowError, OSError):
             age_min = None
         row = (sid[:8], last, parts[3] if len(parts) > 3 else "")
         (live if age_min is not None and age_min <= live_within_min else stale).append(row)
@@ -384,8 +415,10 @@ def build_receipt(root, manifest_name, manifest_text, mode, session_id=None):
         for sid, last, _ in stale:
             lines.append(f"    · {sid} last wrote {last}")
     if live or stale:
-        lines.append("  NOTE: last_activity tracks FILE WRITES only — every git command after "
-                     "one is invisible. 'Not live' means probably idle, never gone.")
+        lines.append("  NOTE: last_activity tracks FILE WRITES observed BY A HOOK — every "
+                     "git command after one is invisible, and a surface that runs no hooks "
+                     "writes NO row at all. So 'not listed' is not evidence of absence, and "
+                     "'not live' means probably idle, never gone.")
 
     # THE TWO IDS THAT MUST AGREE (SYN-090). The recorder keys rows by the hook
     # PAYLOAD's session id; `debt.py --clear` defaults to $CLAUDE_CODE_SESSION_ID.

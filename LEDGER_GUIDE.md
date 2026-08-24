@@ -102,6 +102,21 @@ No recent row means the owner is gone and the claim is stale — take it, and ov
 `Owner` cell. Without this cross-check a stale 🔄 owner is just a new kind of litter, which is
 why the column and the live-session boot reading are one change, not two.
 
+**THE CROSS-CHECK IS SCOPED TO HOOK-CAPABLE SURFACES, and forgetting that inverts it.**
+Debt rows exist because a hook observed a file write. A surface that runs no hooks — a hosted
+or bridge-only seat — cannot produce a row no matter how hard it is working, so "no recent
+row" there means *the recorder does not run here*, not *the owner is gone*. Every claim made
+from such a seat then reads as stale to the next session, and the column advertises a takeover
+instead of preventing one — silently, because the checking session is following this page
+correctly.
+
+The debt file is a **truncated view, and it truncates by SURFACE**. That is harder to notice
+than truncation by row count, because the view looks complete. So a hookless seat claims
+POSITIVELY instead: `<Seat>·<sid>·<MM-DD>` in the `Owner` cell, read as live for about a week.
+Hook-capable surfaces do not need the date — the debt file carries their timestamp — but may
+use it. Reported by an adopter who hit it building a role-partitioned layer; every instance
+that grows a second class of surface hits it independently.
+
 ## Task-authoring rule — self-contained
 
 Write every task document so it stands fully alone. A different surface — another agent, or an

@@ -26,6 +26,12 @@ same rule names.
 - **Claim a row** — moving to 🔄, put your roster name + short session id in `Owner`
   (`LoCo·b2df30b8`); clear to `—` when it leaves 🔄. Before taking a row someone owns, check
   `.session_debt.tsv`: recent activity means taken and live, stale means take it.
+  **ONLY ON A HOOK-CAPABLE SURFACE.** Debt rows are written by `hooks/pre_tool_use.py`; a
+  surface that runs no hooks cannot produce one, so its absence is evidence of nothing. Read
+  that way, the cross-check stops protecting a claim and starts advertising a takeover.
+  A `declared` or hookless seat therefore stamps its own claim — `<Seat>·<sid>·<MM-DD>` —
+  so the next session reasons from evidence rather than from an absence; treat a stamped
+  claim as live for about a week, and ASK rather than take inside that.
 - **Write every task document self-contained** — another agent or an unattended run must be
   able to execute it cold. Name the files, the acceptance criteria and the *why* inline.
 - **Cross-midnight session** — one journal block, headed with the span (`2026-07-28/29`),

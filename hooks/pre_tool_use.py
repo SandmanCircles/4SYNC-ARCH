@@ -95,6 +95,7 @@ Per-guard override env vars (intentional edits, set interactively by the owner):
 """
 
 import inspect
+import datetime
 import json
 import os
 import re
@@ -1243,6 +1244,36 @@ def _instance_root(cwd, strict=False, require_kernel=False):
         cur = parent
 
 
+def _stamp_epoch(text):
+    """Epoch seconds from a session-debt timestamp, tolerating BOTH eras.
+
+    THE DEFECT THIS CLOSES (SYN-110 defect 2, reported by an adopter against
+    v1.1.4). Stamps were written with `time.strftime("%Y-%m-%dT%H:%M:%S")` — naive
+    local time, no offset — and read back with `time.mktime(time.strptime(...))`,
+    i.e. interpreted as local. Self-consistent on ONE machine in ONE zone, which is
+    why it survived normal use.
+
+    It breaks the moment an instance is used from two machines in different zones:
+    `live_within` then subtracts a stamp written in one zone from a clock read in
+    another. Both directions are wrong and one is dangerous — a genuinely LIVE
+    session reading as stale is how two sessions come to edit the same ledger each
+    believing it is alone. Measured before the fix: a row written two minutes
+    earlier at -08:00 was reported as "holding UNDEPOSITED state (never wrapped)".
+    DST adds a second failure, twice a year, where mktime on an ambiguous local
+    time is an hour out or raises.
+
+    MIGRATION IS FREE, and that is why this is one function rather than a pass over
+    everybody's file: `fromisoformat` parses both forms, and a NAIVE value yields a
+    tz-naive datetime whose `.timestamp()` interprets it as local — exactly what the
+    old reader did. Old rows keep meaning what they meant; new rows mean it
+    absolutely. A file mixing the two eras is read row by row and is the ordinary
+    shape during an upgrade.
+
+    DUPLICATED in the sibling hook, deliberately: machinery modules never import one
+    another (see `_declares_manifest` for the same note). Keep the two identical."""
+    return datetime.datetime.fromisoformat(text).timestamp()
+
+
 def _debt_row_expired(last_activity, now_epoch, max_age_days):
     """True ONLY when a row is confidently older than the window.
 
@@ -1255,7 +1286,7 @@ def _debt_row_expired(last_activity, now_epoch, max_age_days):
     if max_age_days <= 0:
         return False
     try:
-        stamp = time.mktime(time.strptime(last_activity, "%Y-%m-%dT%H:%M:%S"))
+        stamp = _stamp_epoch(last_activity)
     except Exception:  # noqa: BLE001 — see the docstring: unreadable means keep
         return False
     return (now_epoch - stamp) > max_age_days * 86400
@@ -1340,7 +1371,13 @@ def _record_debt(payload):
     if named and all(_exempt(t) for t in named):
         return
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    # OFFSET-AWARE (SYN-110 defect 2). This was `time.strftime("%Y-%m-%dT%H:%M:%S")`
+    # — naive local time, which is unresolvable the moment a second machine in a
+    # different zone reads it, and which only LOOKS like ISO 8601 (an offsetless
+    # stamp reads naturally as UTC, which is wrong). `_stamp_epoch` above still
+    # parses the old form, so no adopter needs a migration pass over their file.
+    # The field is wider now; the TSV is tab-separated so nothing realigns.
+    now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
     rows = {}
     try:

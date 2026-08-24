@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from importlib import reload
 from unittest import mock
 
@@ -418,12 +419,77 @@ class TestDebtReadings(InstanceCase):
         self.assertIn("UNDEPOSITED", r)
         self.assertNotIn("CONTESTED", r)
 
-    def test_the_bash_caveat_travels_with_any_row(self):
+    def test_the_caveats_travel_with_any_row(self):
         """'last_activity is not activity' has to arrive WITH the warning, or the
-        reader treats an idle-looking row as an absent session."""
+        reader treats an idle-looking row as an absent session.
+
+        TWO caveats now, not one (SYN-110 defect 1). The original covered writes the
+        hook cannot see — git commands. The second covers a whole SURFACE the hook
+        does not run on, where the file records nothing at all; without it a reader
+        takes "not listed" as evidence of absence, which is how a hookless seat's
+        claim gets taken while it is working."""
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        self._debt([f"abcd1234-x\t{now}\t{now}\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("observed BY A HOOK", r)
+        self.assertIn("no hooks", r)
+        self.assertIn("not evidence of absence", r)
+
+    # ── SYN-110 defect 2: naive local stamps, read as local ─────────────────
+    #
+    # Reported by an adopter against v1.1.4. Self-consistent on one machine in one
+    # zone, which is why it survived; it breaks the moment an instance is used from
+    # two machines in different zones — `live_within` then subtracts a stamp written
+    # in one zone from a clock read in another. Both directions are wrong and one is
+    # dangerous: a genuinely live session reading as STALE is how two sessions end
+    # up editing the same ledger believing they are alone.
+
+    def test_an_offset_aware_row_in_another_zone_reads_correctly(self):
+        """THE CASE NO SAME-ZONE TEST CAN PROVE, and the reason this row exists.
+
+        A stamp written 2 minutes ago on a machine 8 hours away is RECENT. Read as
+        naive local it looks 8 hours old and the claim reads as abandoned."""
+        from datetime import datetime, timedelta, timezone
+        far = timezone(timedelta(hours=-8))
+        recent_there = (datetime.now(timezone.utc) - timedelta(minutes=2)
+                        ).astimezone(far).isoformat(timespec="seconds")
+        self._debt([f"abcd1234-x\t{recent_there}\t{recent_there}\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("LIVE", r)
+        self.assertNotIn("UNDEPOSITED", r)
+
+    def test_an_offset_aware_row_that_is_genuinely_old_still_reads_old(self):
+        """The control in the other direction — the fix must not make everything live."""
+        from datetime import datetime, timedelta, timezone
+        far = timezone(timedelta(hours=+9))
+        old_there = (datetime.now(timezone.utc) - timedelta(days=1)
+                     ).astimezone(far).isoformat(timespec="seconds")
+        self._debt([f"abcd1234-x\t{old_there}\t{old_there}\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("UNDEPOSITED", r)
+        self.assertNotIn("CONTESTED", r)
+
+    def test_existing_naive_rows_keep_working(self):
+        """MIGRATION IS NOT OPTIONAL: every adopter has a file full of naive rows,
+        and they must keep meaning what they meant. A naive stamp parses to a
+        tz-naive datetime whose .timestamp() interprets it as LOCAL — which is
+        exactly the old behaviour, so one reader covers both eras."""
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         self._debt([f"abcd1234-x\t{now}\t{now}\tC:\\proj\tunwrapped"])
-        self.assertIn("FILE WRITES only", self._receipt())
+        self.assertIn("LIVE", self._receipt())
+
+    def test_a_file_mixing_both_eras_is_read_row_by_row(self):
+        """The real shape during migration: old rows written before the upgrade,
+        new rows after, in one file."""
+        from datetime import datetime, timedelta, timezone
+        naive_old = time.strftime("%Y-%m-%dT%H:%M:%S",
+                                  time.localtime(time.time() - 86400))
+        aware_new = datetime.now().astimezone().isoformat(timespec="seconds")
+        self._debt([f"aaaaaaaa-x\t{naive_old}\t{naive_old}\tC:\\proj\tunwrapped",
+                    f"bbbbbbbb-x\t{aware_new}\t{aware_new}\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("LIVE", r)
+        self.assertIn("UNDEPOSITED", r)
 
     def test_no_debt_file_is_silent(self):
         r = self._receipt()

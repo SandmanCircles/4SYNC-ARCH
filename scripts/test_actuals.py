@@ -17,6 +17,7 @@ a distinctive secret in every place real content lives — user text, assistant
 text, and tool results — and the suite asserts it appears in no output.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -399,6 +400,60 @@ class TestAppendSeries(unittest.TestCase):
         text = open(path, encoding="utf-8").read()
         self.assertIn('"first"', text)
         self.assertIn('"second"', text)
+
+    # ── SYN-101 item 9, SECOND HALF: --log crashed instead of skipping ──────
+    def test_log_does_not_crash_the_close_when_the_series_is_unwritable(self):
+        """The manifest declares `actuals.on_missing: skip` — "a measurement never
+        blocks a close". `--log` called append_series with no OSError handling, so
+        an unwritable metrics/ (read-only checkout, full disk, a permission the
+        adopter never granted) took the whole close down at its last step, after
+        every ledger write had already landed.
+
+        `meter.py` has had the guard since it was written; the two are declared as
+        companions in the same manifest block and only one of them honoured it."""
+        rows = self.rows("a")
+        with mock.patch.object(actuals, "append_series",
+                               side_effect=OSError("read-only file system")):
+            code, out, err = self._run_log(rows)
+        self.assertEqual(0, code, "an unwritable series aborted the close")
+        self.assertIn("not recorded", (out + err).lower())
+
+    def test_the_skip_message_says_the_row_SELF_HEALS(self):
+        """NOT a copy of meter.py's wording, and the manifest is explicit about why:
+
+          meter:   "A skipped close is a row that cannot be recovered: the series
+                    has no backfill."
+          actuals: "Idempotent on (project, session): a missed close self-heals,
+                    UNLIKE meter:. Bounded by transcript retention."
+
+        So the two failures deserve opposite urgencies. Telling someone a recoverable
+        row is unrecoverable is the cry-wolf failure this project keeps naming; it
+        also invites a panicked hand-repair of a file that would have healed itself
+        at the next close."""
+        with mock.patch.object(actuals, "append_series",
+                               side_effect=OSError("read-only file system")):
+            _code, out, err = self._run_log(self.rows("a"))
+        text = (out + err).lower()
+        self.assertIn("next", text)
+        self.assertNotIn("no backfill", text)
+        self.assertNotIn("unrecoverable", text)
+
+    def _run_log(self, rows):
+        """Drive main() with --log, capturing streams and the exit code."""
+        out, err = io.StringIO(), io.StringIO()
+        # --json so `render()` is not on the path: it wants fields these minimal
+        # fixture rows do not carry, and a KeyError there would fail this test
+        # somewhere other than the branch it is about.
+        argv = ["actuals.py", "--dir", self.dir, "--log", "--json"]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(actuals, "collect", return_value=rows), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                actuals.main()
+                code = 0
+            except SystemExit as exc:
+                code = exc.code or 0
+        return code, out.getvalue(), err.getvalue()
 
     def test_no_tmp_file_left_behind(self):
         actuals.append_series(self.dir, self.rows("a"))

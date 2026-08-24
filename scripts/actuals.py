@@ -381,8 +381,32 @@ def main():
         print(render(rows))
 
     if args.log and rows:
-        n, path = append_series(root, rows)
-        print("actuals: appended {} new row(s) to {}".format(n, path))
+        # `on_missing: skip` — "a measurement never blocks a close" (the manifest's
+        # own words, in the block that declares this script). Unguarded, an
+        # unwritable metrics/ took the whole close down at its LAST step, after
+        # every ledger write had already landed. meter.py has had this guard since
+        # it was written, and the two are declared as companions in the same
+        # manifest block; only one of them honoured the contract (SYN-101 item 9).
+        #
+        # THE MESSAGE IS NOT meter.py's, DELIBERATELY, and the manifest is explicit
+        # about why: meter's series "has no backfill", while this one is idempotent
+        # on (project, session), so a missed close SELF-HEALS at the next run —
+        # bounded by transcript retention, not by close discipline. Telling someone
+        # a recoverable row is unrecoverable is cry-wolf, and it invites a panicked
+        # hand-repair of a file that would have fixed itself.
+        #
+        # UnicodeError too: the dedupe pass reads the existing series, and a corrupt
+        # byte there raises UnicodeDecodeError, which is not an OSError. Same
+        # pairing scripts/debt.py already uses.
+        try:
+            n, path = append_series(root, rows)
+        except (OSError, UnicodeError) as exc:
+            print("actuals: could not append to the series ({}) — this run was NOT "
+                  "recorded. It is idempotent on (project, session), so the next "
+                  "close picks these sessions up again as long as their transcripts "
+                  "are still on disk.".format(exc), file=sys.stderr)
+        else:
+            print("actuals: appended {} new row(s) to {}".format(n, path))
     sys.exit(0)
 
 

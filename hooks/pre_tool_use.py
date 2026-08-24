@@ -213,7 +213,19 @@ _BASH_WRITE_CMD = re.compile(
 
 # The token a redirect actually writes to: whatever follows `>`/`>>`, with the
 # same `->`/`=>` exclusion the intent regex uses.
-_BASH_REDIRECT_TARGET = re.compile(r"(?<![-=<>|])>>?\s*(['\"][^'\"]+['\"]|\S+)")
+# `\|?` admits `>|`, the noclobber OVERRIDE (SYN-106 item 7). It writes more
+# insistently than `>` — it is the form that writes even when the shell has been
+# configured to refuse — and it was the one form the guard could not see: the `|`
+# landed inside the captured token, so the path resolved against nothing and the
+# fence stayed quiet. Found by adversarial probe, confirmed by running it.
+_BASH_REDIRECT_TARGET = re.compile(r"(?<![-=<>|])>>?\|?\s*(['\"][^'\"]+['\"]|\S+)")
+
+# A backslash-newline is a LINE CONTINUATION: bash joins the lines and runs one
+# command (SYN-106 item 6). `_BASH_REDIRECT_TARGET`'s `\s*` spans the newline, so
+# `echo x > \` + newline + `  path` captured the BACKSLASH as the target — a token
+# with no slash and no extension, which the filter then dropped, and the real path
+# was never seen. Verified by running it: the file is written.
+_BASH_LINE_CONTINUATION = re.compile(r"\\\r?\n")
 
 # Writes here are guaranteed uninteresting, and `2>/dev/null` is the single most
 # common redirect in a command that is otherwise purely reading.
@@ -301,7 +313,13 @@ def _bash_write_paths(cmd):
     it, because the message quoted another instance's path in a courier note."""
     if not cmd:
         return []
-    cmd = _strip_heredoc_body(cmd)
+    # ORDER MATTERS, and it is the opposite of the obvious one. Bodies are stripped
+    # FIRST, then continuations are joined in what remains. Collapsing first would
+    # join a body line ending in `\` onto the terminator — and for a QUOTED
+    # delimiter bash does no such processing, so that heredoc really does end at
+    # `EOF`. The guard would then read it as unterminated, truncate, and MISS every
+    # command after it: a fix for one blind spot creating a wider one.
+    cmd = _BASH_LINE_CONTINUATION.sub(" ", _strip_heredoc_body(cmd))
     if not _BASH_WRITE_VERB.search(cmd):
         return []
 

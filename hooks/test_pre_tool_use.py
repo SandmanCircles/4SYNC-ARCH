@@ -1480,6 +1480,60 @@ class TestBashRouting(GuardCase):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root), cmd)
 
+    # ── SYN-106 items 6-7: found by ADVERSARIAL PROBES, not by reading ──────
+    #
+    # Both were found by firing 46 crafted write-intent commands at the shipped
+    # hook and asking which ones it missed — a method that does not depend on the
+    # author's opinion of his own code, and which caught two silent bypasses that
+    # re-reading the diff had not. Both are pre-existing in _BASH_REDIRECT_TARGET
+    # and neither was touched by the SYN-106/107/108/109 sweep; they are the same
+    # CLASS as item 1 — a write the guard cannot see — reached by different syntax.
+    #
+    # EACH WAS CONFIRMED AGAINST REAL BASH BEFORE BEING CALLED A HOLE. A third
+    # probe (`<<-` with a SPACE-indented terminator) also came back silent and is
+    # NOT a defect: POSIX `<<-` strips tabs only, so bash treats that heredoc as
+    # unterminated, and the trailing command never executes. The guard truncating
+    # there is correct, and the test below pins it so it is not "fixed" later.
+
+    def test_a_backslash_continuation_does_not_hide_the_target(self):
+        """`echo x > \\` + newline + `  path` is ONE command to bash and it really
+        writes — verified by running it. The redirect pattern's `\\s*` spans the
+        newline, so `\\S+` captured the backslash itself as the target; that token
+        has no slash and no extension, so the filter dropped it and the real path
+        was never seen."""
+        other = self._other_instance()
+        tgt = f"{other}/config/OTHER_STATUS.yaml"
+        kind, reason = self.run_verdict(
+            bash_payload("echo x > \\\n  " + tgt), cwd=self.root)
+        self.assertEqual("block", kind)
+        self.assertIn("CROSS-INSTANCE", reason or "")
+
+    def test_a_noclobber_override_is_still_a_redirect(self):
+        """`>|` forces a write even under `set -o noclobber` — so it is a redirect
+        that writes MORE insistently than `>`, and it was the one the guard could
+        not see. The `|` landed inside the captured token, so the path resolved
+        against nothing and the fence stayed quiet."""
+        other = self._other_instance()
+        tgt = f"{other}/config/OTHER_STATUS.yaml"
+        kind, reason = self.run_verdict(
+            bash_payload("echo x >| " + tgt), cwd=self.root)
+        self.assertEqual("block", kind)
+        self.assertIn("CROSS-INSTANCE", reason or "")
+
+    def test_an_unterminated_dash_heredoc_is_still_truncated(self):
+        """NOT A DEFECT, pinned so it is not "fixed" into one.
+
+        `<<-` strips leading TABS, never spaces (POSIX). A space-indented `EOF`
+        therefore does not terminate the heredoc, bash reports
+        "here-document delimited by end-of-file", and the trailing command is BODY
+        — it never runs. Verified by executing it: the file it would have written
+        does not appear. A guard that blocked here would be flagging a write that
+        cannot happen."""
+        other = self._other_instance()
+        cmd = ("cat <<-EOF > a.txt\n  body\n  EOF\n"
+               f"echo x > {other}/config/OTHER_STATUS.yaml")
+        self.assertIsNone(self.run_guards(bash_payload(cmd), cwd=self.root))
+
     def test_unguarded_bash_is_silent(self):
         for cmd in ("echo hello > notes.txt", "ls -la", "py -m pytest"):
             with self.subTest(cmd=cmd):

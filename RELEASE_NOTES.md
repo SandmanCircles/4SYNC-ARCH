@@ -76,6 +76,12 @@ build that matches no release, which nobody — including support — can then r
 is a human call, not a condition a script can evaluate. Rename the heading to `## v<version>` at
 cut time.*
 
+*(nothing yet)*
+
+---
+
+## v1.2.0
+
 *The sweep release. Twenty-seven defects, and the common shape is the reason they lasted: **every
 one of them failed silently.** The suites were green through all of them, because none was
 reachable by the fixtures that existed. **Read the four bullets under BEHAVIOUR CHANGES before

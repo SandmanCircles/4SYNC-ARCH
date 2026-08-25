@@ -389,7 +389,7 @@ def mount_gate(verdict, detail, apply_mode, override):
 # is already excluded by the first character class, which is why this silo's
 # bold-led paragraphs were never at risk, but an unbolded one would have been.
 JOURNAL_BLOCK_HEAD = re.compile(
-    r"(?m)^(?=(?:[A-Z][A-Za-z0-9]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
+    r"(?m)^(?=(?:[A-Z][A-Za-z0-9+\-]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
 
 # A fenced-code-block delimiter: up to three spaces of indent, then three or more
 # backticks or tildes. Group 2 is the info string (or, on a closing line, the

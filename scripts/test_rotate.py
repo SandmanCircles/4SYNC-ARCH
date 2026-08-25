@@ -700,6 +700,19 @@ class TestWhatDelimitsAJournalBlock(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         self.assertTrue(blocks[1].startswith("GENESIS"))
 
+    def test_a_hyphenated_task_id_label_still_opens_a_block(self):
+        """Upstream report against v1.2.0: the label charset excluded a hyphen, so
+        `MP-067 - ...` -- this product's own taught ID convention -- fell into the
+        blank-line fallback while `MP057 - ...` matched. Verified against the
+        shipped fixture the report reproduced."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "MP-067 - 2026-08-24 (Seat) - newest." + N + N
+                + "MP057 - 2026-08-22 (no hyphen in label) - older." + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertTrue(blocks[0].startswith("MP-067"))
+
 
 class TestBulletinArchiveDoesNotEatTheFooter(unittest.TestCase):
     """SYN-100 item 3. The LAST message block ran to EOF.
@@ -3664,6 +3677,8 @@ class TestLegacyJournalWarning(unittest.TestCase):
             self.skipTest("no shipped ledger template beside this test")
         with open(template, encoding="utf-8") as fh:
             text = fh.read()
+        if "[PROJECT NAME]" not in text:
+            self.skipTest("ledger has been adopted — not the shipped template")
         self.assertEqual(self._warnings(text), 0,
                          "the shipped template trips the product's own "
                          "legacy-journal warning")

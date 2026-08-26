@@ -470,6 +470,69 @@ class TestResolveManifest(unittest.TestCase):
         self.assertEqual(meter.resolve_manifest({"ARCH_MANIFEST": "MyProject.YAML"}),
                          "MyProject.YAML")
 
+    def test_no_root_is_unchanged_env_only_behaviour(self):
+        """The exact prior signature/behaviour, preserved: no filesystem access
+        at all when `root` is omitted — the four tests above must keep passing
+        unmodified."""
+        self.assertEqual(meter.resolve_manifest({}), meter.MANIFEST_DEFAULT)
+
+
+class ContentDiscoveryCase(unittest.TestCase):
+    """BUG-008, bug sweep 2026-08-25. `resolve_manifest()` had no by-content
+    discovery fallback for a renamed manifest, unlike rotate.py's equivalent —
+    an adopter who ran genesis (which renames the manifest to `<PROJECT>.yaml`)
+    and never set ARCH_MANIFEST got a report that silently collapsed to
+    near-zero instead of erroring or discovering the real manifest, for exactly
+    the population (renamed instances) this meter is most needed for."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="meter_discover_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.addCleanup(os.environ.pop, "ARCH_MANIFEST", None)
+        os.environ.pop("ARCH_MANIFEST", None)
+
+    def _write(self, name, text):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_a_renamed_manifest_is_discovered_by_content(self):
+        self._write("MYPROJECT.yaml", SAMPLE_MANIFEST)
+        self.assertEqual(meter.resolve_manifest(root=self.root), "MYPROJECT.yaml")
+
+    def test_the_default_name_still_wins_when_it_exists(self):
+        """Discovery is a FALLBACK, not a preference — an instance that never
+        renamed must not pay a directory scan or risk matching a decoy."""
+        self._write("4SYNC.yaml", SAMPLE_MANIFEST)
+        self._write("DECOY.yaml", SAMPLE_MANIFEST)
+        self.assertEqual(meter.resolve_manifest(root=self.root), "4SYNC.yaml")
+
+    def test_a_pin_is_honoured_even_when_missing_not_healed(self):
+        """An explicit ARCH_MANIFEST wins the ladder outright — a wrong pin
+        should look wrong (the caller's OSError-swallow already handles that),
+        never silently heal to a different file."""
+        self._write("REAL.yaml", SAMPLE_MANIFEST)
+        os.environ["ARCH_MANIFEST"] = "WRONG.yaml"
+        self.assertEqual(meter.resolve_manifest(root=self.root), "WRONG.yaml")
+
+    def test_no_manifest_anywhere_falls_back_to_the_default_name(self):
+        """Nothing to discover — must still return SOMETHING openable-shaped
+        rather than None, so the caller's existing OSError-swallow path (an
+        empty, well-formed report) keeps working unchanged."""
+        self.assertEqual(meter.resolve_manifest(root=self.root),
+                         meter.MANIFEST_DEFAULT)
+
+    def test_build_report_data_measures_a_renamed_manifest_without_being_told(self):
+        """THE ACTUAL REGRESSION, end to end — the existing
+        test_renamed_manifest_is_measured passes the renamed name explicitly to
+        build_report_data, which bypasses resolve_manifest() entirely and would
+        not have caught this. This one does not."""
+        self._write("MYPROJECT.yaml", SAMPLE_MANIFEST)
+        lists = meter.parse_load_lists(SAMPLE_MANIFEST)
+        data = meter.build_report_data(self.root, lists)   # no manifest= given
+        self.assertEqual(data["manifest"], "MYPROJECT.yaml")
+        self.assertGreater(data["boot_total_bytes"], 0,
+                           "boot cost silently collapsed to zero for a renamed manifest")
+
 
 class TestSeriesRow(unittest.TestCase):
     """The row schema. This is the part that cannot be changed later without

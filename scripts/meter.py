@@ -39,9 +39,28 @@ import sys
 from datetime import datetime
 
 MANIFEST_DEFAULT = "4SYNC.yaml"
+MANIFEST_HEAD_BYTES = 65536
 
 
-def resolve_manifest(env=None):
+def _declares_manifest(path):
+    """Does this file declare itself an ARCH instance manifest?
+
+    DUPLICATED FROM scripts/rotate.py, DELIBERATELY — machinery modules never
+    import one another (each is copied and wired standalone), so a shared
+    module would have to join MACHINERY and could be copied without its
+    dependents. Keep this CODE-identical to rotate.py's and wire_hooks.py's
+    copies; see rotate.py's docstring for the two SYN-090 blind spots this
+    anchoring/window choice closes."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(MANIFEST_HEAD_BYTES)
+    except OSError:
+        return False
+    return bool(re.search(r"(?m)^sync_version:", head)
+                and re.search(r"(?m)^boot:", head))
+
+
+def resolve_manifest(env=None, root=None):
     """Basename of the instance manifest, honoring the ARCH_MANIFEST env knob.
 
     Same variable the g5 boring-guard reads (hooks/pre_tool_use.py), so an
@@ -52,10 +71,37 @@ def resolve_manifest(env=None):
     OPENS the file, so the case must survive — on a case-sensitive filesystem
     '4sync.yaml' does not open '4SYNC.yaml'.
 
-    An unset, empty, or whitespace-only value falls back to the default.
-    """
+    An unset, empty, or whitespace-only value falls back to the default —
+    UNLESS `root` is given and the default file is not there, in which case
+    this falls back further to CONTENT DISCOVERY: a root-level `*.yaml`
+    declaring `sync_version:`/`boot:`, the same mechanism `rotate.py`'s
+    `resolve_manifest()` already uses for exactly this case (BUG-008, bug
+    sweep 2026-08-25). Without it, a renamed instance with ARCH_MANIFEST unset
+    silently measured as a well-formed, near-zero report — the manifest row
+    itself showed `(missing — counted as 0)`, but nothing said the WHOLE boot
+    stack had collapsed to that for lack of a file, in exactly the case (a
+    renamed instance) this meter is most needed for.
+
+    An explicit ARCH_MANIFEST pin is honored even when that file is missing —
+    loudly, because a wrong pin should look wrong rather than silently heal to
+    a different file. `root=None` (the default) preserves the exact prior
+    behavior: an env-only lookup, with no filesystem access at all."""
     env = os.environ if env is None else env
-    return (env.get("ARCH_MANIFEST") or "").strip() or MANIFEST_DEFAULT
+    pinned = (env.get("ARCH_MANIFEST") or "").strip()
+    if pinned:
+        return pinned
+    if root is None or os.path.isfile(os.path.join(root, MANIFEST_DEFAULT)):
+        return MANIFEST_DEFAULT
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for name in names:
+        if name == MANIFEST_DEFAULT or not name.lower().endswith((".yaml", ".yml")):
+            continue
+        if _declares_manifest(os.path.join(root, name)):
+            return name
+    return MANIFEST_DEFAULT
 
 
 # The three load lists the manifest declares. Order here is display order.
@@ -385,8 +431,8 @@ def build_report_data(root, lists, manifest=None):
     totals, and the savings math. The 'full boot read' is the manifest itself PLUS
     every file in the boot: list — the manifest is read to START boot, so it counts.
 
-    manifest: basename of the instance manifest; defaults to resolve_manifest()."""
-    manifest = manifest or resolve_manifest()
+    manifest: basename of the instance manifest; defaults to resolve_manifest(root=root)."""
+    manifest = manifest or resolve_manifest(root=root)
     # A scanned bulletin is priced as header-index + one agent's own mail, not as
     # a whole-file read — otherwise the meter keeps reporting a cost the protocol
     # stopped paying the moment `bulletin.mode: scan_headers` landed.
@@ -603,7 +649,7 @@ def main():
 
     # Resolve ONCE and thread it down, so the file we opened and the file the
     # report names can never disagree.
-    manifest = resolve_manifest()
+    manifest = resolve_manifest(root=root)
 
     manifest_path = os.path.join(root, manifest)
     try:

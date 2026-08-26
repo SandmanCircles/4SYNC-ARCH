@@ -244,6 +244,36 @@ class BuildMismatch(Exception):
     """The source did not match --expect, or the result did not match the source."""
 
 
+class PartialApply(Exception):
+    """Phase 2 (the os.replace loop) failed partway through.
+
+    Bug sweep, 2026-08-25 (BUG-004). The loop had no per-file exception
+    handling, so a lock held on one machinery file — "routine on Windows" per
+    this module's own docstring — left some files already replaced and others
+    still old, then let the raw OSError escape `main()`'s except clause
+    (which only names IncompleteSource/BuildMismatch/RefusedWrite) as an
+    unhandled traceback. STEP 4 never ran, so the adopter got no report of
+    what state their instance was actually left in.
+
+    NO ROLLBACK OF ALREADY-LANDED FILES. Each `os.replace` is atomic and
+    irreversible the moment it succeeds — recovering would mean backing up
+    every destination file before touching it, a bigger change than this bug
+    calls for, and the module's own comment already frames phase 2 as "atomic
+    per file... without a journal" rather than promising set-wide atomicity.
+    A plain re-run IS the recovery path: `update()` diffs source against the
+    CURRENT destination, so already-landed files report unchanged and only
+    the remainder is retried — this exception exists so that fact reaches the
+    adopter instead of a traceback."""
+    def __init__(self, landed, remaining, cause):
+        self.landed = landed
+        self.remaining = remaining
+        self.cause = cause
+        super(PartialApply, self).__init__(
+            "%d of %d file(s) landed before %s failed on %r: %s"
+            % (len(landed), len(landed) + len(remaining),
+               "os.replace", remaining[0] if remaining else None, cause))
+
+
 class Report(object):
     def __init__(self):
         self.changed = []          # [(rel, 'update'|'add')]
@@ -341,15 +371,26 @@ def update(source, dest, apply=False, expect=None):
                     os.makedirs(parent)
                 tmp = "%s.arch-new.%d" % (path, os.getpid())
                 shutil.copyfile(os.path.join(source, rel.replace("/", os.sep)), tmp)
-                staged.append((tmp, path))
-            for tmp, path in staged:
-                os.replace(tmp, path)
+                staged.append((tmp, path, rel))
+            # A per-file failure here (BUG-004) used to propagate as a raw OSError,
+            # past `main()`'s except clause, with STEP 4 never running to report
+            # what state the instance was actually left in. Stop at the first
+            # failure rather than pressing on past it — an unknown-cause error is
+            # not evidence the next file will fare any better.
+            landed = []
+            try:
+                for tmp, path, rel in staged:
+                    os.replace(tmp, path)
+                    landed.append(rel)
+            except OSError as exc:
+                remaining = [rel for _, _, rel in staged if rel not in landed]
+                raise PartialApply(landed, remaining, exc) from exc
             staged = []
         finally:
             # Whatever is still staged did not land. Remove it rather than leave a
             # tree littered with siblings `arch_build` does not hash and therefore
             # cannot report — invisible debris beside a check that says "sound".
-            for tmp, _path in staged:
+            for tmp, _path, _rel in staged:
                 try:
                     os.remove(tmp)
                 except OSError:
@@ -421,6 +462,18 @@ def main():
         report = update(args.source, args.dir, apply=args.apply, expect=args.expect)
     except (IncompleteSource, BuildMismatch, RefusedWrite) as exc:
         sys.stderr.write("arch_update: REFUSED — %s\n" % exc)
+        return 1
+    except PartialApply as exc:
+        res_digests, res_missing = arch_build.file_digests(args.dir)
+        result_build_id = arch_build.build_id(res_digests, res_missing)
+        sys.stderr.write("arch_update: PARTIAL APPLY — %s\n" % exc)
+        sys.stderr.write("  landed:    %s\n" % (", ".join(exc.landed) or "(none)"))
+        sys.stderr.write("  remaining: %s\n" % ", ".join(exc.remaining))
+        sys.stderr.write("  instance now at build %s (matches no release)\n"
+                         % result_build_id)
+        sys.stderr.write("  safe to retry: re-run the same command — files that "
+                         "already match the source report unchanged and are "
+                         "skipped\n")
         return 1
 
     for line in _render(report, args.source, args.dir, args.apply):

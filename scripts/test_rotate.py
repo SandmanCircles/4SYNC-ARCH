@@ -713,6 +713,27 @@ class TestWhatDelimitsAJournalBlock(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         self.assertTrue(blocks[0].startswith("MP-067"))
 
+    def test_title_case_prose_shaped_like_a_header_does_not_open_a_block(self):
+        """BUG-006, bug sweep 2026-08-25. Widening the label charset to admit
+        hyphens (the fix above) ALSO widened it to admit ordinary Title-Case
+        prose: `Reported - 2026-08-11 the underlying cause was traced ...` at
+        column 0 matched, splitting one entry into two -- the same false-positive
+        class the "looser rule" comment on JOURNAL_BLOCK_HEAD already rejected
+        once, reached through a narrower door. No real label this project has
+        ever minted is mixed-case, so the label is now uppercase-only."""
+        text = ("# L" + N + N + "## Session journal (recent)" + N + N
+                + "2026-08-23 [agent] - opening." + N
+                + "Reported - 2026-08-11 the underlying cause was traced to a "
+                + "config error, found by re-reading the diff." + N + N
+                + "Cross-referenced - 2026-08-11 was the date it shipped." + N + N
+                + "2026-08-19 [agent] - an older entry." + N + N
+                + "## Summary table" + N)
+        before, blocks, after = rotate.split_journal(text)
+        self.assertEqual(len(blocks), 2,
+                         "Title-Case prose shaped like a header split the entry")
+        self.assertIn("Cross-referenced", blocks[0],
+                      "the second sentence should stay inside the same entry")
+
 
 class TestBulletinArchiveDoesNotEatTheFooter(unittest.TestCase):
     """SYN-100 item 3. The LAST message block ran to EOF.

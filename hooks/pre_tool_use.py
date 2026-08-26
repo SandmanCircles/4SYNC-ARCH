@@ -219,7 +219,19 @@ _BASH_WRITE_CMD = re.compile(
 # configured to refuse — and it was the one form the guard could not see: the `|`
 # landed inside the captured token, so the path resolved against nothing and the
 # fence stayed quiet. Found by adversarial probe, confirmed by running it.
-_BASH_REDIRECT_TARGET = re.compile(r"(?<![-=<>|])>>?\|?\s*(['\"][^'\"]+['\"]|\S+)")
+#
+# `\$\([^)]*\)` and the backtick alternative admit UNQUOTED command substitution
+# (bug sweep, 2026-08-25). The fallback `\S+` stops at the first whitespace, and
+# `$(echo config/KERNEL.yaml)` has one inside the parens — so the plain-`\S+`
+# capture used to grab only `$(echo`, a token with no `/` and no extension, which
+# the filter in `_bash_write_paths` then drops. Every guard saw zero targets and
+# allowed the write silently, with no debt row either, since `_record_debt` reads
+# the same list. One level of nesting only, same limitation `_strip_heredoc_body`
+# already documents for quoted `<<` — a full shell parser this is not, and a
+# quoted substitution (`"$(...)"`) already matched before this fix since the
+# quote-delimited alternative captures the whole span regardless of what's inside.
+_BASH_REDIRECT_TARGET = re.compile(
+    r"(?<![-=<>|])>>?\|?\s*(['\"][^'\"]+['\"]|\$\([^)]*\)|`[^`]*`|\S+)")
 
 # A backslash-newline is a LINE CONTINUATION: bash joins the lines and runs one
 # command (SYN-106 item 6). `_BASH_REDIRECT_TARGET`'s `\s*` spans the newline, so

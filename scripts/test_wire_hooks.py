@@ -56,6 +56,23 @@ class TestMerge(unittest.TestCase):
         self.assertIn("D:/other/python.exe",
                       moved["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
 
+    def test_a_different_instances_hook_is_not_overwritten(self):
+        """BUG-005, bug sweep 2026-08-25. Two nested ARCH instances sharing an
+        outer settings file (a layout `settings_root` itself supports) both wire
+        a file named `pre_tool_use.py` — same basename, different full path. The
+        old match was `basename in cmds`, so wiring the second instance found the
+        first's entry on the shared basename and silently replaced it, deleting
+        the first instance's guards. Both entries must now survive, distinct."""
+        other_root = "C:/other-instance"
+        other_hook = other_root + "/hooks/pre_tool_use.py"
+        first = wh.merge({}, EXE, other_hook, other_root, "warn")
+        both = wh.merge(first, EXE, HOOK, ROOT, "warn")
+        self.assertEqual(len(both["hooks"]["PreToolUse"]), 2,
+                         "wiring the second instance deleted the first's entry")
+        cmds = [h["hooks"][0]["command"] for h in both["hooks"]["PreToolUse"]]
+        self.assertTrue(any(other_hook in c for c in cmds), "first instance lost")
+        self.assertTrue(any(HOOK in c for c in cmds), "second instance not wired")
+
     def test_an_unrelated_pretooluse_hook_survives(self):
         existing = {"hooks": {"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": "their_linter.py"}]}]}}
@@ -469,9 +486,13 @@ class StatusCase(unittest.TestCase):
         self.assertIn("WIRED", out)
 
     def test_user_level_wire_reports_wired_and_receipt(self):
+        # PreToolUse must name THIS instance's own hook path (BUG-005, bug sweep
+        # 2026-08-25) — a fake path like the SessionStart one below no longer
+        # counts, on purpose: that basename-only match was the bug.
         blob = {"hooks": {
             "PreToolUse": [{"hooks": [{"type": "command",
-                            "command": '"py" "/x/hooks/pre_tool_use.py"'}]}],
+                            "command": '"py" "%s"' % os.path.join(
+                                self.root, "hooks", "pre_tool_use.py")}]}],
             "SessionStart": [{"hooks": [{"type": "command",
                               "command": '"py" "/x/hooks/session_start.py"'}]}]}}
         with open(self.user, "w", encoding="utf-8") as fh:
@@ -493,8 +514,11 @@ class StatusCase(unittest.TestCase):
         --write)."""
         sdir = os.path.join(self.root, ".claude")
         os.makedirs(sdir, exist_ok=True)
+        # Real path under self.root, not a fake one (BUG-005) — this test is about
+        # the settings.json SOURCE counting as wired, not about cross-path matching.
         blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
-                "command": '"py" "/x/hooks/pre_tool_use.py"'}]}]}}
+                "command": '"py" "%s"' % os.path.join(
+                    self.root, "hooks", "pre_tool_use.py")}]}]}}
         with open(os.path.join(sdir, "settings.json"), "w", encoding="utf-8") as fh:
             json.dump(blob, fh)
         code, out = self._run()
@@ -504,11 +528,20 @@ class StatusCase(unittest.TestCase):
     def test_missing_hook_script_is_a_problem(self):
         """A wiring whose hook script is gone (machine-migration aftermath)
         fails as silently as a dead interpreter — WIRED over it is the exact
-        'worse than no hook' state."""
+        'worse than no hook' state.
+
+        The path must be THIS instance's real hook path (BUG-005) — a match on
+        an unrelated fake path like the old `C:/nope/...` fixture no longer
+        counts as wired here at all, so it would never even reach the
+        missing-script check this test is about. The setUp-created script is
+        removed here to make "wired here, but the file is gone" the ONE thing
+        under test, instead of conflating it with "wired somewhere else"."""
+        os.remove(os.path.join(self.root, "hooks", "pre_tool_use.py"))
         sdir = os.path.join(self.root, ".claude")
         os.makedirs(sdir, exist_ok=True)
         blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
-                "command": '"C:/nope/python.exe" "C:/nope/hooks/pre_tool_use.py"'}]}]}}
+                "command": '"%s" "%s"' % (sys.executable, os.path.join(
+                    self.root, "hooks", "pre_tool_use.py"))}]}]}}
         with open(os.path.join(sdir, "settings.local.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(blob, fh)
@@ -539,8 +572,11 @@ class StatusCase(unittest.TestCase):
         with open(os.path.join(sdir, "settings.local.json"), "w",
                   encoding="utf-8") as fh:
             fh.write("{ not json }")
+        # Real path under self.root, not a fake one (BUG-005) — this test is about
+        # the unreadable file not masking the OTHER (user-level) source's wiring.
         blob = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
-                "command": '"py" "/x/hooks/pre_tool_use.py"'}]}]}}
+                "command": '"py" "%s"' % os.path.join(
+                    self.root, "hooks", "pre_tool_use.py")}]}]}}
         with open(self.user, "w", encoding="utf-8") as fh:
             json.dump(blob, fh)
         code, out = self._run()
@@ -576,15 +612,23 @@ class StatusCase(unittest.TestCase):
 
     def test_teammates_shared_paths_do_not_sink_a_healthy_local_wiring(self):
         """The shared settings.json is COMMITTED and carries one machine's
-        absolute paths — problems there are expected on every other machine
-        and must not drag a healthy local wiring to exit 1 (per-source
-        verdict, the SYN-089 false alarm)."""
+        absolute paths — a foreign entry there must not drag a healthy local
+        wiring to exit 1 (per-source verdict, the SYN-089 false alarm).
+
+        UPDATED FOR BUG-005 (bug sweep, 2026-08-25): the foreign entry used to
+        basename-match as "wired (project)" and then fail the missing-script/
+        interpreter check, reporting `PROBLEM (project)`. Path-aware matching
+        means it no longer matches THIS instance's wiring at all — it is a
+        different machine's path, correctly reported as `no guard entry`
+        rather than a wiring that is present but broken. The core guarantee
+        this test exists for is unchanged: a foreign shared entry still can't
+        sink the healthy local one."""
         sdir = os.path.join(self.root, ".claude")
         os.makedirs(sdir, exist_ok=True)
-        dead = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
-                "command": '"C:/other-machine/py.exe" "C:/other-machine/hooks/pre_tool_use.py"'}]}]}}
+        foreign = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
+                   "command": '"C:/other-machine/py.exe" "C:/other-machine/hooks/pre_tool_use.py"'}]}]}}
         with open(os.path.join(sdir, "settings.json"), "w", encoding="utf-8") as fh:
-            json.dump(dead, fh)
+            json.dump(foreign, fh)
         healthy = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command",
                    "command": '"%s" "%s"' % (sys.executable,
                                              os.path.join(self.root, "hooks",
@@ -594,7 +638,7 @@ class StatusCase(unittest.TestCase):
             json.dump(healthy, fh)
         code, out = self._run(check_interpreter=True)
         self.assertEqual(code, 0)
-        self.assertIn("PROBLEM (project)", out)   # reported, not fatal
+        self.assertIn("no guard entry", out)      # the foreign path, correctly unmatched
         self.assertIn("WIRED (project-local)", out)
 
     def test_settings_path_that_is_a_directory_is_cannot_tell(self):
@@ -640,6 +684,30 @@ class MergeMalformedCase(unittest.TestCase):
         self.assertFalse(wh._hooks_malformed({"hooks": {}}))
         self.assertFalse(wh._hooks_malformed({}))
         self.assertFalse(wh._hooks_malformed(None))
+
+    def test_a_pretooluse_dict_instead_of_a_list_is_malformed(self):
+        """BUG-007, bug sweep 2026-08-25. A hand-edit that pastes an entry object
+        directly (`{"hooks": [...]}` without its wrapping list) left `hooks` itself
+        a valid dict, so the ORIGINAL check missed it entirely — `merge()` then hit
+        `list(dict)`, got the dict's string KEYS back, and crashed with an
+        unhandled AttributeError the moment it called `.get()` on one."""
+        self.assertTrue(wh._hooks_malformed(
+            {"hooks": {"PreToolUse": {"hooks": [{"type": "command", "command": "x"}]}}}))
+        self.assertFalse(wh._hooks_malformed(
+            {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]}}))
+
+    def test_merge_no_longer_crashes_on_a_malformed_pretooluse(self):
+        """The regression itself, reproduced directly against merge() rather than
+        only against the detector — `main()`'s --write path is expected to call
+        `_hooks_malformed` first and refuse before ever reaching `merge()`, but
+        `merge()` not crashing is the actual property this bug is about."""
+        malformed = {"hooks": {"PreToolUse":
+                     {"hooks": [{"type": "command", "command": "x"}]}}}
+        try:
+            wh.merge(malformed, EXE, HOOK, ROOT, "warn")
+        except AttributeError:
+            self.fail("merge() crashed on a malformed PreToolUse instead of "
+                     "coping with it")
 
 
 if __name__ == "__main__":

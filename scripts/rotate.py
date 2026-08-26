@@ -388,8 +388,22 @@ def mount_gate(verdict, detail, apply_mode, override):
 # spurious block and split an entry in half. Caught by its own fixture. Leading `**`
 # is already excluded by the first character class, which is why this silo's
 # bold-led paragraphs were never at risk, but an unbolded one would have been.
+#
+# THE LABEL IS UPPERCASE-ONLY (BUG-006, bug sweep 2026-08-25). Widening the label
+# charset today to admit hyphens (for `MP-067`) also widened it to admit ordinary
+# Title-Case prose: `Reported — 2026-08-11 the underlying cause was traced to a
+# config error.` matched, the SAME false-positive class the "looser rule" comment
+# above already rejected once, reached through a narrower door. Every real label
+# this project has ever minted — GENESIS, MP057, MP-067, SYN-111 — is an ALL-CAPS
+# code; no shipped or documented convention uses a mixed-case word here. Requiring
+# every label character after the first to be `[A-Z0-9+\-]` closes the prose gap
+# (an ordinary sentence starts with a Title-Case word, not an all-caps one) while
+# every real shape above still matches. RESIDUAL, ACCEPTED: an ALL-CAPS prose word
+# immediately followed by " — <date>" (e.g. "OK — 2026-08-11 shipped.") still
+# opens a spurious block — rarer by an order of magnitude than Title-Case prose,
+# and the same category of residual risk this rule already lives with.
 JOURNAL_BLOCK_HEAD = re.compile(
-    r"(?m)^(?=(?:[A-Z][A-Za-z0-9+\-]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
+    r"(?m)^(?=(?:[A-Z][A-Z0-9+\-]{0,15}[ ][-—][ ])?\d{4}-\d{2}-\d{2})")
 
 # A fenced-code-block delimiter: up to three spaces of indent, then three or more
 # backticks or tildes. Group 2 is the info string (or, on a closing line, the

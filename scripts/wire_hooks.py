@@ -208,14 +208,33 @@ def merge(existing, exe, hook_path, root, mode, manifest=None):
     pre = list(hooks.get("PreToolUse") or [])
 
     # Idempotent: replace our own entry if it is already present, never append a twin.
+    #
+    # MATCHED BY FULL PATH, NOT BASENAME (bug sweep, 2026-08-25, BUG-005). The old
+    # check was `basename in cmds` — "pre_tool_use.py" is a substring of ANY
+    # instance's wiring, so two nested ARCH instances sharing an outer
+    # settings.local.json (a layout `settings_root` itself supports — see its
+    # docstring) collided: wiring the second instance matched the first
+    # instance's entry on the shared basename and silently replaced it, deleting
+    # that instance's guards with no warning. `_command_hook_path` pulls the
+    # actual path each entry was wired with; comparing THAT against our own
+    # `hook_path` (both normalized — case-insensitive filesystems, mixed slash
+    # styles) only ever matches an entry that really is this instance's own.
     ours = build_hook_entry(exe, hook_path)
-    basename = os.path.basename(hook_path)
+    target = os.path.normcase(os.path.normpath(hook_path))
     replaced = False
     for i, entry in enumerate(pre):
-        cmds = " ".join(h.get("command", "") for h in (entry.get("hooks") or []))
-        if basename in cmds:
-            pre[i] = ours
-            replaced = True
+        if not isinstance(entry, dict):
+            continue
+        for h in (entry.get("hooks") or []):
+            if not isinstance(h, dict):
+                continue
+            existing_path = _command_hook_path(h.get("command", ""))
+            if existing_path and \
+                    os.path.normcase(os.path.normpath(existing_path)) == target:
+                pre[i] = ours
+                replaced = True
+                break
+        if replaced:
             break
     if not replaced:
         pre.append(ours)
@@ -310,18 +329,42 @@ def _load_settings(path):
 
 
 def _hooks_malformed(settings):
-    """True when a settings dict has a 'hooks' key that is not a JSON object —
-    the natural paste error (an entry ARRAY dropped in directly). Merging into
-    that shape corrupts it, and iterating it crashes; both callers must treat
-    it as fix-by-hand, never as absent."""
-    return (isinstance(settings, dict) and "hooks" in settings
-            and not isinstance(settings.get("hooks"), dict))
+    """True when a settings dict has a 'hooks' key that is not a JSON object, or a
+    'PreToolUse' value that is not a list — both are the natural paste error (an
+    entry array or a single entry object dropped in without its wrapping list).
+    Merging into either shape corrupts it, and iterating it crashes.
+
+    THE SECOND CHECK CLOSES BUG-007 (bug sweep, 2026-08-25): `_hooks_malformed`
+    validated only the outer 'hooks' key, so a `PreToolUse` that was itself a dict
+    (e.g. `{"hooks": [...]}` pasted without its list) sailed through into
+    `merge()`, where `list(dict)` yields the dict's KEYS as strings and the loop's
+    `entry.get(...)` then raised an unhandled `AttributeError` — a raw traceback
+    instead of the graceful refusal every OTHER malformed shape already gets. The
+    read path (`_hook_command`, below) already tolerated this; only the write
+    path did not."""
+    if not isinstance(settings, dict):
+        return False
+    if "hooks" in settings and not isinstance(settings["hooks"], dict):
+        return True
+    hooks = settings.get("hooks")
+    if isinstance(hooks, dict) and "PreToolUse" in hooks \
+            and not isinstance(hooks["PreToolUse"], list):
+        return True
+    return False
 
 
-def _hook_command(settings, event, basename):
+def _hook_command(settings, event, basename, expect_path=None):
     """The command string wiring `basename` under `event`, or None. Tolerant of
     every malformed shape — a status report must survive what a hand edit can
-    produce."""
+    produce.
+
+    `expect_path`, given, additionally requires the entry's own hook-path
+    argument to resolve to THIS SAME instance (bug sweep, 2026-08-25, BUG-005's
+    secondary finding) — without it, a shared settings file wired for a
+    DIFFERENT nested instance reports as "wired" here too, on the basename
+    alone. Left unset for SessionStart's boot-receipt check: that wiring is
+    legitimately instance-agnostic (one user-level hook per machine), so
+    basename-only is the correct question there, not an oversight."""
     if not isinstance(settings, dict):
         return None
     hooks = settings.get("hooks")
@@ -330,6 +373,7 @@ def _hook_command(settings, event, basename):
     entries = hooks.get(event)
     if not isinstance(entries, list):
         return None
+    target = os.path.normcase(os.path.normpath(expect_path)) if expect_path else None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -337,8 +381,15 @@ def _hook_command(settings, event, basename):
         if not isinstance(inner, list):
             continue
         for h in inner:
-            if isinstance(h, dict) and basename in h.get("command", ""):
-                return h.get("command", "")
+            if not isinstance(h, dict) or basename not in h.get("command", ""):
+                continue
+            cmd = h.get("command", "")
+            if target is not None:
+                existing = _command_hook_path(cmd)
+                if not existing or \
+                        os.path.normcase(os.path.normpath(existing)) != target:
+                    continue
+            return cmd
     return None
 
 
@@ -392,6 +443,10 @@ def status(root, user_settings=None, check_interpreter=True):
     sroot, why_root = settings_root(root)
     hook_base = os.path.basename(HOOK_REL)
     boot_base = os.path.basename(BOOT_HOOK_REL)
+    # Same construction merge() uses — lets _hook_command verify a PreToolUse
+    # match really is THIS instance's, not a basename collision with a sibling
+    # nested instance sharing the same settings file (BUG-005's secondary find).
+    hook_path = os.path.join(root, *HOOK_REL.split("/")).replace("\\", "/")
     sources = [
         ("project", os.path.join(sroot, ".claude", "settings.json")),
         ("project-local", os.path.join(sroot, SETTINGS_REL)),
@@ -419,7 +474,7 @@ def status(root, user_settings=None, check_interpreter=True):
             print("%-14s: %s — 'hooks' is not a JSON object (a pasted entry array?); "
                   "fix by hand" % (label, path))
             continue
-        cmd = _hook_command(blob, "PreToolUse", hook_base)
+        cmd = _hook_command(blob, "PreToolUse", hook_base, expect_path=hook_path)
         if cmd:
             wired.append((label, cmd))
             mode = (blob.get("env") or {}).get("ARCH_HOOKS_MODE")

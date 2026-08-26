@@ -1520,6 +1520,45 @@ class TestBashRouting(GuardCase):
         self.assertEqual("block", kind)
         self.assertIn("CROSS-INSTANCE", reason or "")
 
+    # ── Bug sweep, 2026-08-25: BUG-003, found by an independent finder agent ──
+    #
+    # `\S+` stops at the first whitespace, and an unquoted `$(...)`/backtick
+    # redirect target has one inside — the old pattern captured only `$(echo`,
+    # a token with no slash and no extension, so the filter dropped it and every
+    # guard saw zero targets: total silent allow, no ask, no block, no debt row.
+    # Same CLASS as the two tests above, found the same way (an adversarial
+    # probe, not a re-read), through the one syntax the SYN-106 sweep never
+    # tried. This closes the ZERO-TARGETS case specifically — a regex-matching
+    # guard (g1/g4/g5) now sees the full substituted text. IT DOES NOT fix
+    # g6_root_fence for this syntax: g6 resolves its target as a real filesystem
+    # path, and the mangled token (`$(echo ...` with only the trailing paren
+    # stripped) is not one, so a cross-instance write reached ONLY through
+    # command substitution still slips past g6 specifically — a known, separate,
+    # harder limitation, not something this fix claims to close.
+
+    def test_unquoted_command_substitution_does_not_hide_the_target(self):
+        kind, reason = self.run_verdict(
+            bash_payload("echo pwned > $(echo config/KERNEL.yaml)"), cwd=self.root)
+        self.assertEqual("ask", kind)
+        self.assertIn("KERNEL write guard", reason or "")
+
+    def test_unquoted_backtick_substitution_does_not_hide_the_target(self):
+        kind, reason = self.run_verdict(
+            bash_payload("echo pwned > `echo config/KERNEL.yaml`"), cwd=self.root)
+        self.assertEqual("ask", kind)
+        self.assertIn("KERNEL write guard", reason or "")
+
+    def test_command_substitution_with_no_matching_guard_is_not_silently_empty(self):
+        """The regression this class actually guards against: BEFORE this fix,
+        `_bash_write_paths` returned `[]` for this command, so it never reached
+        ANY guard at all. It now reaches at least one — asserted at the
+        tokenizer level since no shipped guard's pattern happens to match an
+        arbitrary filename, and that is fine; the guards' coverage is a
+        separate question from whether the target is visible to them."""
+        self.assertNotEqual(
+            hooks._bash_write_paths("echo pwned > $(echo some/arbitrary/file.txt)"),
+            [])
+
     def test_an_unterminated_dash_heredoc_is_still_truncated(self):
         """NOT A DEFECT, pinned so it is not "fixed" into one.
 

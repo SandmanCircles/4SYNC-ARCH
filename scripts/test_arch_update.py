@@ -225,6 +225,80 @@ class TestACopyFailureLeavesTheInstanceAlone(UpdateCase):
         self.assertEqual(report.result_build_id, report.source_build_id)
 
 
+class TestAReplaceFailureIsReportedNotCrashed(UpdateCase):
+    """Bug sweep, 2026-08-25 (BUG-004). Phase 1 (copyfile, above) had its rollback;
+    phase 2 (the os.replace loop) did not. A lock on one file mid-loop left files
+    already replaced landed, the rest old, and let the raw OSError escape `main`'s
+    except clause — which names only IncompleteSource/BuildMismatch/RefusedWrite —
+    as an unhandled traceback, with STEP 4 never running to report what state the
+    instance was actually left in."""
+
+    def _fail_replace_on(self, target_rel):
+        real = arch_update.os.replace
+
+        def flaky(src, dst):
+            if target_rel in dst.replace(os.sep, "/"):
+                raise PermissionError("simulated lock on " + target_rel)
+            return real(src, dst)
+
+        return mock.patch.object(arch_update.os, "replace", flaky)
+
+    def test_a_mid_loop_replace_failure_raises_partial_apply_not_a_raw_oserror(self):
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[2]
+        with self._fail_replace_on(victim):
+            with self.assertRaises(arch_update.PartialApply) as ctx:
+                self._run(src, dst, apply=True)
+        self.assertIn(victim, ctx.exception.remaining)
+
+    def test_files_before_the_failure_really_did_land(self):
+        """The exception must tell the truth about what's already on disk, not just
+        that something went wrong."""
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[2]
+        with self._fail_replace_on(victim):
+            with self.assertRaises(arch_update.PartialApply) as ctx:
+                self._run(src, dst, apply=True)
+        for rel in ctx.exception.landed:
+            self.assertEqual(_read(dst, rel), _read(src, rel),
+                             "%s is reported landed but dest still differs" % rel)
+
+    def test_files_from_the_failure_onward_are_still_old(self):
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[2]
+        before_victim = _read(dst, victim)
+        with self._fail_replace_on(victim):
+            with self.assertRaises(arch_update.PartialApply):
+                self._run(src, dst, apply=True)
+        self.assertEqual(_read(dst, victim), before_victim)
+
+    def test_no_temp_files_survive_a_partial_apply(self):
+        """Same debris concern as the phase-1 class above — a mid-loop failure must
+        not leave `.arch-new` siblings `arch_build` never hashes."""
+        src, dst = self._trees()
+        with self._fail_replace_on(arch_build.MACHINERY[2]):
+            with self.assertRaises(arch_update.PartialApply):
+                self._run(src, dst, apply=True)
+        leftovers = []
+        for base, _dirs, files in os.walk(dst):
+            leftovers += [os.path.join(base, f) for f in files
+                          if ".arch-new" in f or f.endswith(".tmp")]
+        self.assertEqual([], leftovers)
+
+    def test_a_plain_retry_after_a_partial_apply_finishes_the_job(self):
+        """The documented recovery path: `update()` diffs against the CURRENT
+        destination, so a second call naturally skips whatever already landed."""
+        src, dst = self._trees()
+        victim = arch_build.MACHINERY[2]
+        with self._fail_replace_on(victim):
+            with self.assertRaises(arch_update.PartialApply):
+                self._run(src, dst, apply=True)
+        report = self._run(src, dst, apply=True)   # no fault injection this time
+        self.assertEqual(report.result_build_id, report.source_build_id)
+        for rel in arch_build.MACHINERY:
+            self.assertEqual(_read(dst, rel), _read(src, rel))
+
+
 class TestSourceAndDestMustDiffer(UpdateCase):
     """SECOND-PASS AUDIT FIND. The documented command is `python
     <CLONE>/scripts/arch_update.py --from <CLONE> --dir .` — and --dir DEFAULTS to

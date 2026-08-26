@@ -404,6 +404,63 @@ class TestEmptiedHeading(TempRoot):
         self.assertIn("| 1 | ✅ | a | — |", self.new)
 
 
+ALREADY_MIGRATED = (
+    "# L\n\n## Summary table\n\n| ID | Status | Subject | B |\n|---|---|---|---|\n"
+    "| 1 | ✅ | a | — |\n| 2 | ❌ | b | — |\n\n---\n\n"
+    "*Pattern from 4SYNC ARCH — this silo is patient zero.*\n")
+
+
+class TestReRunOnAnAlreadyMigratedLedger(TempRoot):
+    """BUG-011, bug sweep 2026-08-25. Every row here is TERMINAL and none has a
+    description block — the exact shape a ledger is left in after this script's
+    OWN first successful --apply. Nothing in the FATAL checks required `plan`
+    to be non-empty, so a second --apply used to write the ledger anyway (a
+    real, if no-op, rewrite) and print "APPLIED — 0 documents written" —
+    success language on a script whose docstring says it "runs ONCE and cannot
+    be re-run." Also covers a ledger that never had any description blocks to
+    begin with: indistinguishable from the re-run case by this check, and
+    both deserve the same calm "nothing to do" rather than a write."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make(self.tmp, ledger=ALREADY_MIGRATED)
+        self.before = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
+
+    def test_apply_exits_zero_and_says_nothing_to_migrate(self):
+        code, out = run(self.root, "--apply", "--allow-dirty")
+        self.assertEqual(code, 0, out[:200])
+        self.assertIn("NOTHING TO MIGRATE", out)
+
+    def test_apply_does_not_write_the_ledger_at_all(self):
+        """The core of the bug: not just the SAME content, but no write call —
+        the previous behaviour was a real (if content-identical) atomic_write."""
+        run(self.root, "--apply", "--allow-dirty")
+        after = S.read(os.path.join(self.root, "MERGE_PLAN.md"))
+        self.assertEqual(self.before, after)
+
+    def test_apply_creates_no_task_documents(self):
+        run(self.root, "--apply", "--allow-dirty")
+        tasks_dir = os.path.join(self.root, "tasks")
+        self.assertFalse(os.path.isdir(tasks_dir),
+                         "a no-op apply created a tasks/ directory")
+
+    def test_dry_run_also_says_nothing_to_migrate_not_reapply(self):
+        """The dry run must not tell the operator to 're-run with --apply' when
+        a real run would write nothing."""
+        code, out = run(self.root, "--allow-dirty")     # no --apply
+        self.assertEqual(code, 0, out[:200])
+        self.assertIn("NOTHING TO MIGRATE", out)
+        self.assertNotIn("Re-run with --apply", out)
+
+    def test_it_is_reported_calmly_not_as_a_refusal(self):
+        """This is NOT the FATAL 'the ledger does not reconcile' case above —
+        an already-migrated ledger is perfectly sound. Must not share that
+        wording, which would misdirect someone into hand-editing a fine file."""
+        _, out = run(self.root, "--apply", "--allow-dirty")
+        self.assertNotIn("REFUSING", out)
+        self.assertNotIn("does not reconcile", out)
+
+
 class TestDeclaredNames(TempRoot):
     """MP#83. This script is the more dangerous of the two that carried these
     literals: it runs ONCE and is irreversible, so migrating to the wrong filenames

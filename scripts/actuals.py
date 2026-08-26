@@ -78,6 +78,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 # Cache reads bill at roughly a tenth of fresh input. Used only to report a
@@ -306,6 +307,67 @@ def render(rows):
     return "\n".join(out) + "\n"
 
 
+class _SeriesLock(object):
+    """Mutual exclusion around append_series's read-then-write critical section
+    (BUG-009, bug sweep 2026-08-25). The dedupe read and the append were two
+    unsynchronized filesystem operations — two sessions closing around the same
+    time could both read the series before either wrote, both conclude the same
+    (project, session, kind) row was unseen, and both append it, producing a
+    real duplicate. Two live ARCH instances calling `actuals --log` at every
+    close is this project's ordinary setup, not a contrived one.
+
+    A `<series>.lock` sibling, created with O_CREAT|O_EXCL — atomic on every
+    platform this project supports, no fcntl/msvcrt split needed. Whichever
+    process creates it holds the lock; every other process spins until it is
+    gone, stolen as stale, or `timeout` elapses.
+
+    STALE-LOCK RECOVERY, not indefinite waiting: the critical section here is a
+    few milliseconds of file I/O, so a lock older than `stale_after` was almost
+    certainly abandoned by a process that died holding it, not one still
+    working. And a TIMEOUT PROCEEDS UNLOCKED rather than raising — per this
+    tool's own manifest rule (`on_demand: skip`, a measurement is never worth
+    failing a close over), refusing to log because of a dead process's leftover
+    lock would be strictly worse than the residual race this reopens."""
+    def __init__(self, path, timeout=10.0, poll=0.05, stale_after=30.0):
+        self.lock_path = path + ".lock"
+        self.timeout = timeout
+        self.poll = poll
+        self.stale_after = stale_after
+        self._acquired = False
+
+    def __enter__(self):
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                self._acquired = True
+                return self
+            except OSError:
+                try:
+                    age = time.time() - os.path.getmtime(self.lock_path)
+                except OSError:
+                    continue    # vanished between the failed create and the stat
+                if age > self.stale_after:
+                    try:
+                        os.remove(self.lock_path)
+                    except OSError:
+                        pass
+                    continue
+                if time.time() >= deadline:
+                    return self   # give up waiting rather than fail the close
+                time.sleep(self.poll)
+
+    def __exit__(self, *exc_info):
+        # Only remove a lock WE created — a timed-out, unlocked entry must never
+        # delete the lock another process is still legitimately holding.
+        if self._acquired:
+            try:
+                os.remove(self.lock_path)
+            except OSError:
+                pass
+
+
 def _series_key(row):
     """Dedupe identity for a series row.
 
@@ -322,41 +384,41 @@ def append_series(root, rows):
     what matters, and fixed columns break exactly then."""
     path = os.path.join(root, SERIES_REL)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    seen = set()
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                # ONE parse per line, and a line that is valid JSON but not an
-                # object is SKIPPED. `null` and `123` both parse, and `.get` then
-                # raised AttributeError straight past this guard — crashing --log
-                # at every close until the file was hand-repaired, against the
-                # manifest's `actuals.on_missing: skip` (SYN-091).
-                try:
-                    rec = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if isinstance(rec, dict):
-                    seen.add(_series_key(rec))
-    new = [r for r in rows if _series_key(r) not in seen]
-    if new:
-        # A REAL APPEND (SYN-109 item 1). This read the whole file, wrote it plus the
-        # new rows to a tmp, and os.replace'd — a whole-file rewrite under a
-        # docstring that says "Append-only", which is the same drift between a claim
-        # and its code that this sweep kept finding elsewhere.
-        #
-        # AND IT IS THE CONCURRENCY HAZARD THE DOCSTRING PROMISES IT IS NOT: two
-        # sessions closing in the same second each read N rows and write N+1, and the
-        # loser's row is gone with nothing to announce it. Two live ARCH instances on
-        # one machine, both calling `actuals --log` at every close, is the ordinary
-        # setup here rather than a contrived one.
-        #
-        # Appending is also strictly safer than the tmp+replace it replaces: short
-        # O_APPEND writes do not interleave, whereas a rewrite has a window between
-        # its last read and its commit in which any other writer's row is lost. The
-        # dedupe above already assumed append semantics; only the write did not.
-        with open(path, "a", encoding="utf-8") as fh:
-            for r in new:
-                fh.write(json.dumps(r, sort_keys=True) + "\n")
+    # THE DEDUPE READ AND THE APPEND ARE NOW ONE CRITICAL SECTION (BUG-009, bug
+    # sweep 2026-08-25). O_APPEND writes not interleaving (below) says nothing
+    # about the DECISION of what to write — two processes reading `seen` before
+    # either wrote could each conclude the same row was new and both append it.
+    # `_SeriesLock` closes the read-to-write window rather than only the write.
+    with _SeriesLock(path):
+        seen = set()
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    # ONE parse per line, and a line that is valid JSON but not an
+                    # object is SKIPPED. `null` and `123` both parse, and `.get` then
+                    # raised AttributeError straight past this guard — crashing --log
+                    # at every close until the file was hand-repaired, against the
+                    # manifest's `actuals.on_missing: skip` (SYN-091).
+                    try:
+                        rec = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(rec, dict):
+                        seen.add(_series_key(rec))
+        new = [r for r in rows if _series_key(r) not in seen]
+        if new:
+            # A REAL APPEND (SYN-109 item 1). This read the whole file, wrote it plus the
+            # new rows to a tmp, and os.replace'd — a whole-file rewrite under a
+            # docstring that says "Append-only", which is the same drift between a claim
+            # and its code that this sweep kept finding elsewhere.
+            #
+            # Appending is also strictly safer than the tmp+replace it replaces: short
+            # O_APPEND writes do not interleave, whereas a rewrite has a window between
+            # its last read and its commit in which any other writer's row is lost. The
+            # dedupe above already assumed append semantics; only the write did not.
+            with open(path, "a", encoding="utf-8") as fh:
+                for r in new:
+                    fh.write(json.dumps(r, sort_keys=True) + "\n")
     return len(new), path
 
 

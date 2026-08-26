@@ -218,15 +218,29 @@ def parse_live_within_minutes(manifest_text):
 
 
 def read_debt(root, live_within_min):
-    """Return (live_rows, stale_rows) — the manifest's TWO readings of one file.
+    """Return (live_rows, stale_rows, unreadable_rows) — the manifest's TWO
+    readings of one file, plus a THIRD bucket for a row this reader cannot
+    place in either.
 
-    Same rows, opposite meanings: recent means a session is working RIGHT NOW and
-    the shared ledgers are contested; older means somebody never wrapped. A boot
-    that reports only one of them is why the other keeps being missed."""
+    Same rows, opposite meanings for live/stale: recent means a session is
+    working RIGHT NOW and the shared ledgers are contested; older means
+    somebody never wrapped. A boot that reports only one of them is why the
+    other keeps being missed.
+
+    UNREADABLE IS ITS OWN BUCKET, NOT A SILENT FOLD INTO STALE (BUG-012, bug
+    sweep 2026-08-25). A row whose timestamp fails to parse used to set
+    `age_min = None` and fall through the `age_min is not None and ...` guard
+    straight into `stale` — indistinguishable from a genuinely old row, and
+    `live` vs `stale` is exactly the signal that drives the "LIVE, ledgers are
+    CONTESTED" warning. A corrupted-but-actually-recent row therefore read as
+    merely idle instead of raising that warning — understating the one risk
+    this file exists to surface. `_record_debt` writes atomically (tmp file +
+    os.replace), so ordinary concurrent use cannot produce this; it takes
+    manual or out-of-band corruption of the row. Narrow reach, real gap."""
     path = os.path.join(root, DEBT_FILENAME)
     if not os.path.isfile(path):
-        return [], []
-    live, stale = [], []
+        return [], [], []
+    live, stale, unreadable = [], [], []
     now = time.time()
     for line in _read(path).splitlines():
         if not line.strip() or line.startswith("#"):
@@ -235,13 +249,14 @@ def read_debt(root, live_within_min):
         if len(parts) < 3:
             continue
         sid, started, last = parts[0], parts[1], parts[2]
+        row = (sid[:8], last, parts[3] if len(parts) > 3 else "")
         try:
             age_min = (now - _stamp_epoch(last)) / 60.0
         except (ValueError, OverflowError, OSError):
-            age_min = None
-        row = (sid[:8], last, parts[3] if len(parts) > 3 else "")
-        (live if age_min is not None and age_min <= live_within_min else stale).append(row)
-    return live, stale
+            unreadable.append(row)
+            continue
+        (live if age_min <= live_within_min else stale).append(row)
+    return live, stale, unreadable
 
 
 def check_sentinel(path):
@@ -357,7 +372,7 @@ def build_receipt(root, manifest_name, manifest_text, mode, session_id=None):
     # the same accounting meter.py uses, and the reason the two agree.
     stack = [manifest_name] + boot
     bulletin = parse_bulletin_at_boot(manifest_text)
-    live, stale = read_debt(root, parse_live_within_minutes(manifest_text))
+    live, stale, unreadable = read_debt(root, parse_live_within_minutes(manifest_text))
 
     lines = [
         "═══ 4SYNC ARCH — BOOT RECEIPT ═══",
@@ -414,7 +429,14 @@ def build_receipt(root, manifest_name, manifest_text, mode, session_id=None):
                   f"{len(stale)} session(s) holding UNDEPOSITED state (never wrapped):"]
         for sid, last, _ in stale:
             lines.append(f"    · {sid} last wrote {last}")
-    if live or stale:
+    if unreadable:
+        lines += ["",
+                  f"⚠ {len(unreadable)} session(s) with an UNREADABLE debt timestamp — "
+                  "cannot tell if LIVE or stale. Treat as potentially contested rather "
+                  "than as absence:"]
+        for sid, last, _ in unreadable:
+            lines.append(f"    · {sid} last wrote {last!r} (does not parse)")
+    if live or stale or unreadable:
         lines.append("  NOTE: last_activity tracks FILE WRITES observed BY A HOOK — every "
                      "git command after one is invisible, and a surface that runs no hooks "
                      "writes NO row at all. So 'not listed' is not evidence of absence, and "

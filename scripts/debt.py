@@ -60,10 +60,18 @@ def find_debt_files(root):
     instance state, and MAX_DEBT_DEPTH stops the descent. The override is added
     AFTER the walk and is exempt from both — the recorder writes there instead of
     the default path, so a walk that dropped it would clear nothing while
-    reporting success, and it may legitimately sit outside the bounded region."""
+    reporting success, and it may legitimately sit outside the bounded region.
+
+    FOLLOWS SYMLINKS (BUG-010, bug sweep 2026-08-25). `os.walk`'s default
+    `followlinks=False` does not descend into a symlinked directory, so a
+    nested instance reached that way had its debt file silently never walked —
+    contradicting this function's own claim above. Safe to enable without a
+    separate cycle guard: MAX_DEBT_DEPTH bounds descent by PATH LENGTH, not by
+    real filesystem depth, so a symlink cycle still hits the same three-level
+    stop everything else does rather than looping."""
     found = []
     root = os.path.abspath(root)
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         rel = os.path.relpath(dirpath, root)
         depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
         if depth >= MAX_DEBT_DEPTH:

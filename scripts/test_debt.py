@@ -18,9 +18,11 @@ Run either way:
 import contextlib
 import io
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import debt  # noqa: E402
@@ -261,6 +263,65 @@ class ClearCase(unittest.TestCase):
         self.assertEqual(code, 0)
         with open(os.path.join(gitdir, ".session_debt.tsv"), encoding="utf-8") as fh:
             self.assertIn("mine", fh.read())   # untouched
+
+    # ── BUG-010, bug sweep 2026-08-25 ────────────────────────────────────────
+    def test_the_walk_passes_followlinks_true(self):
+        """An implementation assertion alongside the two behavioural tests
+        below — this environment cannot always create a real symlink (see
+        their skip, unprivileged Windows), so this one verifies the fix
+        directly and needs no OS symlink support to run everywhere."""
+        real_walk = os.walk
+        calls = []
+
+        def recording_walk(*a, **kw):
+            calls.append(kw)
+            return real_walk(*a, **kw)
+
+        with mock.patch("debt.os.walk", recording_walk):
+            debt.find_debt_files(self.root)
+        self.assertTrue(calls)
+        self.assertTrue(all(kw.get("followlinks") is True for kw in calls))
+
+    def test_a_symlinked_nested_instance_is_walked(self):
+        """`os.walk`'s default `followlinks=False` lists a symlinked directory's
+        NAME but never descends into it — so a nested instance reached that way
+        had its debt file silently never found or cleared, contradicting this
+        module's own docstring claim of walking EVERY debt file under the root.
+
+        Skips rather than fails where symlink creation itself is unavailable
+        (unprivileged Windows without Developer Mode) — that is an environment
+        limitation, not a property of `find_debt_files` under test."""
+        real = tempfile.mkdtemp(prefix="debt_symlink_target_")
+        self.addCleanup(shutil.rmtree, real, True)
+        real_debt = os.path.join(real, debt.DEBT_FILENAME)
+        self._seed(real_debt, ["mine"])
+        link = os.path.join(self.root, "linked-instance")
+        try:
+            os.symlink(real, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation unavailable in this environment: %s" % exc)
+        found = debt.find_debt_files(self.root)
+        norm = {os.path.normcase(os.path.abspath(f)) for f in found}
+        self.assertIn(os.path.normcase(os.path.abspath(real_debt)), norm,
+                      "the symlinked instance's debt file was never walked")
+
+    def test_a_symlinked_nested_instances_row_is_actually_cleared(self):
+        """The end-to-end behaviour --clear exists for, not just discovery."""
+        real = tempfile.mkdtemp(prefix="debt_symlink_target_")
+        self.addCleanup(shutil.rmtree, real, True)
+        real_debt = os.path.join(real, debt.DEBT_FILENAME)
+        self._seed(real_debt, ["mine", "theirs"])
+        link = os.path.join(self.root, "linked-instance")
+        try:
+            os.symlink(real, link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation unavailable in this environment: %s" % exc)
+        code, _ = self._run("--clear", "--dir", self.root, "--session", "mine")
+        self.assertEqual(code, 0)
+        with open(real_debt, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("mine", text)
+        self.assertIn("theirs", text)
 
 
 if __name__ == "__main__":

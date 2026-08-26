@@ -23,6 +23,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -401,6 +403,49 @@ class TestAppendSeries(unittest.TestCase):
         self.assertIn('"first"', text)
         self.assertIn('"second"', text)
 
+    # ── BUG-009, bug sweep 2026-08-25: the read-then-write TOCTOU race ──────
+    #
+    # An IMPLEMENTATION ASSERTION, deliberately, not a timing-based race
+    # simulation — this project's OWN documented lesson, two paragraphs above
+    # (test_the_series_file_is_only_ever_appended_to): a sleep-timed race
+    # simulation for the sibling SYN-109 item 1 bug went GREEN against the
+    # UNFIXED code, twice, before being replaced with exactly this kind of
+    # check. Prove the lock genuinely wraps the critical section instead.
+
+    def test_append_series_holds_the_lock_across_its_read_and_write(self):
+        path = os.path.join(self.dir, actuals.SERIES_REL)
+        events = []
+        real_enter = actuals._SeriesLock.__enter__
+        real_exit = actuals._SeriesLock.__exit__
+        real_open = open
+
+        def tracking_enter(self_):
+            events.append("enter")
+            return real_enter(self_)
+
+        def tracking_exit(self_, *a):
+            events.append("exit")
+            return real_exit(self_, *a)
+
+        def tracking_open(*a, **kw):
+            target = a[0] if a else kw.get("file")
+            if isinstance(target, str) and os.path.abspath(target) == os.path.abspath(path):
+                events.append("open")
+            return real_open(*a, **kw)
+
+        with mock.patch.object(actuals._SeriesLock, "__enter__", tracking_enter), \
+             mock.patch.object(actuals._SeriesLock, "__exit__", tracking_exit), \
+             mock.patch("builtins.open", tracking_open):
+            actuals.append_series(self.dir, self.rows("a"))
+
+        self.assertEqual(events[0], "enter")
+        self.assertEqual(events[-1], "exit")
+        opens = [i for i, e in enumerate(events) if e == "open"]
+        self.assertTrue(opens, "the series file was never opened")
+        for i in opens:
+            self.assertTrue(0 < i < len(events) - 1,
+                            "a read or write of the series happened outside the lock")
+
     # ── SYN-101 item 9, SECOND HALF: --log crashed instead of skipping ──────
     def test_log_does_not_crash_the_close_when_the_series_is_unwritable(self):
         """The manifest declares `actuals.on_missing: skip` — "a measurement never
@@ -479,6 +524,84 @@ class TestAppendSeries(unittest.TestCase):
         path = os.path.join(self.dir, actuals.SERIES_REL)
         for line in open(path, encoding="utf-8").read().splitlines():
             json.loads(line)
+
+
+class SeriesLockCase(unittest.TestCase):
+    """`_SeriesLock` in isolation — mutual exclusion and stale-lock recovery,
+    independent of append_series's own business logic."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "s.jsonl")
+
+    def test_a_held_lock_blocks_a_second_acquire_until_released(self):
+        """Deterministic by construction, not by timing a narrow window: thread
+        2's Event is only ever set AFTER it has entered its critical section, so
+        checking it is unset after thread 1 has had time to acquire is a
+        monotonic assertion, not a race against a specific instant."""
+        order = []
+        released = threading.Event()
+        entered_2 = threading.Event()
+
+        def holder():
+            with actuals._SeriesLock(self.path, timeout=5.0, poll=0.01):
+                order.append("1-enter")
+                released.wait(5.0)
+                order.append("1-exit")
+
+        def waiter():
+            with actuals._SeriesLock(self.path, timeout=5.0, poll=0.01):
+                order.append("2-enter")
+                entered_2.set()
+
+        t1 = threading.Thread(target=holder)
+        t1.start()
+        time.sleep(0.2)                    # generous head start to acquire
+        t2 = threading.Thread(target=waiter)
+        t2.start()
+        time.sleep(0.2)
+        self.assertFalse(entered_2.is_set(),
+                         "the second lock was acquired while the first still held it")
+        released.set()
+        t1.join(5)
+        t2.join(5)
+        self.assertEqual(order, ["1-enter", "1-exit", "2-enter"])
+
+    def test_the_lock_file_does_not_survive_a_clean_exit(self):
+        with actuals._SeriesLock(self.path):
+            self.assertTrue(os.path.isfile(self.path + ".lock"))
+        self.assertFalse(os.path.isfile(self.path + ".lock"))
+
+    def test_a_stale_lock_is_stolen_not_waited_out(self):
+        """Older than stale_after: an abandoned lock from a dead process must
+        not block every future run forever."""
+        lock_file = self.path + ".lock"
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        old = time.time() - 60.0
+        os.utime(lock_file, (old, old))
+        start = time.time()
+        with actuals._SeriesLock(self.path, timeout=5.0, poll=0.01, stale_after=1.0):
+            pass
+        self.assertLess(time.time() - start, 2.0, "waited out a stale lock instead of stealing it")
+
+    def test_a_fresh_lock_is_not_stolen(self):
+        lock_file = self.path + ".lock"
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        with actuals._SeriesLock(self.path, timeout=0.3, poll=0.05, stale_after=30.0) as lk:
+            pass
+        # timed out waiting, gave up unlocked rather than raising or stealing
+        self.assertFalse(lk._acquired)
+        self.assertTrue(os.path.isfile(lock_file), "a fresh lock we do not own must survive")
+
+    def test_a_timed_out_wait_never_deletes_the_other_holders_lock(self):
+        lock_file = self.path + ".lock"
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        with actuals._SeriesLock(self.path, timeout=0.2, poll=0.05, stale_after=30.0):
+            pass
+        self.assertTrue(os.path.isfile(lock_file))
 
 
 class TestRender(unittest.TestCase):

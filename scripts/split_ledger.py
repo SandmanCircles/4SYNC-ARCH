@@ -331,6 +331,25 @@ def main():
                                             ledger=ledger_name) + body + "\n",
                      status[tid]))
 
+    # BUG-011, bug sweep 2026-08-25. Nothing past the FATAL checks above
+    # requires `plan` to be non-empty — every row that reaches here is either
+    # already accounted for in `seen` or terminal-with-no-description
+    # (`term_no_desc`, explicitly non-fatal). Reaching an empty plan therefore
+    # means one of two calm things, never a reconciliation problem: this
+    # ledger was ALREADY migrated once (a second `--apply` on it), or it never
+    # had any description blocks to begin with. Previously nothing gated the
+    # write on that: `atomic_write` ran unconditionally, on a real, if no-op,
+    # rewrite, and printed "APPLIED — 0 documents written" — a genuine write
+    # with a misleading success message, on a script whose own docstring says
+    # this migration "runs ONCE and cannot be re-run." Stop here instead, for
+    # BOTH dry-run and --apply — a dry run's "re-run with --apply" is equally
+    # misleading when a real run would write nothing.
+    if not plan:
+        print("  NOTHING TO MIGRATE — no row has a description block left to move.")
+        print("  Either this ledger has already been through this migration, or it")
+        print("  never had any description blocks to begin with. Not writing.")
+        return
+
     for rel, content, st in plan[:12]:
         print(f"  {rel:28} {st:11} {len(content.encode()):7,} B")
     if len(plan) > 12:

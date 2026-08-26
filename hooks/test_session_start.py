@@ -496,6 +496,45 @@ class TestDebtReadings(InstanceCase):
         self.assertNotIn("LIVE", r)
         self.assertNotIn("UNDEPOSITED", r)
 
+    # ── BUG-012, bug sweep 2026-08-25 ────────────────────────────────────────
+    def test_an_unparseable_timestamp_is_its_own_bucket_not_folded_into_stale(self):
+        """A corrupted/hand-edited row used to set age_min = None and fall
+        through straight into `stale` — indistinguishable from a genuinely
+        old row, and `live` vs `stale` is exactly the signal that drives the
+        CONTESTED warning. A corrupted-but-possibly-recent row must not read
+        as merely idle."""
+        self._debt(["abcd1234-x\tnot-a-timestamp\tnot-a-timestamp\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("UNREADABLE", r)
+        self.assertNotIn("UNDEPOSITED", r)
+
+    def test_the_unreadable_row_is_named(self):
+        self._debt(["abcd1234-x\tgarbage\tgarbage\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("abcd1234", r)
+
+    def test_an_unreadable_row_still_gets_the_hook_caveat(self):
+        self._debt(["abcd1234-x\tgarbage\tgarbage\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("observed BY A HOOK", r)
+
+    def test_a_readable_row_is_not_marked_unreadable(self):
+        """The control — a normal row must not spuriously land in the new bucket."""
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self._debt([f"abcd1234-x\t{now}\t{now}\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertNotIn("UNREADABLE", r)
+
+    def test_mixed_readable_and_unreadable_rows_both_reported(self):
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self._debt([f"aaaaaaaa-x\t{now}\t{now}\tC:\\proj\tunwrapped",
+                    "bbbbbbbb-x\tgarbage\tgarbage\tC:\\proj\tunwrapped"])
+        r = self._receipt()
+        self.assertIn("LIVE", r)
+        self.assertIn("UNREADABLE", r)
+        self.assertIn("aaaaaaaa", r)
+        self.assertIn("bbbbbbbb", r)
+
     def test_malformed_row_is_skipped_not_fatal(self):
         self._debt(["garbage", "a\tb"])
         self._receipt()   # must not raise

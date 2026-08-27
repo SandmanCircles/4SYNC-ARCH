@@ -280,7 +280,16 @@ class ClearCase(unittest.TestCase):
         with mock.patch("debt.os.walk", recording_walk):
             debt.find_debt_files(self.root)
         self.assertTrue(calls)
-        self.assertTrue(all(kw.get("followlinks") is True for kw in calls))
+        # Only the FIRST call is the direct invocation `find_debt_files` makes.
+        # On Python versions whose `os.walk` recurses by calling its own global
+        # name for each subdirectory (pre-3.9-ish; superseded by an iterative,
+        # stack-based rewrite since), that self-call is ALSO intercepted here —
+        # but positionally (`walk(new_path, topdown, onerror, followlinks)`),
+        # so later entries in `calls` legitimately carry no `followlinks` key
+        # even though the value they were passed IS True. Asserting on every
+        # captured call tests os.walk's own recursion mechanics, not this
+        # function's behavior; asserting on the first is the actual claim.
+        self.assertIs(calls[0].get("followlinks"), True)
 
     def test_a_symlinked_nested_instance_is_walked(self):
         """`os.walk`'s default `followlinks=False` lists a symlinked directory's

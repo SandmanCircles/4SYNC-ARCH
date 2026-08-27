@@ -301,9 +301,15 @@ class ClearCase(unittest.TestCase):
         except (OSError, NotImplementedError) as exc:
             self.skipTest("symlink creation unavailable in this environment: %s" % exc)
         found = debt.find_debt_files(self.root)
-        norm = {os.path.normcase(os.path.abspath(f)) for f in found}
-        self.assertIn(os.path.normcase(os.path.abspath(real_debt)), norm,
-                      "the symlinked instance's debt file was never walked")
+        # `os.walk` yields the path AS TRAVERSED (through the symlink), not the
+        # resolved target — so the found entry is `root/linked-instance/DEBT_FILENAME`,
+        # a different string from `real_debt` even though both name the same file.
+        # `os.path.samefile` compares file identity, not path spelling, and is the
+        # right check here: the docstring's claim is that the file gets WALKED
+        # (and is therefore clearable), not that it is returned by any one spelling.
+        self.assertTrue(
+            any(os.path.samefile(f, real_debt) for f in found),
+            "the symlinked instance's debt file was never walked")
 
     def test_a_symlinked_nested_instances_row_is_actually_cleared(self):
         """The end-to-end behaviour --clear exists for, not just discovery."""

@@ -150,6 +150,20 @@ more: four roach, two cricket, four fly. Board is at zero open.*
   and could go red on a clean update. It now skips unless the pristine `[PROJECT NAME]` sentinel
   is present.
 
+**Two of BUG-010's own regression tests were wrong, and only CI could tell.** This dev box's
+account lacks the privilege to create symlinks, so both of the new symlink-discovery tests
+skipped locally through every run of this batch — the suite read green while never actually
+exercising either. Pushing to CI (multi-OS, real symlink support) turned up both, one per test:
+the discovery test compared the found path's *spelling* against the resolved directory's, when
+`os.walk` yields the path as traversed *through* the symlink — never a string match even though
+both name the same file; fixed by comparing file identity (`os.path.samefile`) instead. The
+implementation-level test asserted `followlinks=True` on *every* call `os.walk` made while
+mocked — correct on this box's Python, wrong on 3.8, whose (pre-iterative-rewrite) `os.walk`
+recurses by calling its own global name, which the mock also intercepts, positionally, once per
+subdirectory; asserting only the first (direct) call is the actual claim `find_debt_files` makes.
+Neither is a defect in the fix itself — both were caught before a release could ship with a
+regression suite that had never really run.
+
 *Suites 876 → 914 (912 pass, 2 skip — symlink creation needs a privilege this dev box's account
 lacks; an implementation-level test covers the same fix without one). The MACHINERY inventory is
 unchanged at 24 files, so build ids published before this release still recompute to the same

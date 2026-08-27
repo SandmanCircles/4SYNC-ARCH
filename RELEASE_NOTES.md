@@ -80,6 +80,83 @@ cut time.*
 
 ---
 
+## v1.2.1
+
+*Twelve defects, closed the same session `BUGS.json` shipped to hold them. Two were reported
+upstream against v1.2.0 (a hyphenated `MP-0NN` journal label falling to the blank-line fallback,
+and the test built to catch the same class instead asserting against the adopter's own live
+ledger); fixing the first exposed a false-positive class in the same regex, closed in this batch
+too. A subsequent internal sweep — six finder agents by subsystem, one-vote verify — turned up ten
+more: four roach, two cricket, four fly. Board is at zero open.*
+
+**Manifest:** nothing to change.
+
+**By hand:** nothing required.
+
+### BEHAVIOUR CHANGES
+
+- **Guards now see `$()` / backtick command-substitution redirect targets.** `_BASH_REDIRECT_TARGET`
+  stopped at the first internal whitespace, so `echo pwned > $(echo config/KERNEL.yaml)` resolved
+  to a bare token with no slash and no extension — every guard saw zero write targets and allowed
+  the call silently, with no session-debt row either. The capture now spans the whole
+  substitution. If you write through command substitution in a redirect target — uncommon, but
+  legal shell — a call that passed unexamined before is examined now.
+- **Journal headers recognize hyphenated labels, and stop recognizing ordinary prose.** `MP-067 —
+  ...` used to fall to the blank-line fallback because the label charset excluded hyphens, even
+  though `MP-0NN` is this product's own taught convention — the upstream-reported defect. Widening
+  the charset to admit hyphens (first fix) also, as a side effect, started matching ordinary
+  Title-Case prose shaped like a header (`Reported — 2026-08-11 the...`), the same class the
+  file's own comment already rejected once for a looser rule. The label charset is now
+  **uppercase-only** — every real label this project has ever minted (`GENESIS`, `MP057`,
+  `MP-067`, `SYN-111`) is all-caps, so no shipped convention is mixed-case, but a lowercase or
+  mixed-case journal header of your own would have matched under the first fix and will not
+  under this one.
+
+### Also fixed
+
+- **`arch_update.py`'s phase-2 copy no longer crashes silently on a locked file.** A per-file
+  `PartialApply` exception now reports what landed and what didn't, instead of a raw `OSError`
+  escaping `main()` as a traceback with the final verification step never running. A plain re-run
+  self-heals, since `update()` diffs against the current destination.
+- **`wire_hooks.py` matches an existing hook entry by full normalized path, not basename
+  substring.** Wiring a second nested instance sharing an outer settings file used to silently
+  delete the first instance's wiring; `merge()` and `--status` now compare full paths.
+- **`wire_hooks.py`'s `merge()` no longer crashes on a malformed `settings.json`.** A `PreToolUse`
+  value that isn't a list (found while closing the item above) now refuses gracefully instead of
+  raising an unhandled `AttributeError`.
+- **`meter.py` finds a renamed manifest instead of silently measuring it as zero.**
+  `resolve_manifest()` had no by-content discovery fallback, unlike `rotate.py`'s equivalent built
+  for the same case — an adopter who ran genesis and never set `ARCH_MANIFEST` got a well-formed
+  report claiming near-zero boot cost. It now falls back to the same discovery mechanism
+  `rotate.py` uses; an explicit `ARCH_MANIFEST` pin still wins outright.
+- **`actuals.py`'s series append is no longer a race.** The dedupe-then-append was an
+  unsynchronized read-then-write: two sessions closing around the same time could both read the
+  series before either wrote, and both append the same row, violating the documented idempotency
+  guarantee. A new `_SeriesLock` wraps the critical section — exclusive-create lock file, stale-
+  lock recovery, and a timeout that proceeds unlocked rather than fails a close.
+  `debt.py`'s `find_debt_files()` now passes `followlinks=True`, so a symlinked nested instance's
+  debt file is found and cleared instead of silently skipped.
+- **`split_ledger.py` no longer claims success on a ledger with nothing left to migrate.** A
+  second `--apply` against an already-migrated ledger used to print a real "APPLIED — 0 documents
+  written" instead of refusing; it now reports NOTHING TO MIGRATE and writes nothing, dry-run or
+  apply.
+- **`session_start.py` reports an unreadable debt timestamp distinctly.** `read_debt()` used to
+  fold an unparseable timestamp into `stale` — indistinguishable from a genuinely old row, and
+  exactly the wrong direction for a file whose job is surfacing contested ledgers. A third
+  `unreadable` bucket is now reported on its own.
+- **The shipped-template legacy-journal test resolves its fixture by identity, not location.**
+  It used to skip only when the file was absent — in every adopted instance that path is the
+  live ledger, not the template, so the test silently asserted against the adopter's own journal
+  and could go red on a clean update. It now skips unless the pristine `[PROJECT NAME]` sentinel
+  is present.
+
+*Suites 876 → 914 (912 pass, 2 skip — symlink creation needs a privilege this dev box's account
+lacks; an implementation-level test covers the same fix without one). The MACHINERY inventory is
+unchanged at 24 files, so build ids published before this release still recompute to the same
+values.*
+
+---
+
 ## v1.2.0
 
 *The sweep release. Twenty-seven defects, and the common shape is the reason they lasted: **every

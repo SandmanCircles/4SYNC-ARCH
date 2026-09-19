@@ -80,6 +80,50 @@ cut time.*
 
 ---
 
+## v1.2.2
+
+*Docs-only: no machinery file changed, so the build id is the same as v1.2.1's and this version
+number is the only thing that tells you it exists. Two install-path defects, both found by
+setting up a real instance from the published instructions.*
+
+**Manifest:** nothing to change. The only manifest edits are inside `bootstrap:`, which your
+genesis already ran and deleted.
+
+**By hand:** one thing if you run Cowork on Windows, one check for everybody.
+
+1. **Add `.gitattributes` to your instance root** (copy it from this release; if you already have
+   one, add its single `* text=auto eol=lf` line to yours). Then run `git add --renormalize .`
+   and commit whatever it stages as its own commit. It usually stages nothing, because git
+   stores these files as LF already. Why: on a Windows host your checkout is CRLF, and Cowork's
+   git runs in a Linux VM over the same folder without `autocrlf`, rechecks every file, and
+   reports each CRLF one as modified. That is a dirty tree nobody made, and `rotate.py` refuses
+   to run on it. With the file in place, both gits read the same bytes. Nothing to do if you
+   never use Cowork on Windows, but it is harmless everywhere.
+2. **Check what `origin` points at**: `git remote -v`. If it names
+   `SandmanCircles/4SYNC-ARCH`, you installed with a `git clone` and your project still thinks
+   it is a fork of ours. `git remote remove origin` (then add your own if you want one). The
+   product's commits stay in your history; that is harmless, and rewriting it is not worth the
+   risk to your own commits on top.
+
+### INSTALL PATH
+
+- **"Copy, not clone," said everywhere a user starts.** A `git clone` into the project folder
+  lands the files in a `4SYNC-ARCH/` subfolder rather than the folder the user made, brings the
+  product's whole history, and leaves `origin` pointing here. On top of the README's own
+  `git init`, it leaves one repo nested inside another. README step 2 and ADOPTING's first
+  trial step now say to copy the files, and give the sentence to paste into a session. The
+  4sync.ai Quick Start prompt and the Download card were corrected to match. Cloning to a
+  scratch path to read the code, run the suites or apply an update is unchanged and still
+  correct.
+- **Genesis checks whose repo it is before writing anything.** Its git-state question now also
+  looks for a product remote, the product's history, the files one folder down, or a nested
+  `.git`. If it finds any of them it says so in the playback and offers to move the files up
+  and start a fresh repo. Removing a `.git` waits for the user's explicit yes.
+- **`.gitattributes` ships, and genesis keeps it at root** beside `.gitignore`. It governs the
+  adopter's own repo, not ARCH's packaging, so it is not moved into `arch/`.
+
+---
+
 ## v1.2.1
 
 *Twelve defects, closed the same session `BUGS.json` shipped to hold them. Two were reported

@@ -1,0 +1,7 @@
+# Line endings are pinned HERE, not left to each machine's core.autocrlf.
+# A Windows host checks text out as CRLF; Cowork's git runs in a Linux VM over
+# the SAME folder with no autocrlf, rehashes every file, and reports each CRLF
+# one as modified — a dirty tree nobody made, which rotate's gate then refuses.
+# LF everywhere means both gits read identical bytes. Stays at root after
+# genesis, like .gitignore: it governs the adopter's own repo from then on.
+* text=auto eol=lf

@@ -42,7 +42,8 @@ to run it if you skipped it.
 One sitting, four steps. The first three are what any drop-in does. **The fourth is the
 only one that proves anything.**
 
-1. **Boot.** Drop the files in, start a session, say anything. It reads the manifest and
+1. **Boot.** Copy the files in — the files, not a `git clone`, which would bring the
+   product's history and remote along — start a session, say anything. It reads the manifest and
    orients.
 2. **Genesis.** It interviews you, then **plays back what it understood and stops.** Read
    that playback — nothing is written until you confirm, and it's the cheapest moment in

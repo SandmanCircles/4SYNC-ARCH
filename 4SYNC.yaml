@@ -95,6 +95,17 @@ bootstrap:
       rotation refuses on, and the entire exit story — so on "no repo", offer
       `git init` HERE, at the cheapest moment, and do not author the stack
       until the repo exists or the user explicitly rules otherwise.
+      THEN CHECK WHOSE REPO IT IS — a CLONE of the product is not a copy of it.
+      The signs — `git remote -v` names SandmanCircles/4SYNC-ARCH (or the old
+      4SYNC-CMS slug); `git log` carries the product's history rather than
+      nothing or the user's own commits; the files sit in a 4SYNC-ARCH/
+      subfolder of the folder the user made; or a nested .git sits under an
+      outer one. Any of these → say so in the playback and OFFER, before
+      writing anything, to move the files up into the folder the user made,
+      drop the product's .git and remote, and `git init` fresh. Removing a
+      .git is destructive — the user's explicit yes, never assumed. Otherwise
+      their project starts as a fork of ARCH, and root locks wherever the
+      clone happened to land.
       Ask them to confirm or correct it, and WAIT for an explicit yes.
       Both entry paths land here, so this is the only gate needed. Why it is worth
       one question — the steps below author the whole stack, set a root path, flip
@@ -162,7 +173,8 @@ bootstrap:
       user runs git init — their work would appear FSL-licensed under someone else's
       copyright. Keep all seven
       TRACKED and never ignore arch/, since the license must travel with the code
-      it covers and the archived seed is the birth record. .gitignore STAYS at root
+      it covers and the archived seed is the birth record. .gitignore and
+      .gitattributes STAY at root — they govern the user's repo, not packaging
     - RECORD THE BUILD THIS INSTANCE WAS BORN WITH — run
       `python scripts/arch_build.py --write-birth-record`. Writes arch/BUILD.txt
       ONCE and refuses to overwrite — it holds the only claim in the instance that

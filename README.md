@@ -54,7 +54,14 @@ actually used for.
    half-written ledger between machines while two sessions are editing it. If you want
    the same project on more than one machine, use git for that and keep the instance
    root on local disk.
-2. **Drop this filesystem into that folder** (or start from it).
+2. **Copy this filesystem into that folder — the files, not the repository.** Not a
+   `git clone`: a clone lands in a `4SYNC-ARCH/` subfolder rather than the folder you
+   just made, brings this product's whole commit history into your project, and leaves
+   `origin` pointing at our repo — and on top of step 1's `git init` it leaves a repo
+   nested inside yours. Easiest is to ask your session: *"Copy the files from
+   https://github.com/SandmanCircles/4SYNC-ARCH into this folder — the files only, not
+   its git history or remote."* (Cloning to a scratch path is still right for
+   inspecting the code and for updates — see *Updating* below.)
 3. **Tell it what your project is** — either fill in `SEED.md` and flip its flag to
    `AUTHORED`, or don't: just open a Claude session in the folder and it will
    interview you through the seed conversationally.

@@ -82,8 +82,9 @@ cut time.*
 
 ## v1.2.2
 
-*Docs-only: no machinery file changed, so the build id is the same as v1.2.1's and this version
-number is the only thing that tells you it exists. Two install-path defects, both found by
+*Docs-only: no machinery file changed except `arch/VERSION`. The build id moves only because
+VERSION is part of the hash, so VERSION is the only thing that tells you this release exists.
+Take it with the docs, or your instance keeps reporting 1.2.1. Two install-path defects, both found by
 setting up a real instance from the published instructions.*
 
 **Manifest:** nothing to change. The only manifest edits are inside `bootstrap:`, which your
